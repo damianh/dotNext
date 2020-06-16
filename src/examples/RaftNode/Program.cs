@@ -1,61 +1,34 @@
-﻿using DotNext.Net.Cluster.Consensus.Raft;
-using DotNext.Net.Cluster.Consensus.Raft.Http.Embedding;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Console;
-using System;
-using System.Collections.Generic;
-using System.IO;
+﻿using System;
 using System.Net;
-using System.Reflection;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using DotNext.Net.Cluster.Consensus.Raft;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using static DotNext.Threading.AsyncEvent;
 
 namespace RaftNode
 {
     public static class Program
     {
-        private static X509Certificate2 LoadCertificate()
+        private static async Task Main(string[] args)
         {
-            using var rawCertificate = Assembly.GetCallingAssembly().GetManifestResourceStream(typeof(Program), "node.pfx");
-            using var ms = new MemoryStream(1024);
-            rawCertificate?.CopyTo(ms);
-            ms.Seek(0, SeekOrigin.Begin);
-            return new X509Certificate2(ms.ToArray(), "1234");
-        }
-
-        private static Task UseAspNetCoreHost(int port, string? persistentStorage = null)
-        {
-            var configuration = new Dictionary<string, string>
+            if (args.Length < 1)
             {
-                {"partitioning", "false"},
-                {"lowerElectionTimeout", "150" },
-                {"upperElectionTimeout", "300" },
-                {"members:0", "https://localhost:3262"},
-                {"members:1", "https://localhost:3263"},
-                {"members:2", "https://localhost:3264"},
-                {"requestJournal:memoryLimit", "5" },
-                {"requestJournal:expiration", "00:01:00" }
-            };
-            if (!string.IsNullOrEmpty(persistentStorage))
-                configuration[SimplePersistentState.LogLocation] = persistentStorage;
-            return new HostBuilder().ConfigureWebHost(webHost =>
+                Console.WriteLine("Port number not specified");
+            }
+            else
             {
-                webHost.UseKestrel(options =>
+                var port = int.Parse(args[0]);
+                var configuration = new RaftCluster.TcpConfiguration(new IPEndPoint(IPAddress.Loopback, port))
                 {
-                    options.ListenLocalhost(port, listener => listener.UseHttps(LoadCertificate()));
-                })
-                .UseStartup<Startup>();
-            })
-            .ConfigureLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Error))
-            .ConfigureAppConfiguration(builder => builder.AddInMemoryCollection(configuration))
-            .JoinCluster()
-            .Build()
-            .RunAsync();
+                    LowerElectionTimeout = 150,
+                    UpperElectionTimeout = 300,
+                    TransmissionBlockSize = 4096
+                };
+
+                await UseConfiguration(configuration, args[1]);
+            }
         }
 
         private static async Task UseConfiguration(RaftCluster.NodeConfiguration config, string? persistentStorage)
@@ -68,7 +41,8 @@ namespace RaftNode
             {
                 LogToStandardErrorThreshold = LogLevel.Warning
             };
-            loggerFactory.AddProvider(new ConsoleLoggerProvider(new FakeOptionsMonitor<ConsoleLoggerOptions>(loggerOptions)));
+            loggerFactory.AddProvider(
+                new ConsoleLoggerProvider(new FakeOptionsMonitor<ConsoleLoggerOptions>(loggerOptions)));
             config.LoggerFactory = loggerFactory;
 
             using var cluster = new RaftCluster(config);
@@ -80,6 +54,7 @@ namespace RaftNode
                 cluster.AuditTrail = state;
                 modifier = new DataModifier(cluster, state);
             }
+
             await cluster.StartAsync(CancellationToken.None);
             await (modifier?.StartAsync(CancellationToken.None) ?? Task.CompletedTask);
             using var handler = new CancelKeyPressHandler();
@@ -88,63 +63,6 @@ namespace RaftNode
             Console.CancelKeyPress -= handler.Handler;
             await (modifier?.StopAsync(CancellationToken.None) ?? Task.CompletedTask);
             await cluster.StopAsync(CancellationToken.None);
-        }
-
-        private static Task UseUdpTransport(int port, string? persistentStorage)
-        {
-            var configuration = new RaftCluster.UdpConfiguration(new IPEndPoint(IPAddress.Loopback, port))
-            {
-                LowerElectionTimeout = 150,
-                UpperElectionTimeout = 300,
-                DatagramSize = 1024
-            };
-            return UseConfiguration(configuration, persistentStorage);
-        }
-
-        private static Task UseTcpTransport(int port, string? persistentStorage)
-        {
-            var configuration = new RaftCluster.TcpConfiguration(new IPEndPoint(IPAddress.Loopback, port))
-            {
-                LowerElectionTimeout = 150,
-                UpperElectionTimeout = 300,
-                TransmissionBlockSize = 4096
-            };
-            return UseConfiguration(configuration, persistentStorage);
-        }
-
-        private static Task StartNode(string protocol, int port, string? persistentStorage = null)
-        {
-            switch (protocol.ToLowerInvariant())
-            {
-                case "http":
-                case "https":
-                    return UseAspNetCoreHost(port, persistentStorage);
-                case "udp":
-                    return UseUdpTransport(port, persistentStorage);
-                case "tcp":
-                    return UseTcpTransport(port, persistentStorage);
-                default:
-                    Console.Error.WriteLine("Unsupported protocol type");
-                    Environment.ExitCode = 1;
-                    return Task.CompletedTask;
-            }
-        }
-
-        private static async Task Main(string[] args)
-        {
-            switch (args.LongLength)
-            {
-                case 0:
-                case 1:
-                    Console.WriteLine("Port number and protocol are not specified");
-                    break;
-                case 2:
-                    await StartNode(args[0], int.Parse(args[1]));
-                    break;
-                case 3:
-                    await StartNode(args[0], int.Parse(args[1]), args[2]);
-                    break;
-            }
         }
     }
 }

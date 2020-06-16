@@ -5,7 +5,6 @@ using System;
 
 namespace RaftNode
 {
-
     internal sealed class Int64LogEntry : BinaryTransferObject<long>, IRaftLogEntry
     {
         internal Int64LogEntry()

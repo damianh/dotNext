@@ -233,7 +233,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
         }
 
         if (hasConsensus)
-            return GetCommitIndex(indexBuffer.Span);
+            return GetCommitIndex(indexBuffer.Span, runningReplications.Count);
 
         // lost quorum responsiveness; randomize so nodes recovering from a correlated stall
         // (e.g. shared CPU/network degradation) don't resynchronize on the same fixed timeout
@@ -241,11 +241,14 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
         return null;
     }
 
-    private static long GetCommitIndex(Span<long> indices)
+    private static long GetCommitIndex(Span<long> indices, int memberCount)
     {
+        var majority = memberCount / 2 + 1;
+        Debug.Assert(indices.Length >= majority);
+
         indices.Sort();
-        var median = (indices.Length - 1) / 2;
-        return indices[median];
+        // Missing replies cannot reduce the number of replicas required to commit.
+        return indices[indices.Length - majority];
     }
 
     /// <summary>

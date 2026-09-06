@@ -106,9 +106,21 @@ into a replacement incarnation.
 Run the harness with the existing Microsoft.Testing.Platform runner:
 
 ```powershell
-dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.InProcessClusterTests' --progress off --timeout 90s
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.*' --progress off --timeout 90s
 ```
 
-Issue #3 owns the commit-index regression and fix in a separate stacked change.
-This harness does not alter the full-membership majority calculation or fix
-issue #2's WAL recovery behavior.
+`CommitIndexTests` reproduces issue #3 with a real leader WAL and
+`SimpleStateMachine` snapshot: five members have prior commit 7, only the leader
+and one follower hold index 10, and a third member acknowledges snapshot 6 from
+the current term. Responsive quorum is not enough to commit 10. The leader
+selects the majority-th largest replicated index using the full membership.
+
+`MembershipCommitTests` covers 3/5/7 members, unavailable replies arriving before
+or after quorum, current- and previous-term snapshot acknowledgments, successful
+catch-up, and commit-index monotonicity. These schedules hold election and
+replication RPCs from the start, observe the automatic first round before forcing
+its retry, and account for every worker's setup RPC before beginning another
+round. A completed quorum alone does not prove that a lagging worker has finished
+its earlier rounds.
+
+These tests do not exercise disk recovery or fix issue #2.

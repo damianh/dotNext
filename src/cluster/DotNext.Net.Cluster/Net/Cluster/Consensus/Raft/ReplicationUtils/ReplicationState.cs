@@ -9,7 +9,8 @@ internal struct ReplicationState(int count)
     private readonly int majority = (count >>> 1) + 1;
     private int replicated, committed, unavailable;
 
-    private readonly bool IsUnavailable => unavailable >= majority;
+    // An even-sized cluster loses quorum when exactly half its members are unavailable.
+    private readonly bool IsUnavailable => count - unavailable < majority;
 
     private readonly bool IsCommitted => committed >= majority;
 

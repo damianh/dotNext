@@ -124,3 +124,21 @@ round. A completed quorum alone does not prove that a lagging worker has finishe
 its earlier rounds.
 
 These tests do not exercise disk recovery or fix issue #2.
+
+`QuorumLossTests` covers issue #5 with valid two- and four-member clusters.
+After a healthy election and write-barrier retry, it supplies every response
+with exactly half the membership unavailable, counting the local leader among
+the responsive half. Forced replication must finish with `NotLeaderException`,
+leadership must end, and shutdown/disposal must finish. Additional cases cancel
+one caller without stranding another and stop/dispose a leader with held RPCs.
+`InProcessClusterFixture` shares membership/election setup with the commit tests;
+its bounded cleanup keeps a lifecycle regression from hanging the test runner.
+
+The accompanying `ReplicationBarrierTests` assert completion synchronously after
+the final contribution, without a sleep or cancellation oracle. They also cover
+odd-sized clusters, early failure, response ordering, touched/canceled/higher-term
+outcomes, the overflow buffer, and reuse after late replies. Run both layers with:
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils.*' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.QuorumLossTests' --progress off --timeout 90s
+```

@@ -31,23 +31,41 @@ public sealed class CommitIndexTests : RaftTest
         foreach (var node in new[] { nodeA, nodeB, nodeC, nodeD, nodeE })
             await node.StartAsync(TestToken);
 
-        // C misses the whole term. A, B, D and E establish committed history
-        // through real election/replication before D and E become unreachable.
-        network.Partition(nodeA.EndPoint, nodeC.EndPoint);
+        foreach (var node in followers)
+            network.Hold(nodeA.EndPoint, node.EndPoint);
         nodeA.StartElectionTimer();
         timeProvider.Advance(TimeSpan.FromMilliseconds(100));
+        foreach (var node in followers)
+            await network.DeliverAsync(await PendingAsync(node, RaftMessageType.PreVote));
+        foreach (var node in followers)
+            await network.DeliverAsync(await PendingAsync(node, RaftMessageType.Vote));
         await nodeA.WaitForLeaderAsync(TimeSpan.FromSeconds(5), TestToken);
-        await nodeA.ForceReplicationAsync(TestToken);
+
+        // Observe the automatic first round before requesting its retry, so the
+        // force waiter belongs to the retry rather than racing the first valve.
+        var initial = new List<PendingMessage>();
+        foreach (var node in followers)
+            initial.Add(await PendingAsync(node, RaftMessageType.AppendEntries));
+        var electionRound = nodeA.ForceReplicationAsync(TestToken).AsTask();
+        foreach (var message in initial)
+            await network.DeliverAsync(message);
+        await CompleteHealthyRoundAsync(RaftMessageType.AppendEntries);
+        await electionRound;
         await nodeA.WaitForLeadershipAsync(TestToken);
         Equal(1L, stateA.LastCommittedEntryIndex);
 
+        // C misses every committed entry. Account for its actual RPC in every
+        // round: a delayed worker must not contribute an old snapshot response
+        // to the decisive round. A/B/D/E establish the history normally.
         for (var index = 2L; index <= 7L; index++)
-            await nodeA.ReplicateAsync(new TestLogEntry("no-op") { Term = nodeA.Term }, TestToken);
+        {
+            Equal(index, await stateA.AppendAsync(new TestLogEntry("no-op") { Term = nodeA.Term }, TestToken));
+            var replication = nodeA.ForceReplicationAsync(TestToken).AsTask();
+            await CompleteHealthyRoundAsync(RaftMessageType.AppendEntries);
+            await replication;
+        }
 
-        await nodeA.ForceReplicationAsync(TestToken);
         await stateA.WaitForApplyAsync(7L, TestToken);
-        foreach (var node in new[] { nodeB, nodeD, nodeE })
-            await node.AuditTrail.WaitForApplyAsync(7L, TestToken);
         Equal(7L, stateA.LastCommittedEntryIndex);
         Equal(0L, stateC.LastEntryIndex);
         var snapshot = machine.As<ISnapshotManager>().Snapshot;
@@ -55,18 +73,12 @@ public sealed class CommitIndexTests : RaftTest
         Equal(6L, snapshot.Index);
         Equal(nodeA.Term, snapshot.Term);
 
-        // C's untouched replication cursor is still in the compacted prefix.
-        // Hold B/D/E at actual RPCs to establish an exact round boundary.
-        foreach (var node in followers)
-            network.Hold(nodeA.EndPoint, node.EndPoint);
+        // Propagate commit 7, dropping C's snapshot before the next round starts.
         var preparation = nodeA.ForceReplicationAsync(TestToken).AsTask();
-        foreach (var node in new[] { nodeB, nodeD, nodeE })
-        {
-            var message = await network.WaitForMessageAsync(
-                nodeA.EndPoint, node.EndPoint, RaftMessageType.AppendEntries, TestToken);
-            await network.DeliverAsync(message);
-        }
+        await CompleteHealthyRoundAsync(RaftMessageType.InstallSnapshot);
         await preparation;
+        foreach (var node in new[] { nodeB, nodeD, nodeE })
+            await node.AuditTrail.WaitForApplyAsync(7L, TestToken);
 
         // Local proposals are uncommitted until the production leader selects
         // an index. Only B will receive this tail in the decisive round.
@@ -74,7 +86,6 @@ public sealed class CommitIndexTests : RaftTest
             Equal(index, await stateA.AppendAsync(new EmptyLogEntry { Term = nodeA.Term }, TestToken));
         Equal(7L, stateA.LastCommittedEntryIndex);
 
-        network.Heal(nodeA.EndPoint, nodeC.EndPoint);
         var round = nodeA.ForceReplicationAsync(TestToken).AsTask();
         var toB = await PendingAsync(nodeB, RaftMessageType.AppendEntries);
         var toC = await PendingAsync(nodeC, RaftMessageType.InstallSnapshot);
@@ -109,6 +120,18 @@ public sealed class CommitIndexTests : RaftTest
 
         Task<PendingMessage> PendingAsync(InProcessCluster node, RaftMessageType type)
             => network.WaitForMessageAsync(nodeA.EndPoint, node.EndPoint, type, TestToken);
+
+        async Task CompleteHealthyRoundAsync(RaftMessageType catchUpType)
+        {
+            var toB = await PendingAsync(nodeB, RaftMessageType.AppendEntries);
+            var toC = await PendingAsync(nodeC, catchUpType);
+            var toD = await PendingAsync(nodeD, RaftMessageType.AppendEntries);
+            var toE = await PendingAsync(nodeE, RaftMessageType.AppendEntries);
+            network.Drop(toC);
+            await network.DeliverAsync(toB);
+            await network.DeliverAsync(toD);
+            await network.DeliverAsync(toE);
+        }
     }
 
     // SimpleStateMachine creates a real snapshot with the applied entry's

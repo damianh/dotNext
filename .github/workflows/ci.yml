@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [fork, master, develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_NOLOGO: 'true'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-test:
+    name: Build, tests, and coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore src/DotNext.slnx --configfile NuGet.config
+
+      # Test access to library internals is enabled only in Debug builds.
+      - name: Build solution
+        run: dotnet build src/DotNext.slnx --configuration Debug --no-restore
+
+      - name: Run managed tests with coverage
+        id: tests
+        timeout-minutes: 15
+        run: >-
+          dotnet test --project src/DotNext.Tests/DotNext.Tests.csproj
+          --configuration Debug --no-build --timeout 10m
+          --results-directory "$GITHUB_WORKSPACE/TestResults/managed"
+          --report-trx --report-trx-filename tests.trx
+          --coverage --coverage-output-format cobertura
+          --coverage-output "$GITHUB_WORKSPACE/TestResults/managed/coverage.cobertura.xml"
+
+      - name: Require test and coverage results
+        if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
+        run: |
+          test -s TestResults/managed/tests.trx
+          test -s TestResults/managed/coverage.cobertura.xml
+
+      - name: Generate coverage report
+        id: coverage
+        if: ${{ !cancelled() && hashFiles('TestResults/managed/coverage.cobertura.xml') != '' }}
+        uses: danielpalme/ReportGenerator-GitHub-Action@d3ebf1f760f7d8ab92cc44d9bcfee7ad73722a31 # 5.5.11
+        with:
+          reports: TestResults/managed/coverage.cobertura.xml
+          targetdir: TestResults/coverage-report
+          reporttypes: Html;MarkdownSummaryGithub
+          assemblyfilters: +DotNext*;-DotNext.Tests;-DotNext.Aot.Tests
+          filefilters: -**/*.g.cs
+          toolpath: ${{ runner.temp }}/reportgenerator
+
+      - name: Publish coverage summary
+        if: ${{ !cancelled() && steps.coverage.outcome == 'success' }}
+        run: |
+          test -s TestResults/coverage-report/index.html
+          test -s TestResults/coverage-report/SummaryGithub.md
+          cat TestResults/coverage-report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test results and raw coverage
+        if: ${{ !cancelled() && hashFiles('TestResults/managed/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: managed-test-results
+          path: TestResults/managed/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload HTML coverage report
+        if: ${{ !cancelled() && hashFiles('TestResults/coverage-report/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: TestResults/coverage-report/
+          if-no-files-found: error
+          retention-days: 14
+
+  native-aot:
+    name: Native AOT tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Ensure Native AOT prerequisites
+        run: |
+          if ! command -v clang >/dev/null || ! dpkg-query -W -f='${Status}' zlib1g-dev 2>/dev/null | grep -qx 'install ok installed'; then
+            sudo apt-get update
+            sudo apt-get install --yes clang zlib1g-dev
+          fi
+
+      - name: Publish Native AOT tests
+        run: >-
+          dotnet publish src/DotNext.Aot.Tests/DotNext.Aot.Tests.csproj
+          --configuration Release --runtime linux-x64
+          --configfile NuGet.config
+          --output "$RUNNER_TEMP/aot-tests"
+
+      - name: Run Native AOT tests
+        id: tests
+        timeout-minutes: 5
+        run: >-
+          "$RUNNER_TEMP/aot-tests/DotNext.Aot.Tests"
+          --results-directory "$GITHUB_WORKSPACE/TestResults/aot"
+          --report-trx --report-trx-filename tests.trx
+
+      - name: Require Native AOT test results
+        if: ${{ !cancelled() && steps.tests.outcome == 'success' }}
+        run: test -s TestResults/aot/tests.trx
+
+      - name: Upload Native AOT test results
+        if: ${{ !cancelled() && hashFiles('TestResults/aot/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-aot-test-results
+          path: TestResults/aot/
+          if-no-files-found: error
+          retention-days: 14

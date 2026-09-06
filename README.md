@@ -1,5 +1,6 @@
 .NEXT
 ====
+[![CI](https://github.com/damianh/dotNext/actions/workflows/ci.yml/badge.svg?branch=fork)](https://github.com/damianh/dotNext/actions/workflows/ci.yml)
 [![Build Status](https://dev.azure.com/dotnet/dotNext/_apis/build/status/dotnet.dotNext?branchName=master)](https://dev.azure.com/dotnet/dotNext/_build/latest?definitionId=1&branchName=master)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/dotnet/dotNext/blob/master/LICENSE)
 ![Test Coverage](https://img.shields.io/azure-devops/coverage/dotnet/dotnext/160/master)

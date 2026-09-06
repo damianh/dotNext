@@ -2,6 +2,26 @@ namespace DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils;
 
 public class ReplicationBarrierTests : Test
 {
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    public static async Task HalfUnavailableCompletesWithoutConsensus(int memberCount)
+    {
+        var barrier = new ReplicationBarrier();
+        var result = barrier.WaitAsync(memberCount, checkpointIndex: 10L);
+
+        // The successful half includes the leader's local contribution.
+        for (var i = 0; i < memberCount / 2; i++)
+            True(barrier.SetResult(MemberResult.Replicated(10L)));
+        for (var i = 0; i < memberCount / 2; i++)
+            True(barrier.SetResult(MemberResult.Unavailable));
+
+        True(barrier.IsCompleted, $"All {memberCount} responses arrived, but the half-unavailable barrier is still pending.");
+        True(result.IsCompleted);
+        Equal(new(memberCount, false), await result);
+        barrier.Reuse();
+    }
+
     [Fact]
     public static async Task CheckMixedResponses()
     {

@@ -37,7 +37,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
 
     public required bool IsLeaseEnabled
     {
-        init => lease = value ? new() : null;
+        init => lease = value ? new(TimeProvider) : null;
     }
 
     public required TimeSpan MaxLease
@@ -67,7 +67,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
             
             // do not resume suspended callers that came after the barrier, resume them in the next iteration
             replicationQueue.SwitchValve();
-            var startTime = new Timestamp();
+            var startTime = new Timestamp(TimeProvider);
             
             // in case of forced (initiated programmatically, not by timeout) replication
             // do not change GC latency. Otherwise, in case of high load GC is not able to collect garbage

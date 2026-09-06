@@ -54,7 +54,7 @@ internal sealed class StandbyState<TMember> : RefreshableState<TMember>
         try
         {
             // spin loop to wait for the timeout
-            while (await refreshEvent.WaitAsync(consensusTimeout, lifecycleToken).ConfigureAwait(false))
+            while (await RaftTimer.WaitAsync(refreshEvent, consensusTimeout, TimeProvider, lifecycleToken).ConfigureAwait(false))
             {
                 // Transition can be suppressed. If so, resume the loop and reset the timer.
                 // If the event is in signaled state then the returned task is completed synchronously.

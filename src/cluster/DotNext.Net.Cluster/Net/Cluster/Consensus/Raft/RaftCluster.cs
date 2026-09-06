@@ -120,9 +120,28 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <inheritdoc />
     ILogger IRaftStateMachine.Logger => Logger;
 
+    /// <summary>
+    /// Gets or initializes the time provider used by the Raft state machine.
+    /// </summary>
+    /// <remarks>
+    /// The default is <see cref="System.TimeProvider.System"/>.
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="value"/> is <see langword="null"/>.</exception>
+    public TimeProvider TimeProvider
+    {
+        get;
+        init => field = value ?? throw new ArgumentNullException(nameof(value));
+    } = TimeProvider.System;
+
     /// <inheritdoc />
     void IRaftStateMachine.UpdateLeaderStickiness(Timestamp refreshedAt)
         => Timestamp.VolatileWrite(ref lastUpdated, refreshedAt);
+
+    private bool IsLeaderStickinessActive()
+    {
+        var timestamp = Timestamp.VolatileRead(in lastUpdated);
+        return !timestamp.IsEmpty && timestamp.GetElapsedTime(TimeProvider) < ElectionTimeout;
+    }
 
     /// <inheritdoc />
     ref readonly TagList IRaftStateMachine.MeasurementTags => ref measurementTags;
@@ -615,7 +634,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 && senderTerm >= result.Term
                 && snapshotIndex > AuditTrail.LastCommittedEntryIndex)
             {
-                Timestamp.Refresh(ref lastUpdated);
+                Timestamp.Refresh(ref lastUpdated, TimeProvider);
                 await StepDownAsync(senderTerm, consensusReached: true).ConfigureAwait(false);
                 Leader = TryGetMember(sender);
                 
@@ -686,7 +705,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             };
             if (result.Term <= senderTerm)
             {
-                Timestamp.Refresh(ref lastUpdated);
+                Timestamp.Refresh(ref lastUpdated, TimeProvider);
                 await StepDownAsync(senderTerm, consensusReached: true).ConfigureAwait(false);
                 var senderMember = TryGetMember(sender);
                 Leader = senderMember;
@@ -776,7 +795,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 // provide leader stickiness
                 result = result with { Value = PreVoteResult.RejectedByLeader };
             }
-            else if (members.ContainsKey(sender) && Timestamp.VolatileRead(in lastUpdated).Elapsed >= ElectionTimeout && result.Term <= nextTerm &&
+            else if (members.ContainsKey(sender) && !IsLeaderStickinessActive() && result.Term <= nextTerm &&
                      await AuditTrail.IsUpToDateAsync(lastLogIndex, lastLogTerm, tokenSource.Token).ConfigureAwait(false))
             {
                 result = result with { Value = PreVoteResult.Accepted };
@@ -858,7 +877,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
         // provide leader stickiness
         if (result.Term > senderTerm
-            || Timestamp.VolatileRead(in lastUpdated).Elapsed < ElectionTimeout || !members.ContainsKey(sender))
+            || IsLeaderStickinessActive() || !members.ContainsKey(sender))
             goto exit;
 
         var tokenSource = CombineTokens(token, LifecycleToken);

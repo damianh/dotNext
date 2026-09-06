@@ -34,10 +34,9 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
 
         // start voting in parallel
         var voters = StartVoting(lastIndex, lastTerm);
-        votingCancellation.CancelAfter(timeout);
-
-        // finish voting
-        await EndVoting(voters).ConfigureAwait(false);
+        var deadline = new VotingDeadline(votingCancellation, timeout, TimeProvider);
+        await using (deadline.ConfigureAwait(false))
+            await EndVoting(voters, deadline).ConfigureAwait(false);
     }
     
     private IAsyncEnumerable<Task<(TMember, long, bool?)>> StartVoting(long lastIndex, long lastTerm)
@@ -68,7 +67,7 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         return (voter, currentTerm, result);
     }
 
-    private async Task EndVoting(IAsyncEnumerable<Task<(TMember, long, bool?)>> voters)
+    private async Task EndVoting(IAsyncEnumerable<Task<(TMember, long, bool?)>> voters, VotingDeadline? deadline)
     {
         var votes = 0;
         var localMember = default(TMember);
@@ -123,7 +122,7 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         }
 
         Logger.VotingCompleted(votes, Term);
-        if (!TryReset() || votes <= 0 || localMember is null)
+        if (deadline?.TryStop() is false || !TryReset() || votes <= 0 || localMember is null)
         {
             MoveToFollowerState(randomizeTimeout: true); // no clear consensus
         }
@@ -149,6 +148,45 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         }
 
         return result;
+    }
+
+    private sealed class VotingDeadline : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource cancellationSource;
+        private readonly ITimer timer;
+        private int active = 1;
+
+        internal VotingDeadline(CancellationTokenSource cancellationSource, TimeSpan timeout, TimeProvider timeProvider)
+        {
+            this.cancellationSource = cancellationSource;
+            timer = timeProvider.CreateTimer(
+                static state => ((VotingDeadline)state!).Cancel(),
+                this,
+                timeout,
+                Timeout.InfiniteTimeSpan);
+
+            if (timeout == TimeSpan.Zero)
+                Cancel();
+        }
+
+        private void Cancel()
+        {
+            if (Interlocked.Exchange(ref active, 0) is 1)
+                cancellationSource.Cancel(throwOnFirstException: false);
+        }
+
+        internal bool TryStop()
+        {
+            var result = Interlocked.Exchange(ref active, 0) is 1;
+            timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            return result && !cancellationSource.IsCancellationRequested;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Interlocked.Exchange(ref active, 0);
+            return timer.DisposeAsync();
+        }
     }
 
     /// <summary>

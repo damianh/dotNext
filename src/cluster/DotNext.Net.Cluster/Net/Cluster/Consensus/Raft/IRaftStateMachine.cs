@@ -10,6 +10,8 @@ internal interface IRaftStateMachine
 {
     ILogger Logger { get; }
 
+    TimeProvider TimeProvider { get; }
+
     IReadOnlyCollection<IRaftClusterMember> Members { get; }
 
     void UpdateLeaderStickiness(Timestamp refreshedAt);

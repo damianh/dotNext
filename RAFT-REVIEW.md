@@ -2,13 +2,20 @@
 
 Reviewed on 2026-09-06 against commit
 `d46d2985910e1b1f1ec44a92cce71b413d956e1d` (6.7.1).
+Updated after correlating a second review of the same revision.
 
 ## Summary
 
-The review identified **14 actionable correctness and operability issues**.
-The most serious allows committing writes that only a minority of nodes hold.
-No high-confidence implementation security vulnerability was substantiated
-under the trusted-peer assumptions described below.
+The consolidated review identifies **17 actionable correctness and operability
+issues**. The most serious allow committing writes that only a minority of nodes
+hold and forgetting acknowledged replication on restart. The second review
+identified three additional confirmed defects, recorded as findings 15-17;
+the original numbering is preserved.
+
+Authentication, transport security, and network isolation are host
+responsibilities. No bypass of correctly configured host protections was
+established. Unprotected RPC exposure is a deployment risk, not an additional
+standalone core vulnerability.
 
 This is a review of the existing implementation, not a branch diff. Findings
 describe the reviewed revision; recording this report does not fix them.
@@ -206,25 +213,190 @@ after the worker has permanently stopped.
 **Fix:** Wake flush waiters on worker failure or exit and propagate the stored
 failure before waiting and after wakeup.
 
+## Additional findings from the second review
+
+Paths in this section are relative to the Raft directory stated in the summary,
+not implicitly to `StateMachine\`.
+
+### 15. P1: Acknowledged replication can be forgotten on restart
+
+**Second-review claim:** C1
+
+**Location:** `RaftCluster.cs:717-724`;
+`StateMachine\WriteAheadLog.cs:123-129,427-452`;
+`StateMachine\WriteAheadLog.Flusher.cs:41-54`
+
+The follower returns successful replication after appending entries without
+ensuring that the appended tail is durable. Background flushing tracks the
+locally committed boundary, not a separate durable appended boundary. More
+fundamentally, reopening the WAL restores the checkpoint/snapshot boundary and
+ignores a later uncommitted tail even if its pages reached disk.
+
+Actual WAL probes reproduced a tail of 1 and commit index of 0 reopening as
+tail 0 and commit index 0. This occurred with orderly reopening and abrupt
+process termination, including a control with CRC64 enabled and the entry's
+pages explicitly flushed to disk. These were WAL-level probes; the RPC
+acknowledgment path was source-traced, not exercised as a complete distributed
+crash scenario.
+
+A valid three-node failure sequence is:
+
+1. L replicates entry N to F1, whose local commit index is still N-1.
+2. F1 acknowledges N; L commits and persists it and acknowledges the client.
+3. Before F1 learns the new commit index, L becomes unavailable and F1 restarts.
+4. F1 forgets N. F1 and F2 can elect a leader without the acknowledged write.
+
+L's disk need not lose N: its absence from the newly elected majority already
+violates Raft's guarantee.
+
+This was a material omission from the first review and is distinct from the
+explicit-flush off-by-one error in finding 9. The existing
+`src\DotNext.Tests\Net\Cluster\Consensus\Raft\StateMachine\WriteAheadLogTests.cs:293-316`
+expects five appended, three committed entries to reopen as three. Tail
+dropping is intentional WAL behavior, but using that behavior to acknowledge
+persistent Raft replication is unsafe. Configurable checkpoint scheduling does
+not remove the requirement to preserve acknowledged replication.
+
+**Fix:** Persist entries before positive replication acknowledgment, and recover
+a durable appended boundary independently of the committed boundary. Group
+commit can amortize persistence costs. CRC-based tail scanning is one possible
+design, not a requirement; a correctly ordered durable-tail manifest is another.
+Recovery must account for overwritten/truncated tails and must not treat all
+recovered entries as committed. Adding fsync alone or documenting a weaker
+guarantee does not restore Raft's acknowledged-write safety.
+
+### 16. P1: Heartbeat worker failure leaves leadership active
+
+**Second-review claim:** O1
+
+**Location:** `LeaderState.cs:58-106,256-259,274-286`
+
+An unexpected exception faults `DoHeartbeats` without transitioning out of
+leader state or cancelling its leadership token. The task is subsequently
+observed with exception suppression during disposal. An in-memory probe of the
+compiled heartbeat method, with an injected dependency exception, reproduced
+a faulted task and an uncancelled leadership token.
+
+Unlike the second review's suggested election-timeout bound, there is no
+self-timeout once this worker has stopped. Without an external state transition
+or shutdown, the stale leadership state can persist indefinitely. This is a
+distinct supervision defect, not merely another instance of a WAL failure.
+
+**Fix:** Supervise the heartbeat worker, log unexpected failures, and fail closed
+by invalidating leadership and scheduling an appropriate state transition. Use
+the existing queued-transition pattern so disposal does not await the worker
+from inside itself.
+
+### 17. P2: Metadata framing corrupts the next pooled-connection response
+
+**Second-review claim:** O7
+
+**Location:**
+`NetworkTransport\ConnectionOriented\ProtocolStreamExtensions.cs:115-116`;
+`NetworkTransport\ConnectionOriented\Client.cs:91-96`
+
+Dictionary decoding can finish before consuming the framed message's empty
+terminator. The parse succeeds, so ordinary exception cleanup does not close
+the connection. Resetting protocol state then treats the leftover bytes as
+part of the next response.
+
+A listener-free probe using the compiled production writer and parsers
+reproduced this with a valid metadata dictionary `{ "k": "x" repeated 500 times }`
+and a transmission block setting of 300, which allocated a 512-byte buffer.
+Decoding consumed 512 of 516 bytes, leaving `00 00 00 80`. After resetting
+protocol state, a legitimate vote response `{ Term = 1, Value = true }` was
+parsed as `{ Term = 6442450944, Value = false }`.
+
+No malicious peer or malformed payload is required. This is a confirmed
+transport correctness defect, not only the hypothetical connection-poisoning
+risk described in the second review.
+
+**Fix:** Consume the remainder of the framed metadata message, including its
+terminator, before returning; close the connection on framing failure. Do not
+drain a persistent socket to EOF. Cover the exact-boundary metadata-to-vote
+sequence with a regression test.
+
 ## Security assessment
 
 | # | Severity | File | Lines | Vulnerability | Confidence |
 |---|----------|------|-------|---------------|------------|
-| - | - | - | - | No high-confidence implementation vulnerability substantiated under the reviewed trust assumptions | - |
+| - | - | - | - | No bypass of correctly configured host security controls established | - |
 
 The security pass examined the existing HTTP, TCP, and custom-transport entry
 points; protocol framing and parsing; membership and configuration handling;
 and selected persistence paths. It was not limited to an empty branch diff.
 
 The assessment assumes **trusted, non-Byzantine peers and restricted transport
-access**. Member IDs are not authentication, and server-authenticated TLS alone
-does not authenticate callers. Deployment authentication, middleware ordering,
-and network isolation were not established.
+access**. mTLS, ASP.NET Core authentication/authorization, authenticating
+proxies, and network isolation are host integration responsibilities. The
+absence of an embedded authentication protocol is not, by itself, a library
+vulnerability. Supplied TLS options use platform certificate validation;
+optional TLS or absent certificate pinning does not mean validation is disabled.
 
-Consequently, the security result is **not an assurance that exposing Raft RPC
+An untrusted caller reaching an unprotected Raft endpoint can invoke
+state-changing RPCs. Member IDs are self-asserted protocol fields, not
+credentials, and ordinary server-authenticated HTTPS does not authenticate
+callers. The second review's S1/S2 therefore describe deployment requirements;
+S3 is a downstream consequence of leaving application-message dispatch
+unprotected, not a separate core vulnerability.
+
+There is an important documentation/integration caveat: the published hosting
+recipe registers the terminal consensus handler before authentication and
+authorization middleware. Middleware registered later does not protect that
+handler. The host must enforce peer access at an earlier middleware boundary,
+through transport/proxy authentication, or through appropriate network
+isolation. Deployment protections were not verified in this review.
+
+Do not substitute uniform unknown-member rejection for authentication.
+Authorized joining nodes need catch-up access before membership is committed;
+credential authorization and voting membership are distinct.
+
+Consequently, this assessment is **not an assurance that exposing Raft RPC
 endpoints to untrusted clients is safe**. The failed-snapshot publication issue
-is reported as a durability defect; no independent security-boundary bypass
-was established.
+remains a durability defect, and finding 17 remains a transport correctness
+defect; neither is counted again as an independent security vulnerability.
+
+## Correlation with the second review
+
+The C/S/O identifiers below belong to the second review, not to the numbered
+findings above. Only C1, O1, and O7 add findings to the primary list. Bounds,
+documentation, and deployment recommendations are retained separately from
+confirmed core defects; overlapping consequences are not counted twice.
+
+| Claim | Disposition | Assessment |
+|---|---|---|
+| C1: durable replication acknowledgments | Confirmed new finding 15 | Restart forgets the acknowledged uncommitted tail even when its pages were persisted. This was a material omission from the first review. |
+| C2: election log freshness | Confirmed duplicate of finding 2 | Compare terms first, then indices when terms match. |
+| C3: resurrecting a removed member | Conditional; stated interleaving blocked | Finding 6 leaves `membershipLock` held after failure detection, so the subsequent same-leader membership operation cannot acquire it. Loading configuration before the barrier remains suspect for inherited uncommitted configurations or after repairing that lock leak; the alternate scenario was not reproduced. |
+| C4: snapshot-aware comparison | Not an independent finding | The second review itself folds this into C2 and states that snapshot-term lookup works. |
+| C5: snapshot/configuration length validation | Validation omission; proposed fix too strict | Require a nonnegative configuration length and compare it against total length only when known. Unknown `Content-Length` is valid streaming behavior. Do not duplicate finding 7. |
+| C6: unbounded append count | Conditional availability risk; explanation incomplete | One stalled entry is enough to block a read; a huge count is unnecessary. Completed truncation differs from an open stalled request. Bounds alone do not resolve missing effective cancellation/deadlines; preserve streaming and use overflow-safe length checks. |
+| C7: metadata dictionary allocation | Resource-budget concern; crash claim overstated | Peer counts drive allocation, but ordinary parse failures are caught and the connection cleared. Bound resource use without assuming an unexplained 1,024-entry limit is compatible. |
+| C8: singleton bootstrap term/no-op | No independent defect demonstrated | The startup path differs from election, but the absence of a new term/no-op alone does not prove a safety violation in a singleton. Finding 5 covers the separate lease issue. |
+| S1: unauthenticated RPCs | Host security contract | Unprotected mutation is real, but no bypass of correctly enforced host protections was established. Document the middleware-ordering and bootstrap requirements above. |
+| S2: plaintext/TLS defaults | Host transport-security choice | TLS is optional and supplied options use platform certificate validation. Absence of built-in mTLS or pinning is not disabled certificate validation. |
+| S3: custom-message dispatch | Downstream consequence of S1 | Host/handler authorization must protect dispatch; do not count it as an independent authentication defect. |
+| S4: leader open redirect | Rejected as stated | The implementation replaces host and port with the leader destination. Probes retained that destination despite attacker-controlled input. Forwarded-scheme trust is a separate deployment concern. |
+| S5: torn term/vote/checkpoint records | Unproven; platform-dependent durability assumption | Missing CRC/double buffering alone does not demonstrate tearing or double voting. The records are 37 and 12 bytes, written with `WriteThrough`; filesystem/device guarantees and an explicit crash model are needed. No universal atomicity guarantee is asserted. |
+| S6: replay protection | Bounded deduplication, not an established security promise | The cache is expiring, evictable, and process-local. Qualify the internal "exactly-once" wording; no cryptographic replay-protection contract was established. |
+| O1: heartbeat exceptions | Confirmed new finding 16 | The task faults without invalidating leadership. The second review's election-timeout duration bound is unsupported. |
+| O2: failure-induced standby | Behavior confirmed; remedy overstated | Manual recovery is available and transition failure already logs at Critical. Automatically retrying after an unknown failure is not necessarily safe. |
+| O3: dangerous defaults | Conditional configuration risks | Cold start acts on empty stored configuration; independently bootstrapped singletons do not prove split brain within one correctly configured membership. Leases are opt-in, elapsed heartbeat time is deducted, and an arbitrary drift factor is not a measured safety bound. A slow follower alone need not block majority replication. |
+| O4: deterministic core tests | Coverage gap confirmed | Election, lifecycle, and failure scenarios lack direct deterministic coverage. Existing component and integration tests must not be overlooked. |
+| O5: missing observability | Partial hardening | Dedicated rejection metrics would help, but malformed messages can already reach exception logging. |
+| O6: configuration/header validation | Mixed hardening; silent-degradation claim overstated | An underlying cache probe rejected several invalid settings, subject to the version caveat below. Explicit expiration validation and rejection of ambiguous singleton headers remain reasonable improvements; no authorization parser-differential exploit was established. |
+| O7: pooled connection state | Confirmed new finding 17 | A valid exact-boundary metadata response leaves its terminator unread and corrupts the next vote response. |
+
+### Positive assertions that do not hold generally
+
+- The assertion that the median commit calculation satisfies Raft is contradicted
+  by finding 1: `[10, 10, 6]` can commit 10 with only two of five replicas.
+- Describing the strong read barrier as ReadIndex needs qualification: the
+  follower path returns a cached leader index without fresh quorum confirmation,
+  as described in finding 4.
+- Describing snapshot temp-file/fsync/rename as safe overlooks the incoming
+  failure path in finding 7. Outgoing snapshot creation has different rollback
+  handling; the two paths must not be conflated.
 
 ## Scope and limitations
 
@@ -233,7 +405,17 @@ read barriers and leases, membership changes, WAL persistence and recovery,
 snapshot handling, and targeted transport security paths. It is not a formal
 proof of Raft correctness or an exhaustive audit of every dependency.
 
-The security assessment was static and did not include live exploit
-reproduction or deployment-policy verification. Findings with conditional
-triggers identify those conditions above; no claim is made that every issue
-occurs under every configuration.
+Validation included existing targeted tests, in-memory probes of compiled
+production methods, and real WAL restart probes. These do not constitute a
+complete distributed fault-injection campaign. The security assessment did
+not include live exploit reproduction against a network listener or
+deployment-policy verification.
+
+The cache-configuration probe used `System.Runtime.Caching` 10.0.0.5, while the
+built test output contains 10.0.0.11. Its results challenge the blanket claim of
+silent degradation but are not exact-version validation of every setting.
+No storage-sector query requiring elevated access or physical power-loss
+experiment was performed.
+
+Findings with conditional triggers identify those conditions above; no claim
+is made that every issue occurs under every configuration.

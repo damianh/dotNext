@@ -9,6 +9,7 @@ namespace DotNext.Net.Cluster.Discovery.HyParView.Http;
 
 using HttpPeerClient = Net.Http.HttpPeerClient;
 
+[Collection(TestCollections.Raft)]
 public sealed class HttpPeerControllerTests : Test
 {
     private static IHost CreateHost<TStartup>(int port, IDictionary<string, string> configuration, IPeerLifetime lifetime = null)

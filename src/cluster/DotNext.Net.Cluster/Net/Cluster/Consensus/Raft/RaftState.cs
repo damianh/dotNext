@@ -20,6 +20,8 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
 
     private protected ILogger Logger => stateMachine.Logger;
 
+    private protected TimeProvider TimeProvider => stateMachine.TimeProvider;
+
     private protected IReadOnlyCollection<TMember> Members => stateMachine.Members;
 
     private protected void UpdateLeaderStickiness(Timestamp refreshedAt) => stateMachine.UpdateLeaderStickiness(refreshedAt);

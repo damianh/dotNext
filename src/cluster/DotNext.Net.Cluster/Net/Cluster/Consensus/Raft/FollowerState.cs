@@ -28,7 +28,7 @@ internal sealed class FollowerState<TMember> : RefreshableState<TMember>
     private async Task Track(TimeSpan timeout)
     {
         // spin loop to wait for the timeout
-        while (await refreshEvent.WaitAsync(timeout, stateToken).ConfigureAwait(false))
+        while (await RaftTimer.WaitAsync(refreshEvent, timeout, TimeProvider, stateToken).ConfigureAwait(false))
         {
             // Transition can be suppressed. If so, resume the loop and reset the timer.
             // If the event is in signaled state then the returned task is completed synchronously.

@@ -10,7 +10,9 @@ internal partial class LeaderState<TMember>
     {
         internal new readonly CancellationToken Token; // cached to avoid ObjectDisposedException
 
-        internal Lease() => Token = base.Token;
+        internal Lease(TimeProvider timeProvider)
+            : base(Timeout.InfiniteTimeSpan, timeProvider)
+            => Token = base.Token;
 
         internal bool TryRenew(TimeSpan leaseTime)
         {
@@ -44,7 +46,7 @@ internal partial class LeaderState<TMember>
     {
         if (lease is { } currentLease && currentLease.TryRenew(elapsed = maxLease - elapsed) is false)
         {
-            var newLease = new Lease();
+            var newLease = new Lease(TimeProvider);
             if (ReferenceEquals(Interlocked.CompareExchange(ref lease, newLease, currentLease), currentLease))
             {
                 newLease.CancelAfter(elapsed);
@@ -58,7 +60,7 @@ internal partial class LeaderState<TMember>
     
     private double RenewLease(Timestamp startTime)
     {
-        var elapsedMillis = startTime.GetElapsedMilliseconds(TimeProvider.System, out startTime);
+        var elapsedMillis = startTime.GetElapsedMilliseconds(TimeProvider, out startTime);
         RenewLease(TimeSpan.FromMilliseconds(elapsedMillis));
         UpdateLeaderStickiness(startTime);
         return elapsedMillis;

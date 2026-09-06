@@ -103,6 +103,7 @@ internal sealed partial class RaftHttpCluster : RaftCluster<RaftClusterMember>, 
             provider.GetRequiredService<ILoggerFactory>().CreateLogger<RaftHttpCluster>())
         {
             AuditTrail = auditTrail,
+            TimeProvider = provider.GetService<TimeProvider>() ?? TimeProvider.System,
             Announcer = provider.GetService<ClusterMemberAnnouncer<UriEndPoint>>(),
             HttpHandler = provider.GetService<IHttpMessageHandlerFactory>(),
             MessageHandlers = provider.GetServices<IInputChannel>(),

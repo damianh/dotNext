@@ -18,7 +18,11 @@ internal partial class LeaderState<TMember>
     private ValueTask<bool> WaitForReplicationAsync(Timestamp startTime, TimeSpan period, CancellationToken token)
     {
         // subtract heartbeat processing duration from heartbeat period for better stability
-        return replicationEvent.WaitAsync(TimeSpan.Max(period - startTime.Elapsed, TimeSpan.Zero), token);
+        return RaftTimer.WaitAsync(
+            replicationEvent,
+            TimeSpan.Max(period - startTime.GetElapsedTime(TimeProvider), TimeSpan.Zero),
+            TimeProvider,
+            token);
     }
 
     internal ValueTask ForceReplicationAsync(CancellationToken token)

@@ -6,14 +6,16 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
 {
     internal readonly ManualTimeProvider TimeProvider = new();
     internal readonly InProcessNetwork Network = new();
-    internal readonly ConsensusOnlyState[] States;
+    internal readonly IPersistentState[] States;
     internal readonly InProcessCluster[] Nodes;
 
-    internal InProcessClusterFixture(int memberCount)
+    internal InProcessClusterFixture(int memberCount, Func<int, IPersistentState> stateFactory = null)
     {
         EndPoint[] membership = Enumerable.Range(0, memberCount)
             .Select(i => new DnsEndPoint($"node-{i}", 0)).ToArray();
-        States = Enumerable.Range(0, memberCount).Select(_ => new ConsensusOnlyState()).ToArray();
+        States = Enumerable.Range(0, memberCount)
+            .Select(i => stateFactory?.Invoke(i) ?? new ConsensusOnlyState())
+            .ToArray();
         Nodes = States.Select((state, i) => new InProcessCluster(
             Network, ((DnsEndPoint)membership[i]).Host, membership, state,
             TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false)).ToArray();
@@ -80,7 +82,17 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
         finally
         {
             foreach (var state in States)
-                state.Dispose();
+            {
+                switch (state)
+                {
+                    case IAsyncDisposable asyncDisposable:
+                        await asyncDisposable.DisposeAsync();
+                        break;
+                    case IDisposable disposable:
+                        disposable.Dispose();
+                        break;
+                }
+            }
         }
     }
 }

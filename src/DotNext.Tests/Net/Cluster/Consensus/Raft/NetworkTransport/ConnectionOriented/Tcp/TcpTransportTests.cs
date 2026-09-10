@@ -142,6 +142,28 @@ public sealed class TcpTransportTests : TransportTestSuite
         return MetadataRequestResponseTest(CreateServer, CreateClient, smallAmountOfMetadata);
     }
 
+    [Fact]
+    public Task MetadataRequestFollowedByVote()
+    {
+        static TcpServer CreateServer(ILocalMember member, EndPoint address, TimeSpan timeout) => new(address, 100, member, NullLoggerFactory.Instance)
+        {
+            MemoryAllocator = MemoryAllocator<byte>.Default,
+            ReceiveTimeout = timeout,
+            TransmissionBlockSize = 300,
+            GracefulShutdownTimeout = 2000
+        };
+
+        static TcpClient CreateClient(EndPoint address, ILocalMember member, TimeSpan timeout) => new(member, address)
+        {
+            MemoryAllocator = MemoryAllocator<byte>.Default,
+            RequestTimeout = timeout,
+            ConnectTimeout = timeout,
+            TransmissionBlockSize = 300,
+        };
+
+        return MetadataRequestFollowedByVoteTest(CreateServer, CreateClient, valueLength: 500);
+    }
+
     [Theory]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveAll, false)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveFirst, false)]

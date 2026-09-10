@@ -39,6 +39,7 @@ public abstract class TransportTestSuite : RaftTest
         internal byte[] ReceivedConfiguration = [];
         internal long ReceivedConfigurationVersion = -1L;
         internal TimeSpan VoteDelay;
+        internal long VoteTerm = 43L;
         private readonly ClusterMemberId localId = Random.Shared.Next<ClusterMemberId>();
 
         internal LocalMember(bool smallAmountOfMetadata = false)
@@ -54,6 +55,9 @@ public abstract class TransportTestSuite : RaftTest
             }
             Metadata = metadata.ToImmutableDictionary();
         }
+
+        internal LocalMember(IReadOnlyDictionary<string, string> metadata)
+            => Metadata = metadata;
 
         ref readonly ClusterMemberId ILocalMember.Id => ref localId;
 
@@ -144,7 +148,7 @@ public abstract class TransportTestSuite : RaftTest
             if (VoteDelay > TimeSpan.Zero)
                 await Task.Delay(VoteDelay, token);
 
-            return new() { Term = 43L, Value = true };
+            return new() { Term = VoteTerm, Value = true };
         }
 
         ValueTask<Result<PreVoteResult>> ILocalMember.PreVoteAsync(ClusterMemberId sender, long term, long lastLogIndex, long lastLogTerm, int stateVersion, CancellationToken token)
@@ -261,6 +265,23 @@ public abstract class TransportTestSuite : RaftTest
         //prepare client
         using var client = clientFactory(serverAddr, member, timeout);
         Equal(member.Metadata, await client.As<IRaftClusterMember>().GetMetadataAsync(refresh: true, TestToken));
+    }
+
+    private protected async Task MetadataRequestFollowedByVoteTest(ServerFactory serverFactory, ClientFactory clientFactory, int valueLength)
+    {
+        var timeout = DefaultTimeout;
+        var metadata = ImmutableDictionary<string, string>.Empty.Add("k", new('x', valueLength));
+        var member = new LocalMember(metadata) { VoteTerm = 1L };
+        var serverAddr = new IPEndPoint(IPAddress.Loopback, 3789);
+        await using var server = serverFactory(member, serverAddr, timeout);
+        await server.StartAsync(TestToken);
+
+        using var client = clientFactory(serverAddr, member, timeout);
+        Equal(metadata, await client.As<IRaftClusterMember>().GetMetadataAsync(refresh: true, TestToken));
+
+        var result = await client.As<IRaftClusterMember>().VoteAsync(42L, 1L, 56L, TestToken);
+        Equal(1L, result.Term);
+        True(result.Value);
     }
 
     private static void Equal(in BufferedEntry x, in BufferedEntry y)

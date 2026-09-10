@@ -179,7 +179,16 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
 
         if (ReferenceEquals(Interlocked.CompareExchange(ref snapshottingProcess, null, task), task))
         {
-            writer.Commit();
+            try
+            {
+                writer.Commit();
+            }
+            catch
+            {
+                writer.Rollback();
+                throw;
+            }
+
             snapshot = new Snapshot(writer.Destination, writerFactory);
         }
     }

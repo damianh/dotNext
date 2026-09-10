@@ -29,6 +29,8 @@ partial class SimpleStateMachine
     internal class SnapshotWriter : FileWriter
     {
         private readonly string sourceFileName;
+        private string? backupFileName;
+        private bool published;
         internal readonly FileInfo Destination;
 
         protected SnapshotWriter(long preallocationSize, FileInfo destination)
@@ -52,15 +54,46 @@ partial class SimpleStateMachine
         }
 
         protected virtual void Commit(string sourceFileName, string destinationFileName)
-            => File.Move(sourceFileName, destinationFileName, overwrite: true);
+        {
+            if (File.Exists(destinationFileName))
+            {
+                backupFileName = Path.Combine(
+                    Path.GetDirectoryName(destinationFileName)!,
+                    string.Concat(Path.GetRandomFileName(), ".tmp"));
+                File.Replace(sourceFileName, destinationFileName, backupFileName);
+            }
+            else
+            {
+                File.Move(sourceFileName, destinationFileName);
+            }
+
+            published = true;
+        }
 
         public void Commit()
         {
             Commit(sourceFileName, Destination.FullName);
             Destination.Refresh();
+            if (backupFileName is not null)
+                File.Delete(backupFileName);
+
+            backupFileName = null;
         }
 
-        public void Rollback() => File.Delete(sourceFileName);
+        public void Rollback()
+        {
+            if (published)
+            {
+                if (backupFileName is not null)
+                    File.Move(backupFileName, Destination.FullName, overwrite: true);
+                else
+                    File.Delete(Destination.FullName);
+            }
+            else
+            {
+                File.Delete(sourceFileName);
+            }
+        }
 
         internal virtual ValueTask CompleteWriteAsync(CancellationToken token)
             => WriteAsync(token);
@@ -129,10 +162,22 @@ partial class SimpleStateMachine
                 await writer.CompleteWriteAsync(token).ConfigureAwait(false);
                 writer.CompleteFlush();
             }
-            finally
+            catch
             {
                 writer.Dispose();
+                writer.Rollback();
+                throw;
+            }
+
+            writer.Dispose();
+            try
+            {
                 writer.Commit();
+            }
+            catch
+            {
+                writer.Rollback();
+                throw;
             }
         }
         

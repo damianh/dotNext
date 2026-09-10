@@ -60,45 +60,65 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
     {
         IReadOnlyCollection<TMember> membersCopy = [];
 
-        for (var forced = false;;)
+        try
         {
-            // populates running replications on first iteration
-            membersCopy = await HandleMembershipChangesAsync(membersCopy, Members).ConfigureAwait(false);
-            
-            // do not resume suspended callers that came after the barrier, resume them in the next iteration
-            replicationQueue.SwitchValve();
-            var startTime = new Timestamp(TimeProvider);
-            
-            // in case of forced (initiated programmatically, not by timeout) replication
-            // do not change GC latency. Otherwise, in case of high load GC is not able to collect garbage
-            using (forced ? default : GCLatencyMode.SustainedLowLatency.Enable())
+            for (var forced = false;;)
             {
-                // process responses
-                var (quorum, hasConsensus) = await ReplicateAsync(out var barrier).ConfigureAwait(false);
-                if (GetCommitIndex(barrier, quorum, hasConsensus) is not { } commitIndex)
-                    break;
+                // populates running replications on first iteration
+                membersCopy = await HandleMembershipChangesAsync(membersCopy, Members).ConfigureAwait(false);
 
-                Debug.Assert(hasConsensus);
-                LeaderState.BroadcastTimeMeter.Record(RenewLease(startTime), in MeasurementTags);
-                if (commitIndex > AuditTrail.LastCommittedEntryIndex)
+                // do not resume suspended callers that came after the barrier, resume them in the next iteration
+                replicationQueue.SwitchValve();
+                var startTime = new Timestamp(TimeProvider);
+
+                // in case of forced (initiated programmatically, not by timeout) replication
+                // do not change GC latency. Otherwise, in case of high load GC is not able to collect garbage
+                using (forced ? default : GCLatencyMode.SustainedLowLatency.Enable())
                 {
-                    // majority of nodes accept entries with at least one entry from the current term
-                    var count = await AuditTrail
-                        .CommitAsync(commitIndex, Token)
-                        .ConfigureAwait(false); // commit all entries starting from the first uncommitted index to the end
-                    Logger.CommitSuccessful(commitIndex, count);
-                }
-                else
-                {
-                    Logger.CommitFailed(quorum, commitIndex);
+                    // process responses
+                    var (quorum, hasConsensus) = await ReplicateAsync(out var barrier).ConfigureAwait(false);
+                    if (GetCommitIndex(barrier, quorum, hasConsensus) is not { } commitIndex)
+                        break;
+
+                    Debug.Assert(hasConsensus);
+                    LeaderState.BroadcastTimeMeter.Record(RenewLease(startTime), in MeasurementTags);
+                    if (commitIndex > AuditTrail.LastCommittedEntryIndex)
+                    {
+                        // majority of nodes accept entries with at least one entry from the current term
+                        var count = await AuditTrail
+                            .CommitAsync(commitIndex, Token)
+                            .ConfigureAwait(false); // commit all entries starting from the first uncommitted index to the end
+                        Logger.CommitSuccessful(commitIndex, count);
+                    }
+                    else
+                    {
+                        Logger.CommitFailed(quorum, commitIndex);
+                    }
+
+                    barrier.Reuse();
                 }
 
-                barrier.Reuse();
+                // resume all suspended callers added to the queue concurrently before SwitchValve()
+                replicationQueue.Drain();
+                forced = await WaitForReplicationAsync(startTime, period, Token).ConfigureAwait(false);
             }
-
-            // resume all suspended callers added to the queue concurrently before SwitchValve()
-            replicationQueue.Drain();
-            forced = await WaitForReplicationAsync(startTime, period, Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (Token.IsCancellationRequested)
+        {
+            // normal leader-state disposal
+        }
+        catch (Exception e)
+        {
+            Logger.LeaderStateExitedWithError(e);
+            try
+            {
+                Cancel();
+            }
+            finally
+            {
+                // Transition asynchronously so disposing this state doesn't await the heartbeat task from itself.
+                MoveToFollowerState(randomizeTimeout: true);
+            }
         }
     }
 

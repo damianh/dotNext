@@ -16,7 +16,8 @@ public static class PersistentStateExtensions
     internal static async ValueTask<bool> IsUpToDateAsync(this IAuditTrail<IRaftLogEntry> auditTrail, long index, long term, CancellationToken token)
     {
         var localIndex = auditTrail.LastEntryIndex;
-        return index >= localIndex && term >= await auditTrail.GetTermAsync(localIndex, token).ConfigureAwait(false);
+        var localTerm = await auditTrail.GetTermAsync(localIndex, token).ConfigureAwait(false);
+        return term > localTerm || (term == localTerm && index >= localIndex);
     }
 
     internal static async ValueTask<bool> ContainsAsync(this IAuditTrail<IRaftLogEntry> auditTrail, long index, long term, CancellationToken token)

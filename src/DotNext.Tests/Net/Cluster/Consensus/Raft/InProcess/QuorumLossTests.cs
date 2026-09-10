@@ -18,7 +18,7 @@ public sealed class QuorumLossTests : RaftTest
     private static async Task LoseQuorumAsync(InProcessClusterFixture cluster)
     {
         var memberCount = cluster.Nodes.Length;
-        await StartLeaderAsync(cluster);
+        await cluster.StartLeaderAsync();
 
         var leadership = cluster.Leader.LeadershipToken;
         var replication = cluster.Leader.ForceReplicationAsync(TestToken).AsTask();
@@ -41,7 +41,7 @@ public sealed class QuorumLossTests : RaftTest
     public static async Task CancelingCallerDoesNotStrandReplication(int memberCount, bool loseQuorum)
     {
         await using var cluster = new InProcessClusterFixture(memberCount);
-        await StartLeaderAsync(cluster);
+        await cluster.StartLeaderAsync();
         var leadership = cluster.Leader.LeadershipToken;
         var replication = cluster.Leader.ForceReplicationAsync(TestToken).AsTask();
         var messages = await cluster.PendingRoundAsync();
@@ -76,7 +76,7 @@ public sealed class QuorumLossTests : RaftTest
     public static async Task ShutdownDrainsHeldReplication(int memberCount, bool dispose)
     {
         await using var cluster = new InProcessClusterFixture(memberCount);
-        await StartLeaderAsync(cluster);
+        await cluster.StartLeaderAsync();
         var leadership = cluster.Leader.LeadershipToken;
         var replication = cluster.Leader.ForceReplicationAsync(TestToken).AsTask();
         var messages = await cluster.PendingRoundAsync();
@@ -88,30 +88,6 @@ public sealed class QuorumLossTests : RaftTest
         foreach (var message in messages)
             await ThrowsAsync<MemberUnavailableException>(message.Completion);
         Empty(cluster.Network.PendingMessages);
-    }
-
-    private static async Task StartLeaderAsync(InProcessClusterFixture cluster)
-    {
-        await cluster.StartAsync();
-        cluster.HoldFollowers();
-        await cluster.ElectAsync();
-
-        // Observe the automatic round before forcing its retry, and account for
-        // every worker's setup RPC before starting the round under test.
-        var initial = await cluster.PendingRoundAsync();
-        var retry = cluster.Leader.ForceReplicationAsync(TestToken).AsTask();
-        foreach (var message in initial)
-        {
-            await cluster.Network.DeliverAsync(message);
-            var response = await IsType<Task<Result<ReplicationStatus>>>(message.Completion);
-            Equal(HeartbeatResult.Rejected, response.Value.Result);
-        }
-
-        foreach (var message in await cluster.PendingRoundAsync())
-            await cluster.Network.DeliverAsync(message);
-        await retry;
-        await cluster.Leader.WaitForLeadershipAsync(TestToken);
-        Equal(1L, cluster.States[0].LastCommittedEntryIndex);
     }
 
     private static async Task CompleteHalfUnavailableRoundAsync(InProcessClusterFixture cluster, PendingMessage[] messages)

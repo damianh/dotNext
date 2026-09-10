@@ -13,7 +13,7 @@ public sealed class HeartbeatFailureTests : RaftTest
         await using var cluster = new InProcessClusterFixture(
             3,
             index => index is 0 ? storage : new ConsensusOnlyState());
-        await StartLeaderAsync(cluster);
+        await cluster.StartLeaderAsync();
 
         var leadership = cluster.Leader.LeadershipToken;
         var failureObserved = storage.FailNextCommit(new IOException("Injected commit failure."));
@@ -35,7 +35,7 @@ public sealed class HeartbeatFailureTests : RaftTest
     public static async Task TimerFailureInvalidatesLeadership()
     {
         await using var cluster = new InProcessClusterFixture(3);
-        await StartLeaderAsync(cluster);
+        await cluster.StartLeaderAsync();
 
         var leadership = cluster.Leader.LeadershipToken;
         var failureObserved = cluster.TimeProvider.FailNextTimer(
@@ -62,7 +62,7 @@ public sealed class HeartbeatFailureTests : RaftTest
             index => index is 0 ? storage : new ConsensusOnlyState());
         try
         {
-            await StartLeaderAsync(cluster);
+            await cluster.StartLeaderAsync();
 
             var leadership = cluster.Leader.LeadershipToken;
             var failureObserved = storage.FailNextCommit(new IOException("Injected commit failure."));
@@ -84,28 +84,6 @@ public sealed class HeartbeatFailureTests : RaftTest
         {
             await cluster.DisposeAsync();
         }
-    }
-
-    private static async Task StartLeaderAsync(InProcessClusterFixture cluster)
-    {
-        await cluster.StartAsync();
-        cluster.HoldFollowers();
-        await cluster.ElectAsync();
-
-        var initial = await cluster.PendingRoundAsync();
-        var retry = cluster.Leader.ForceReplicationAsync(TestToken).AsTask();
-        foreach (var message in initial)
-        {
-            await cluster.Network.DeliverAsync(message);
-            var response = await IsType<Task<Result<ReplicationStatus>>>(message.Completion);
-            Equal(HeartbeatResult.Rejected, response.Value.Result);
-        }
-
-        foreach (var message in await cluster.PendingRoundAsync())
-            await cluster.Network.DeliverAsync(message);
-        await retry;
-        await cluster.Leader.WaitForLeadershipAsync(TestToken);
-        Equal(1L, cluster.States[0].LastCommittedEntryIndex);
     }
 
     private sealed class FaultingPersistentState : IPersistentState, IDisposable

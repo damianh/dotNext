@@ -46,6 +46,30 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
             Network.Hold(Leader.EndPoint, node.EndPoint);
     }
 
+    internal async Task StartLeaderAsync()
+    {
+        await StartAsync();
+        HoldFollowers();
+        await ElectAsync();
+
+        // Observe the automatic round before forcing its retry, and account for
+        // every worker's setup RPC before starting the round under test.
+        var initial = await PendingRoundAsync();
+        var retry = Leader.ForceReplicationAsync(TestToken).AsTask();
+        foreach (var message in initial)
+        {
+            await Network.DeliverAsync(message);
+            var response = await IsType<Task<Result<ReplicationStatus>>>(message.Completion);
+            Equal(HeartbeatResult.Rejected, response.Value.Result);
+        }
+
+        foreach (var message in await PendingRoundAsync())
+            await Network.DeliverAsync(message);
+        await retry;
+        await Leader.WaitForLeadershipAsync(TestToken);
+        Equal(1L, States[0].LastCommittedEntryIndex);
+    }
+
     internal Task<PendingMessage> PendingAsync(int member, RaftMessageType type)
         => Network.WaitForMessageAsync(Leader.EndPoint, Nodes[member].EndPoint, type, TestToken);
 

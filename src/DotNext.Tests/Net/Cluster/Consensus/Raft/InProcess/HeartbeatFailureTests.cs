@@ -28,7 +28,7 @@ public sealed class HeartbeatFailureTests : RaftTest
         await leadership.WaitAsync().AsTask().WaitAsync(DefaultTimeout, TestToken);
         await ThrowsAsync<NotLeaderException>(replication.WaitAsync(DefaultTimeout, TestToken));
         await ThrowsAsync<NotLeaderException>(
-            cluster.Leader.ForceReplicationAsync(TestToken).AsTask);
+            cluster.Leader.ForceReplicationAsync(TestToken).AsTask());
     }
 
     [Fact]
@@ -48,7 +48,7 @@ public sealed class HeartbeatFailureTests : RaftTest
         await failureObserved.WaitAsync(DefaultTimeout, TestToken);
         await leadership.WaitAsync().AsTask().WaitAsync(DefaultTimeout, TestToken);
         await ThrowsAsync<NotLeaderException>(
-            cluster.Leader.ForceReplicationAsync(TestToken).AsTask);
+            cluster.Leader.ForceReplicationAsync(TestToken).AsTask());
     }
 
     [Theory]
@@ -60,6 +60,7 @@ public sealed class HeartbeatFailureTests : RaftTest
         var cluster = new InProcessClusterFixture(
             3,
             index => index is 0 ? storage : new ConsensusOnlyState());
+        var disposalStarted = false;
         try
         {
             await cluster.StartLeaderAsync();
@@ -73,16 +74,25 @@ public sealed class HeartbeatFailureTests : RaftTest
                 await cluster.Network.DeliverAsync(message);
             await failureObserved.WaitAsync(DefaultTimeout, TestToken);
 
-            var shutdown = dispose
-                ? cluster.DisposeAsync().AsTask()
-                : cluster.Leader.StopAsync(TestToken);
+            Task shutdown;
+            if (dispose)
+            {
+                disposalStarted = true;
+                shutdown = cluster.DisposeAsync().AsTask();
+            }
+            else
+            {
+                shutdown = cluster.Leader.StopAsync(TestToken);
+            }
+
             await shutdown.WaitAsync(DefaultTimeout, TestToken);
             await ThrowsAsync<NotLeaderException>(replication.WaitAsync(DefaultTimeout, TestToken));
             True(leadership.IsCancellationRequested);
         }
         finally
         {
-            await cluster.DisposeAsync();
+            if (!disposalStarted)
+                await cluster.DisposeAsync();
         }
     }
 

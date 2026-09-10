@@ -4,14 +4,40 @@ namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
 internal sealed class ManualTimeProvider : FakeTimeProvider
 {
+    private TimerFailure timerFailure;
+
+    internal Task FailNextTimer(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        var failure = new TimerFailure(exception);
+        if (Interlocked.CompareExchange(ref timerFailure, failure, null) is not null)
+            throw new InvalidOperationException("A timer failure is already pending.");
+
+        return failure.Observed.Task;
+    }
+
     public override ITimer CreateTimer(TimerCallback callback, object state, TimeSpan dueTime, TimeSpan period)
     {
         ArgumentNullException.ThrowIfNull(callback);
+
+        if (Interlocked.Exchange(ref timerFailure, null) is { } failure)
+        {
+            failure.Observed.TrySetResult();
+            throw failure.Exception;
+        }
+
         return new DrainingTimer(this, callback, state, dueTime, period);
     }
 
     private ITimer CreateTimerCore(TimerCallback callback, TimeSpan dueTime, TimeSpan period)
         => base.CreateTimer(callback, null, dueTime, period);
+
+    private sealed class TimerFailure(Exception exception)
+    {
+        internal readonly Exception Exception = exception;
+        internal readonly TaskCompletionSource Observed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 
     // FakeTimeProvider handles scheduling, but its timers do not await running
     // callbacks on disposal. Raft deadlines need that lifetime guarantee.

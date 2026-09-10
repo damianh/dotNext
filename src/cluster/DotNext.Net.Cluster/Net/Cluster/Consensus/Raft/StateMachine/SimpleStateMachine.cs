@@ -29,14 +29,21 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
     /// </summary>
     /// <param name="location"></param>
     protected SimpleStateMachine(DirectoryInfo location)
+        : this(location, CreateSnapshotWriterFactory())
     {
+    }
+
+    internal SimpleStateMachine(DirectoryInfo location, Func<long, FileInfo, SnapshotWriter> writerFactory)
+    {
+        ArgumentNullException.ThrowIfNull(writerFactory);
+
         if (!location.Exists)
             location.Create();
 
         this.location = location;
         lifetimeToken = (lifetimeSource = new()).Token;
         sentinel = Task.FromException<SnapshotWriter>(new ObjectDisposedException(GetType().Name));
-        writerFactory = CreateSnapshotWriterFactory();
+        this.writerFactory = writerFactory;
         
         // if there is a snapshot on disk, it must be loaded via RestoreAsync before use;
         // otherwise, there is nothing to restore

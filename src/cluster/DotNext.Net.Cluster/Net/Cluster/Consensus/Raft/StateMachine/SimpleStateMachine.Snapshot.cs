@@ -26,7 +26,7 @@ partial class SimpleStateMachine
         return SnapshotWriter.CreateDefault;
     }
 
-    private class SnapshotWriter : FileWriter
+    internal class SnapshotWriter : FileWriter
     {
         private readonly string sourceFileName;
         internal readonly FileInfo Destination;
@@ -61,6 +61,12 @@ partial class SimpleStateMachine
         }
 
         public void Rollback() => File.Delete(sourceFileName);
+
+        internal virtual ValueTask CompleteWriteAsync(CancellationToken token)
+            => WriteAsync(token);
+
+        internal virtual void CompleteFlush()
+            => FlushToDisk();
 
         protected override void Dispose(bool disposing)
         {
@@ -120,8 +126,8 @@ partial class SimpleStateMachine
             try
             {
                 await entry.WriteToAsync(writer, token).ConfigureAwait(false);
-                await writer.WriteAsync(token).ConfigureAwait(false);
-                writer.FlushToDisk();
+                await writer.CompleteWriteAsync(token).ConfigureAwait(false);
+                writer.CompleteFlush();
             }
             finally
             {

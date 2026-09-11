@@ -24,8 +24,8 @@ public sealed class CustomTransportTests : TransportTestSuite
         => MetadataRequestResponseTest(CreateServer, CreateClient, smallAmountOfMetadata);
 
     [Theory]
-    [InlineData(499)]
-    [InlineData(500)]
+    [InlineData(4083)]
+    [InlineData(4084)]
     public Task MetadataRequestFollowedByVote(int valueLength)
         => MetadataRequestFollowedByVoteTest(CreateServer, CreateClient, valueLength);
 

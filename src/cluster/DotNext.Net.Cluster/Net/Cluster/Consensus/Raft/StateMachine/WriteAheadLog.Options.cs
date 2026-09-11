@@ -116,23 +116,25 @@ partial class WriteAheadLog
         /// Gets or sets the maximum size of the single chunk file, in bytes.
         /// </summary>
         /// <remarks>
-        /// The property cannot be changed for existing WAL.
+        /// The value is rounded up to the minimum page size. The rounded value must be a power of two.
+        /// The property cannot be changed for an existing WAL. Existing data page files must match the configured
+        /// chunk size; otherwise, opening the WAL fails without remapping or repairing the store.
         /// </remarks>
-        /// <exception cref="ArgumentOutOfRangeException"><paramref name="value"/> is less than or equal to zero.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="value"/> is less than or equal to zero, or its page-aligned value is not a power of two.
+        /// </exception>
         public int ChunkSize
         {
             get;
             init
             {
-                field = value > 0
-                    ? RoundUpToPageSize(value)
-                    : throw new ArgumentOutOfRangeException(nameof(value));
+                if (value <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value));
 
-                static int RoundUpToPageSize(int value)
-                {
-                    var result = ((uint)value).RoundUp((uint)Page.MinSize);
-                    return checked((int)result);
-                }
+                var result = checked((int)((uint)value).RoundUp((uint)Page.MinSize));
+                field = int.IsPow2(result)
+                    ? result
+                    : throw new ArgumentOutOfRangeException(nameof(value));
             }
         } = Environment.SystemPageSize;
 

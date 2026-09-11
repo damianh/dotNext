@@ -43,6 +43,9 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     /// </remarks>
     /// <param name="configuration">The configuration of the write-ahead log.</param>
     /// <param name="stateMachine">The state machine.</param>
+    /// <exception cref="InvalidDataException">
+    /// An existing data page file does not match the configured chunk size.
+    /// </exception>
     public WriteAheadLog(Options configuration, IStateMachine stateMachine)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -55,6 +58,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         cancellationTokens = new();
         var rootPath = new DirectoryInfo(configuration.Location);
         rootPath.CreateIfNeeded();
+        var dataLocation = rootPath.GetSubdirectory(PagedBufferWriter.LocationPrefix);
+        PageManager.ValidatePageSize(dataLocation, configuration.ChunkSize);
 
         context = new(DictionaryConcurrencyLevel, configuration.ConcurrencyLevel);
         lockManager = new()
@@ -92,7 +97,6 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             var metadataLocation = rootPath.GetSubdirectory(MetadataPageManager.LocationPrefix);
             metadataLocation.CreateIfNeeded();
 
-            var dataLocation = rootPath.GetSubdirectory(PagedBufferWriter.LocationPrefix);
             dataLocation.CreateIfNeeded();
 
             PageManager m, d;

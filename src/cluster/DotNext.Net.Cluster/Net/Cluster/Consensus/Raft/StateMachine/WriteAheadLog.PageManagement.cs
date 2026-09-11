@@ -53,6 +53,21 @@ partial class WriteAheadLog
                 .Select(static pageIndex => pageIndex.GetValueOrDefault())
                 .ToArray();
         }
+
+        public static void ValidatePageSize(DirectoryInfo location, int pageSize)
+        {
+            if (!location.Exists)
+                return;
+
+            foreach (var file in location.EnumerateFiles())
+            {
+                if (uint.TryParse(file.Name, provider: null, out _) && file.Length != pageSize)
+                {
+                    throw new InvalidDataException(
+                        $"Data page file '{file.FullName}' has length {file.Length}, but the configured chunk size is {pageSize}.");
+                }
+            }
+        }
         
         protected static int GetPages(DirectoryInfo location, out ReadOnlySpan<uint> pages)
         {

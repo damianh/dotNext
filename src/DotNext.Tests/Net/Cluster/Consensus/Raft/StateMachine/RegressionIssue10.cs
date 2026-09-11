@@ -21,6 +21,21 @@ public sealed class RegressionIssue10 : Test
         False(Directory.Exists(location));
     }
 
+    [Fact]
+    public static async Task RejectMismatchedExistingChunkSize()
+    {
+        var location = GetTempPath();
+        await using (var wal = new WriteAheadLog(
+            new() { Location = location, ChunkSize = FragmentSize * 2 },
+            IStateMachine.CreateNoOp()))
+        {
+        }
+
+        Throws<InvalidDataException>(() => new WriteAheadLog(
+            new() { Location = location, ChunkSize = FragmentSize },
+            IStateMachine.CreateNoOp()));
+    }
+
     public static TheoryData<int, bool, WriteAheadLog.IntegrityHashAlgorithm> SupportedConfigurations
     {
         get

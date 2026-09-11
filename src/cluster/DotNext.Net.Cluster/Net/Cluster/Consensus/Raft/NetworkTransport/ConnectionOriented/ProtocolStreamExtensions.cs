@@ -113,5 +113,9 @@ internal static class ProtocolStreamExtensions
     }
 
     internal static async ValueTask<IReadOnlyDictionary<string, string>> ReadDictionaryAsync(this ProtocolStream protocol, Memory<byte> buffer, CancellationToken token)
-        => (await MetadataTransferObject.ReadFromAsync(protocol, buffer, token).ConfigureAwait(false)).Metadata;
+    {
+        var result = await MetadataTransferObject.ReadFromAsync(protocol, buffer, token).ConfigureAwait(false);
+        await protocol.SkipAsync(token).ConfigureAwait(false);
+        return result.Metadata;
+    }
 }

@@ -80,9 +80,7 @@ partial class WriteAheadLog
         }
         catch (Exception e) when (T.IsBackground)
         {
-            var failure = Interlocked.CompareExchange(ref backgroundTaskFailure, e, null) ?? e;
-            flushCompleted?.Signal(resumeAll: true);
-            appliedEvent.Interrupt(new InternalException(failure));
+            OnBackgroundTaskFailure(e);
         }
         finally
         {

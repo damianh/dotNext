@@ -9,6 +9,13 @@ partial class WriteAheadLog
 {
     private volatile Exception? backgroundTaskFailure;
 
+    private void OnBackgroundTaskFailure(Exception e)
+    {
+        var failure = Interlocked.CompareExchange(ref backgroundTaskFailure, e, null) ?? e;
+        flushCompleted?.Signal(resumeAll: true);
+        appliedEvent.Interrupt(new InternalException(failure));
+    }
+
     private void ThrowOnInternalError()
     {
         if (backgroundTaskFailure is { } exception)

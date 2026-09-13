@@ -930,7 +930,6 @@ public sealed class WriteAheadLogFlushTests : Test
             {
                 SetSynchronizationContext(previous);
             }
-
         }
 
         internal void Resume()

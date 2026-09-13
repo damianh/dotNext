@@ -228,10 +228,10 @@ public abstract class QueuedSynchronizer<TContext> : QueuedSynchronizer
     protected ValueTask AcquirePriorityAsync(TContext context, CancellationToken token)
     {
         var builder = BeginAcquisition(token);
-        return AcquirePriorityAsync<ValueTask, CancellationTokenOnly>(context, ref builder);
+        return AcquireAsync<ValueTask, CancellationTokenOnly>(context, ref builder, prioritize: true);
     }
 
-    private T AcquireAsync<T, TBuilder>(TContext context, ref TBuilder builder)
+    private T AcquireAsync<T, TBuilder>(TContext context, ref TBuilder builder, bool prioritize = false)
         where T : struct, IEquatable<T>
         where TBuilder : struct, ITaskBuilder<T>, allows ref struct
     {
@@ -240,11 +240,11 @@ public abstract class QueuedSynchronizer<TContext> : QueuedSynchronizer
         {
             // nothing to do
         }
-        else if (!(acquired = TryAcquireCore(context)) && GetAcquisitionException(context) is { } factory)
+        else if (!(acquired = TryAcquireCore(context, prioritize)) && GetAcquisitionException(context) is { } factory)
         {
             factory.As<ITaskBuilderConsumer>().Complete(ref builder);
         }
-        else if (Acquire<T, TBuilder, WaitNode>(ref builder, acquired) is { } node)
+        else if (Acquire<T, TBuilder, WaitNode>(ref builder, acquired, prioritize) is { } node)
         {
             node.Context = context;
         }
@@ -252,34 +252,9 @@ public abstract class QueuedSynchronizer<TContext> : QueuedSynchronizer
         return builder.Build();
     }
 
-    private T AcquirePriorityAsync<T, TBuilder>(TContext context, ref TBuilder builder)
-        where T : struct, IEquatable<T>
-        where TBuilder : struct, ITaskBuilder<T>, allows ref struct
+    private bool TryAcquireCore(TContext context, bool bypassQueue = false)
     {
-        bool acquired;
-        if (builder.IsCompleted)
-        {
-            // nothing to do
-        }
-        else if (!(acquired = CanAcquire(context)) && GetAcquisitionException(context) is { } factory)
-        {
-            factory.As<ITaskBuilderConsumer>().Complete(ref builder);
-        }
-        else
-        {
-            if (acquired)
-                AcquireCore(context);
-
-            if (Acquire<T, TBuilder, WaitNode>(ref builder, acquired, prioritize: true) is { } node)
-                node.Context = context;
-        }
-
-        return builder.Build();
-    }
-
-    private bool TryAcquireCore(TContext context)
-    {
-        var acquired = IsEmptyQueue && CanAcquire(context);
+        var acquired = (bypassQueue || IsEmptyQueue) && CanAcquire(context);
         if (acquired)
         {
             AcquireCore(context);

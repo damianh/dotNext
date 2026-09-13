@@ -33,9 +33,9 @@ partial class WriteAheadLog
             }
             catch (Exception e) when (e is not OperationCanceledException canceledEx || canceledEx.CancellationToken != token)
             {
-                backgroundTaskFailure = e;
+                var failure = Interlocked.CompareExchange(ref backgroundTaskFailure, e, null) ?? e;
                 flushCompleted?.Signal(resumeAll: true);
-                appliedEvent.Interrupt(new InternalException(e));
+                appliedEvent.Interrupt(new InternalException(failure));
                 break;
             }
             finally

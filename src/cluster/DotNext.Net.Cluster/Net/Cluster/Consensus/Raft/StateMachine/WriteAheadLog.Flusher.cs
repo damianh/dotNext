@@ -80,9 +80,9 @@ partial class WriteAheadLog
         }
         catch (Exception e) when (T.IsBackground)
         {
-            backgroundTaskFailure = e;
+            var failure = Interlocked.CompareExchange(ref backgroundTaskFailure, e, null) ?? e;
             flushCompleted?.Signal(resumeAll: true);
-            appliedEvent.Interrupt(new InternalException(e));
+            appliedEvent.Interrupt(new InternalException(failure));
         }
         finally
         {
@@ -104,6 +104,9 @@ partial class WriteAheadLog
 
     private async Task EnsureFlushedAsync(long targetIndex, CancellationToken token)
     {
+        ObjectDisposedException.ThrowIf(IsDisposingOrDisposed, this);
+        ThrowOnInternalError();
+
         var linkedTokenSource = cancellationTokens.Combine(token, lifetimeToken);
         try
         {

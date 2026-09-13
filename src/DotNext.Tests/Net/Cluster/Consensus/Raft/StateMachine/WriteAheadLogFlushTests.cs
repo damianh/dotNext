@@ -319,6 +319,71 @@ public sealed class WriteAheadLogFlushTests : Test
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task ManualFailurePreservesCancellationAndDisposalOwnership(bool cancelFirst)
+    {
+        var machine = new GatedFailureStateMachine(failApply: true);
+        using var passes = new FlushPasses();
+        using var cancellation = new CancellationTokenSource();
+        await using var wal = new WriteAheadLog(CreateOptions(Timeout.InfiniteTimeSpan, passes.Tags), machine);
+        Task active = Task.CompletedTask, canceled = Task.CompletedTask, pending = Task.CompletedTask;
+        Task disposal = Task.CompletedTask;
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            active = Task.Run(() => wal.FlushAsync(TestToken), TestToken);
+            await passes.First.Entered.Task.WaitAsync(TestToken);
+            canceled = wal.FlushAsync(cancellation.Token);
+            pending = wal.FlushAsync(TestToken);
+            False(canceled.IsCompleted);
+            False(pending.IsCompleted);
+            if (cancelFirst)
+            {
+                cancellation.Cancel();
+                var error = await ThrowsAnyAsync<OperationCanceledException>(
+                    () => canceled.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+                Equal(cancellation.Token, error.CancellationToken);
+                False(pending.IsCompleted);
+            }
+
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+            if (!cancelFirst)
+            {
+                cancellation.Cancel();
+                var error = await ThrowsAsync<WriteAheadLog.InternalException>(
+                    () => canceled.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+                Same(machine.Error, error.InnerException);
+            }
+            var fatal = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            Same(machine.Error, fatal.InnerException);
+            False(active.IsCompleted);
+
+            disposal = wal.DisposeAsync().AsTask();
+            False(disposal.IsCompleted);
+            passes.First.Release();
+            var activeError = await Record.ExceptionAsync(() => active.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            True(activeError is WriteAheadLog.InternalException or ObjectDisposedException);
+            if (activeError is WriteAheadLog.InternalException activeFatal)
+                Same(machine.Error, activeFatal.InnerException);
+            await disposal.WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            cancellation.Cancel();
+            passes.First.Release();
+            passes.Second.Release();
+            await Task.WhenAll(active, canceled, pending).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await disposal.WaitAsync(TestToken);
+        }
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]

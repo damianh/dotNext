@@ -26,7 +26,11 @@ partial class WriteAheadLog
     {
         if (T.IsBackground)
             await Task.Yield();
-        
+
+        var cancellation = T.IsBackground ? cancellationTokens.Combine(token, backgroundTaskFailureToken) : default;
+        if (T.IsBackground)
+            token = cancellation.Token;
+
         // Weak ref tracks the task, but allows GC to collect associated state machine
         // as soon as possible. While the task is running, it cannot be collected, because it's referenced
         // by the async state machine.
@@ -85,6 +89,7 @@ partial class WriteAheadLog
         finally
         {
             flushTrigger.Dispose();
+            await cancellation.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -105,7 +110,7 @@ partial class WriteAheadLog
         ObjectDisposedException.ThrowIf(IsDisposingOrDisposed, this);
         ThrowOnInternalError();
 
-        var linkedTokenSource = cancellationTokens.Combine(token, lifetimeToken);
+        var linkedTokenSource = cancellationTokens.Combine(token, lifetimeToken, backgroundTaskFailureToken);
         try
         {
             if (flushCompleted is not null)
@@ -150,6 +155,11 @@ partial class WriteAheadLog
     private void ThrowWhenCanceled(CancellationTokenMultiplexer.Scope cts)
     {
         ObjectDisposedException.ThrowIf(cts.CancellationOrigin == lifetimeToken, this);
+        if (cts.CancellationOrigin == backgroundTaskFailureToken)
+        {
+            ThrowOnInternalError();
+            ObjectDisposedException.ThrowIf(IsDisposingOrDisposed, this);
+        }
 
         throw new OperationCanceledException(cts.CancellationOrigin);
     }
@@ -164,6 +174,7 @@ partial class WriteAheadLog
     /// When automatic flushing is enabled, this method waits for the background flusher;
     /// otherwise, it performs the flush. Concurrent manual flushes are serialized.
     /// A fatal error in the flusher, applier, or cleanup worker fails pending flush waits.
+    /// Queued manual requests fail without waiting for an active flush to finish.
     /// Subsequent requests fail even if their target was already persisted.
     /// Requests that completed successfully before the error remain successful.
     /// </remarks>

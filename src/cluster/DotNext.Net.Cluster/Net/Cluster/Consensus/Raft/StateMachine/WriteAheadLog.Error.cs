@@ -16,6 +16,7 @@ partial class WriteAheadLog
         var failure = Interlocked.CompareExchange(ref backgroundTaskFailure, e, null) ?? e;
         backgroundTaskFailureSource.Cancel();
         flushTrigger?.Set();
+        applyTrigger.Set();
         flushCompleted?.Signal(resumeAll: true);
         appliedEvent.Interrupt(new InternalException(failure));
     }

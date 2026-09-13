@@ -145,6 +145,7 @@ partial class WriteAheadLog
         public void ReleaseCommitLock() => Release(LockType.Commit);
 
         public ValueTask UpgradeToOverwriteLockAsync(CancellationToken token = default)
-            => AcquireAsync(LockType.Overwrite, token);
+            // The caller retains Append, so an ordinary writer ahead of this upgrade cannot make progress.
+            => AcquirePriorityAsync(LockType.Overwrite, token);
     }
 }

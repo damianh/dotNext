@@ -22,6 +22,14 @@ internal abstract class LinkedValueTaskCompletionSource<T> : ValueTaskCompletion
         Next = node;
     }
 
+    private void Prepend(LinkedValueTaskCompletionSource<T> node)
+    {
+        Debug.Assert(Previous is null);
+
+        node.Next = this;
+        Previous = node;
+    }
+
     private void Detach()
     {
         Previous?.Next = Next;
@@ -85,6 +93,25 @@ internal abstract class LinkedValueTaskCompletionSource<T> : ValueTaskCompletion
 
                 last.Append(node);
                 last = node;
+            }
+        }
+
+        internal void AddFirst(LinkedValueTaskCompletionSource<T> node)
+        {
+            Debug.Assert(node is not null);
+
+            if (first is null)
+            {
+                Debug.Assert(last is null);
+
+                first = last = node;
+            }
+            else
+            {
+                Debug.Assert(last is not null);
+
+                first.Prepend(node);
+                first = node;
             }
         }
 

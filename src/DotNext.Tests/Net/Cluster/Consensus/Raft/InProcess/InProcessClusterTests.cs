@@ -251,31 +251,39 @@ public sealed class InProcessClusterTests : RaftTest
         await draining.WaitAsync(TestToken);
     }
 
-    [Fact]
-    public static async Task ReplicationWorkerSurvivesInjectedFailure()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public static async Task ReplicationWorkerSurvivesInjectedFailure(int laggingFollower)
     {
-        var timeProvider = new ManualTimeProvider();
-        var network = new InProcessNetwork();
-        EndPoint[] membership = [Address("node-a"), Address("node-b"), Address("node-c")];
-        using var stateA = new ConsensusOnlyState();
-        using var stateB = new ConsensusOnlyState();
-        using var stateC = new ConsensusOnlyState();
-        await using var nodeA = CreateNode(network, timeProvider, membership, 0, stateA);
-        await using var nodeB = CreateNode(network, timeProvider, membership, 1, stateB);
-        await using var nodeC = CreateNode(network, timeProvider, membership, 2, stateC);
-        await StartAsync(nodeA, nodeB, nodeC);
-        nodeA.StartElectionTimer();
-        timeProvider.Advance(TimeSpan.FromMilliseconds(100));
-        await nodeA.WaitForLeaderAsync(TimeSpan.FromSeconds(5), TestToken);
-        await nodeA.ForceReplicationAsync(TestToken);
-        await nodeA.WaitForLeadershipAsync(TestToken);
+        await using var cluster = new InProcessClusterFixture(3);
+        await cluster.StartLeaderAsync(laggingFollower);
+        var network = cluster.Network;
+        var nodeA = cluster.Leader;
+        var nodeB = cluster.Nodes[1];
+        var nodeC = cluster.Nodes[2];
 
-        // Freeze both workers at an actual RPC before injecting the next round's failure.
-        network.Hold(nodeA.EndPoint, nodeB.EndPoint);
-        network.Hold(nodeA.EndPoint, nodeC.EndPoint);
+        // A majority can commit before either follower catches up. Freeze both
+        // replication RPC types: a lagging follower may need a snapshot, not entries.
+        if (laggingFollower > 0)
+        {
+            Equal(0L, cluster.States[laggingFollower].LastEntryIndex);
+            Equal(1L, nodeA.AuditTrail.LastCommittedEntryIndex);
+        }
+
         var round = nodeA.ForceReplicationAsync(TestToken).AsTask();
-        var toB = await network.WaitForMessageAsync(nodeA.EndPoint, nodeB.EndPoint, RaftMessageType.AppendEntries, TestToken);
-        var toC = await network.WaitForMessageAsync(nodeA.EndPoint, nodeC.EndPoint, RaftMessageType.AppendEntries, TestToken);
+        var toB = await network.WaitForReplicationAsync(nodeA.EndPoint, nodeB.EndPoint, TestToken)
+            .WaitAsync(DefaultTimeout, TestToken);
+        var toC = await network.WaitForReplicationAsync(nodeA.EndPoint, nodeC.EndPoint, TestToken)
+            .WaitAsync(DefaultTimeout, TestToken);
+        if (laggingFollower > 0)
+        {
+            Equal(RaftMessageType.InstallSnapshot, (laggingFollower is 1 ? toB : toC).MessageType);
+        }
+        False(toB.IsCompleted);
+        False(toC.IsCompleted);
+        False(round.IsCompleted);
         var injected = network.FailNext(nodeA.EndPoint, nodeB.EndPoint, RaftMessageType.AppendEntries,
             new ArithmeticException("Injected replication worker failure."));
         network.Release(nodeA.EndPoint, nodeB.EndPoint);

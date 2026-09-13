@@ -63,7 +63,7 @@ partial class QueuedSynchronizer
         scope.ResumeSuspendedCallers();
     }
 
-    private protected TNode? Acquire<T, TBuilder, TNode>(ref TBuilder builder, bool acquired)
+    private protected TNode? Acquire<T, TBuilder, TNode>(ref TBuilder builder, bool acquired, bool prioritize = false)
         where T : struct, IEquatable<T>
         where TNode : WaitNode, new()
         where TBuilder : struct, ITaskBuilder<T>, allows ref struct
@@ -92,7 +92,7 @@ partial class QueuedSynchronizer
         {
             node = pool.Rent<TNode>();
             node.Initialize(this, TBuilder.ThrowOnTimeout);
-            waitQueue.Add(node);
+            waitQueue.Add(node, prioritize);
             builder.Complete(node);
         }
 
@@ -289,10 +289,18 @@ partial class QueuedSynchronizer
             return waitQueue.Remove(node);
         }
 
-        public void Add(LinkedValueTaskCompletionSource<bool> node)
+        public void Add(LinkedValueTaskCompletionSource<bool> node, bool prioritize)
         {
             SuspendedCallersMeter.Add(1, measurementTags);
-            waitQueue.Add(node);
+            if (prioritize)
+            {
+                waitQueue.AddFirst(node);
+            }
+            else
+            {
+                waitQueue.Add(node);
+            }
+
             length++;
         }
 

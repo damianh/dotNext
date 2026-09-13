@@ -38,6 +38,36 @@ public sealed class QueuedSynchronizerTests : Test
         await cts.CancelAsync();
         await readLockTask;
     }
+
+    [Fact]
+    public static async Task PriorityAcquisitionPrecedesQueuedCallers()
+    {
+        await using var synchronizer = new PriorityLock();
+        synchronizer.TrackSuspendedCallers();
+
+        await synchronizer.AcquireAsync("holder", TestToken);
+        var first = synchronizer.AcquireAsync("first", TestToken).AsTask();
+        var priority = synchronizer.AcquirePriorityAsync("priority", TestToken).AsTask();
+        var last = synchronizer.AcquireAsync("last", TestToken).AsTask();
+
+        Equal(["priority", "first", "last"], synchronizer.GetSuspendedCallers());
+
+        synchronizer.Release();
+        await priority.WaitAsync(TestToken);
+        False(first.IsCompleted);
+        False(last.IsCompleted);
+
+        synchronizer.Release();
+        await first.WaitAsync(TestToken);
+        False(last.IsCompleted);
+
+        synchronizer.Release();
+        await last.WaitAsync(TestToken);
+        synchronizer.Release();
+
+        await synchronizer.AcquireAsync("after", TestToken);
+        synchronizer.Release();
+    }
     
     private sealed class CustomReaderWriterLock : QueuedSynchronizer<bool>
     {
@@ -81,5 +111,30 @@ public sealed class QueuedSynchronizerTests : Test
                 readLocks--;
             }
         }
+    }
+
+    private sealed class PriorityLock : QueuedSynchronizer<string>
+    {
+        private bool held;
+
+        protected override bool CanAcquire(string context) => !held;
+
+        protected override void AcquireCore(string context) => held = true;
+
+        protected override void ReleaseCore(string context) => held = false;
+
+        public new ValueTask AcquireAsync(string caller, CancellationToken token)
+        {
+            SetCallerInformation(caller);
+            return base.AcquireAsync(caller, token);
+        }
+
+        public new ValueTask AcquirePriorityAsync(string caller, CancellationToken token)
+        {
+            SetCallerInformation(caller);
+            return base.AcquirePriorityAsync(caller, token);
+        }
+
+        public new void Release() => Release(string.Empty);
     }
 }

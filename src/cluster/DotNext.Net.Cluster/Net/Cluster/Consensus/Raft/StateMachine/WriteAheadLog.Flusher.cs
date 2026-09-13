@@ -81,6 +81,7 @@ partial class WriteAheadLog
         catch (Exception e) when (T.IsBackground)
         {
             backgroundTaskFailure = e;
+            flushCompleted?.Signal(resumeAll: true);
             appliedEvent.Interrupt(new InternalException(e));
         }
         finally
@@ -109,6 +110,7 @@ partial class WriteAheadLog
             if (flushCompleted is not null)
             {
                 await flushCompleted.SpinWaitAsync(new FlushChecker(this, targetIndex), linkedTokenSource.Token).ConfigureAwait(false);
+                ThrowOnInternalError();
             }
             else
             {
@@ -139,7 +141,7 @@ partial class WriteAheadLog
     private readonly struct FlushChecker(WriteAheadLog log, long targetIndex) : ISupplier<bool>
     {
         bool ISupplier<bool>.Invoke()
-            => Atomic.Read(in log.nextUnflushedIndex) > targetIndex;
+            => log.backgroundTaskFailure is not null || Atomic.Read(in log.nextUnflushedIndex) > targetIndex;
     }
 
     [DoesNotReturn]

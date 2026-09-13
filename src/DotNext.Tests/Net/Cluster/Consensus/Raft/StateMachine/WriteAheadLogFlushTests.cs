@@ -25,6 +25,7 @@ public sealed class WriteAheadLogFlushTests : Test
         var data = Path.Combine(options.Location, "data");
         var unavailable = Path.Combine(options.Location, "data-unavailable");
         Task[] pending = [];
+        Task[] requests = [];
         try
         {
             await wal.AppendAsync(new TestLogEntry("not persisted"), TestToken);
@@ -44,7 +45,7 @@ public sealed class WriteAheadLogFlushTests : Test
             False(File.Exists(Path.Combine(unavailable, "0")));
             Equal(0L, new FileInfo(Path.Combine(options.Location, "checkpoint")).Length);
 
-            var requests = subsequent ? new[] { wal.FlushAsync(cancellation.Token) } : pending;
+            requests = subsequent ? new[] { wal.FlushAsync(cancellation.Token) } : pending;
             TestContext.Current.TestOutputHelper.WriteLine(
                 $"Worker completed: {FlusherTask(wal).IsCompleted}; stored: {stored.InnerException.GetType().Name}; " +
                 $"target: 1; checkpoint bytes: 0; subsequent: {subsequent}; " +
@@ -60,7 +61,7 @@ public sealed class WriteAheadLogFlushTests : Test
         {
             cancellation.Cancel();
             startup.Resume();
-            await Task.WhenAll(pending).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await Task.WhenAll(pending.Concat(requests)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             if (Directory.Exists(unavailable))
                 Directory.Move(unavailable, data);
         }
@@ -227,7 +228,7 @@ public sealed class WriteAheadLogFlushTests : Test
         var machine = new GatedFailureStateMachine(failApply: true);
         using var passes = new FlushPasses();
         await using var wal = new WriteAheadLog(CreateOptions(Timeout.InfiniteTimeSpan, passes.Tags), machine);
-        Task active = Task.CompletedTask, queued = Task.CompletedTask;
+        Task active = Task.CompletedTask, queued = Task.CompletedTask, later = Task.CompletedTask;
         using var cancellation = new CancellationTokenSource();
         try
         {
@@ -241,7 +242,7 @@ public sealed class WriteAheadLogFlushTests : Test
             machine.Release.TrySetResult();
             await ApplierTask(wal).WaitAsync(TestToken);
 
-            var later = wal.FlushAsync(cancellation.Token);
+            later = wal.FlushAsync(cancellation.Token);
             var error = await ThrowsAsync<WriteAheadLog.InternalException>(
                 () => later.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
             Same(machine.Error, error.InnerException);
@@ -255,7 +256,7 @@ public sealed class WriteAheadLogFlushTests : Test
             cancellation.Cancel();
             passes.First.Release();
             passes.Second.Release();
-            await Task.WhenAll(active, queued).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await Task.WhenAll(active, queued, later).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         }
     }
 

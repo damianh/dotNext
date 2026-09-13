@@ -272,6 +272,188 @@ public sealed class WriteAheadLogFlushTests : Test
         await ThrowsAsync<ObjectDisposedException>(() => wal.FlushAsync(TestToken));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task FailurePublicationRacesWithCallers(bool flushOnCommit)
+    {
+        var startup = new PausedFlusherContext();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
+        await using var wal = startup.CreateLog(options);
+        using var cancellation = new CancellationTokenSource();
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task[] callers = [];
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            var canceled = wal.FlushAsync(cancellation.Token);
+            var pending = wal.FlushAsync(TestToken);
+            cancellation.Cancel();
+            var canceledError = await ThrowsAsync<OperationCanceledException>(() => canceled.WaitAsync(TestToken));
+            Equal(cancellation.Token, canceledError.CancellationToken);
+            False(pending.IsCompleted);
+            Directory.Move(data, unavailable);
+            callers = Enumerable.Range(0, 32).Select(_ => Task.Run(async () =>
+            {
+                await start.Task.WaitAsync(TestToken);
+                await ThrowsAsync<WriteAheadLog.InternalException>(
+                    () => wal.FlushAsync(TestToken).WaitAsync(TimeSpan.FromSeconds(10), TestToken));
+            }, TestToken)).ToArray();
+            start.SetResult();
+            startup.Resume();
+            await FlusherTask(wal).WaitAsync(TestToken);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(() => pending.WaitAsync(TestToken));
+            IsAssignableFrom<IOException>(error.InnerException);
+            var later = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(error.InnerException, later.InnerException);
+            await Task.WhenAll(callers).WaitAsync(TestToken);
+        }
+        finally
+        {
+            start.TrySetResult();
+            startup.Resume();
+            await Task.WhenAll(callers).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 0)]
+    [InlineData(true, 1)]
+    [InlineData(true, 2)]
+    public static async Task FailureAndDisposalCompleteEveryCaller(bool flushOnCommit, int order)
+    {
+        var startup = new PausedFlusherContext();
+        using var passes = new FlushPasses();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1), passes.Tags);
+        var wal = startup.CreateLog(options);
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        Task resumed = Task.CompletedTask, disposal = Task.CompletedTask;
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            var callers = Enumerable.Range(0, 8).Select(_ => wal.FlushAsync(TestToken)).ToArray();
+            All(callers, static caller => False(caller.IsCompleted));
+            Directory.Move(data, unavailable);
+            resumed = Task.Run(startup.Resume, TestToken);
+            await passes.First.Entered.Task.WaitAsync(TestToken);
+            if (order == 0)
+            {
+                disposal = wal.DisposeAsync().AsTask();
+                foreach (var caller in callers)
+                    await ThrowsAsync<ObjectDisposedException>(() => caller.WaitAsync(TestToken));
+                False(disposal.IsCompleted);
+                passes.First.Release();
+            }
+            else if (order == 1)
+            {
+                passes.First.Release();
+                await FlusherTask(wal).WaitAsync(TestToken);
+                foreach (var caller in callers)
+                    await ThrowsAsync<WriteAheadLog.InternalException>(() => caller.WaitAsync(TestToken));
+                disposal = wal.DisposeAsync().AsTask();
+            }
+            else
+            {
+                disposal = Task.Run(async () => await wal.DisposeAsync(), TestToken);
+                passes.First.Release();
+                foreach (var caller in callers)
+                {
+                    var error = await Record.ExceptionAsync(() => caller.WaitAsync(TimeSpan.FromSeconds(10), TestToken));
+                    True(error is ObjectDisposedException or WriteAheadLog.InternalException);
+                    if (error is WriteAheadLog.InternalException fatal)
+                        IsAssignableFrom<IOException>(fatal.InnerException);
+                }
+            }
+            await disposal.WaitAsync(TestToken);
+            await ThrowsAsync<ObjectDisposedException>(() => wal.FlushAsync(TestToken));
+        }
+        finally
+        {
+            passes.First.Release();
+            passes.Second.Release();
+            startup.Resume();
+            await resumed;
+            await disposal;
+            await wal.DisposeAsync();
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task FatalErrorRejectsAlreadyPersistedTarget(bool manual)
+    {
+        var machine = new GatedFailureStateMachine(failApply: true);
+        await using var wal = new WriteAheadLog(
+            CreateOptions(manual ? Timeout.InfiniteTimeSpan : TimeSpan.Zero), machine);
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("persisted"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            var completed = wal.FlushAsync(TestToken);
+            await completed.WaitAsync(TestToken);
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+            True(completed.IsCompletedSuccessfully);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, error.InnerException);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public static async Task FailedLaterTargetPreservesDurablePrefix()
+    {
+        var options = CreateOptions(TimeSpan.Zero);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            var data = Path.Combine(options.Location, "data");
+            var unavailable = Path.Combine(options.Location, "data-unavailable");
+            try
+            {
+                await wal.AppendAsync(new TestLogEntry("durable prefix"), TestToken);
+                await wal.CommitAsync(1L, TestToken);
+                var completed = wal.FlushAsync(TestToken);
+                await completed.WaitAsync(TestToken);
+                await wal.AppendAsync(new TestLogEntry("failed target"), TestToken);
+                Directory.Move(data, unavailable);
+                await wal.CommitAsync(2L, TestToken);
+                var failed = wal.FlushAsync(TestToken);
+                await FlusherTask(wal).WaitAsync(TestToken);
+                await ThrowsAsync<WriteAheadLog.InternalException>(() => failed.WaitAsync(TestToken));
+                True(completed.IsCompletedSuccessfully);
+                Equal(2L, wal.LastCommittedEntryIndex);
+            }
+            finally
+            {
+                if (Directory.Exists(unavailable))
+                    Directory.Move(unavailable, data);
+            }
+        }
+
+        await using var reopened = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        Equal(1L, reopened.LastEntryIndex);
+        Equal(1L, reopened.LastCommittedEntryIndex);
+        using var reader = await reopened.ReadAsync(1L, 1L, TestToken);
+        Equal("durable prefix", await reader[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
     [Fact]
     public static async Task SingleCommittedEntryMustBeFlushed()
     {

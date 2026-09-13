@@ -71,6 +71,57 @@ public sealed class WriteAheadLogFlushTests : Test
     private static extern ref Task FlusherTask(WriteAheadLog wal);
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task ApplierFailureStopsIdleFlusherWithoutAnotherCommit(bool flushOnCommit)
+    {
+        var options = CreateOptions(Timeout.InfiniteTimeSpan);
+        await using (var seed = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            await seed.AppendAsync(new TestLogEntry("persisted payload"), TestToken);
+            await seed.CommitAsync(1L, TestToken);
+            await seed.FlushAsync(TestToken);
+        }
+
+        var machine = new GatedFailureStateMachine(failApply: true);
+        var startup = new PausedFlusherContext();
+        await using var wal = startup.CreateLog(new()
+        {
+            Location = options.Location,
+            MemoryManagement = options.MemoryManagement,
+            FlushInterval = flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1),
+        }, machine);
+        try
+        {
+            await machine.Entered.Task.WaitAsync(TestToken);
+            // Recovery already persisted the target. The initial callback has no I/O
+            // to await, so Resume returns only after the flusher parks on its trigger.
+            startup.Resume();
+            False(FlusherTask(wal).IsCompleted);
+            var completed = wal.FlushAsync(TestToken);
+            await completed.WaitAsync(TestToken);
+
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, error.InnerException);
+            True(completed.IsCompletedSuccessfully);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Applier failed; flush-on-commit: {flushOnCommit}; no new commits or disposal; " +
+                $"flusher completed: {FlusherTask(wal).IsCompleted}");
+
+            await FlusherTask(wal).WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+            True(FlusherTask(wal).IsCompletedSuccessfully);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            startup.Resume();
+        }
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -246,6 +297,13 @@ public sealed class WriteAheadLogFlushTests : Test
             var error = await ThrowsAsync<WriteAheadLog.InternalException>(
                 () => later.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
             Same(machine.Error, error.InnerException);
+            False(active.IsCompleted);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Applier failed; active pass held; queued request completed: {queued.IsCompleted}");
+            var queuedError = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => queued.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            Same(machine.Error, queuedError.InnerException);
+            False(active.IsCompleted);
             passes.First.Release();
             await ThrowsAsync<WriteAheadLog.InternalException>(() => active.WaitAsync(TestToken));
             await ThrowsAsync<WriteAheadLog.InternalException>(() => queued.WaitAsync(TestToken));

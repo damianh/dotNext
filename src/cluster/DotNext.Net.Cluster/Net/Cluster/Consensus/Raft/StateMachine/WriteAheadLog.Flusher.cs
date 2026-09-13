@@ -110,7 +110,6 @@ partial class WriteAheadLog
             if (flushCompleted is not null)
             {
                 await flushCompleted.SpinWaitAsync(new FlushChecker(this, targetIndex), linkedTokenSource.Token).ConfigureAwait(false);
-                ThrowOnInternalError();
             }
             else
             {
@@ -126,6 +125,8 @@ partial class WriteAheadLog
                     foregroundFlushLock.Release();
                 }
             }
+
+            ThrowOnInternalError();
         }
         catch (OperationCanceledException e) when (e.CancellationToken == linkedTokenSource.Token)
         {

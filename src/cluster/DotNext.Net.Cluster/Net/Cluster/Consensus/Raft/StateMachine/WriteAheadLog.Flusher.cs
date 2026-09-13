@@ -163,11 +163,17 @@ partial class WriteAheadLog
     /// Uncommitted appended entries are not included in the recoverable checkpoint.
     /// When automatic flushing is enabled, this method waits for the background flusher;
     /// otherwise, it performs the flush. Concurrent manual flushes are serialized.
+    /// A fatal error in the flusher, applier, or cleanup worker fails pending flush waits.
+    /// Subsequent requests fail even if their target was already persisted.
+    /// Requests that completed successfully before the error remain successful.
     /// </remarks>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <returns>The task representing asynchronous state of the operation.</returns>
     /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     /// <exception cref="ObjectDisposedException">The log is disposed while waiting for the flush.</exception>
+    /// <exception cref="InternalException">
+    /// A background WAL operation failed. The first failure is retained as the inner exception.
+    /// </exception>
     public Task FlushAsync(CancellationToken token = default)
         => EnsureFlushedAsync(LastCommittedEntryIndex, token);
 

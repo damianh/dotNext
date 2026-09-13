@@ -26,7 +26,11 @@ partial class WriteAheadLog
     {
         if (T.IsBackground)
             await Task.Yield();
-        
+
+        var cancellation = T.IsBackground ? cancellationTokens.Combine(token, backgroundTaskFailureToken) : default;
+        if (T.IsBackground)
+            token = cancellation.Token;
+
         // Weak ref tracks the task, but allows GC to collect associated state machine
         // as soon as possible. While the task is running, it cannot be collected, because it's referenced
         // by the async state machine.
@@ -80,12 +84,12 @@ partial class WriteAheadLog
         }
         catch (Exception e) when (T.IsBackground)
         {
-            backgroundTaskFailure = e;
-            appliedEvent.Interrupt(new InternalException(e));
+            OnBackgroundTaskFailure(e);
         }
         finally
         {
             flushTrigger.Dispose();
+            await cancellation.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -103,7 +107,10 @@ partial class WriteAheadLog
 
     private async Task EnsureFlushedAsync(long targetIndex, CancellationToken token)
     {
-        var linkedTokenSource = cancellationTokens.Combine(token, lifetimeToken);
+        ObjectDisposedException.ThrowIf(IsDisposingOrDisposed, this);
+        ThrowOnInternalError();
+
+        var linkedTokenSource = cancellationTokens.Combine(token, lifetimeToken, backgroundTaskFailureToken);
         try
         {
             if (flushCompleted is not null)
@@ -124,6 +131,8 @@ partial class WriteAheadLog
                     foregroundFlushLock.Release();
                 }
             }
+
+            ThrowOnInternalError();
         }
         catch (OperationCanceledException e) when (e.CancellationToken == linkedTokenSource.Token)
         {
@@ -139,13 +148,18 @@ partial class WriteAheadLog
     private readonly struct FlushChecker(WriteAheadLog log, long targetIndex) : ISupplier<bool>
     {
         bool ISupplier<bool>.Invoke()
-            => Atomic.Read(in log.nextUnflushedIndex) > targetIndex;
+            => log.backgroundTaskFailure is not null || Atomic.Read(in log.nextUnflushedIndex) > targetIndex;
     }
 
     [DoesNotReturn]
     private void ThrowWhenCanceled(CancellationTokenMultiplexer.Scope cts)
     {
         ObjectDisposedException.ThrowIf(cts.CancellationOrigin == lifetimeToken, this);
+        if (cts.CancellationOrigin == backgroundTaskFailureToken)
+        {
+            ThrowOnInternalError();
+            ObjectDisposedException.ThrowIf(IsDisposingOrDisposed, this);
+        }
 
         throw new OperationCanceledException(cts.CancellationOrigin);
     }
@@ -159,11 +173,18 @@ partial class WriteAheadLog
     /// Uncommitted appended entries are not included in the recoverable checkpoint.
     /// When automatic flushing is enabled, this method waits for the background flusher;
     /// otherwise, it performs the flush. Concurrent manual flushes are serialized.
+    /// A fatal error in the flusher, applier, or cleanup worker fails pending flush waits.
+    /// Queued manual requests fail without waiting for an active flush to finish.
+    /// Subsequent requests fail even if their target was already persisted.
+    /// Requests that completed successfully before the error remain successful.
     /// </remarks>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <returns>The task representing asynchronous state of the operation.</returns>
     /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     /// <exception cref="ObjectDisposedException">The log is disposed while waiting for the flush.</exception>
+    /// <exception cref="InternalException">
+    /// A background WAL operation failed. The first failure is retained as the inner exception.
+    /// </exception>
     public Task FlushAsync(CancellationToken token = default)
         => EnsureFlushedAsync(LastCommittedEntryIndex, token);
 

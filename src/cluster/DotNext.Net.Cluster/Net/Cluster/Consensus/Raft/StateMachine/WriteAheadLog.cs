@@ -55,6 +55,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         var snapshotIndex = stateMachine.Snapshot?.Index ?? 0L;
         hash = configuration.CreateHashAlgorithm();
         lifetimeToken = (lifetimeTokenSource = new()).Token;
+        backgroundTaskFailureToken = (backgroundTaskFailureSource = new()).Token;
         cancellationTokens = new();
         var rootPath = new DirectoryInfo(configuration.Location);
         rootPath.CreateIfNeeded();
@@ -647,6 +648,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         checkpoint.Dispose();
         state.Dispose();
         context.Clear();
+        backgroundTaskFailureSource.Dispose();
         backgroundTaskFailure = null;
     }
 

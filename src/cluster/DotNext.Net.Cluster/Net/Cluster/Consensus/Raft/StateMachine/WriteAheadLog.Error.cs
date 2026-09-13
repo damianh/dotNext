@@ -7,7 +7,19 @@ using IO.Log;
 
 partial class WriteAheadLog
 {
+    private readonly CancellationTokenSource backgroundTaskFailureSource;
+    private readonly CancellationToken backgroundTaskFailureToken;
     private volatile Exception? backgroundTaskFailure;
+
+    private void OnBackgroundTaskFailure(Exception e)
+    {
+        var failure = Interlocked.CompareExchange(ref backgroundTaskFailure, e, null) ?? e;
+        backgroundTaskFailureSource.Cancel();
+        flushTrigger?.Set();
+        applyTrigger.Set();
+        flushCompleted?.Signal(resumeAll: true);
+        appliedEvent.Interrupt(new InternalException(failure));
+    }
 
     private void ThrowOnInternalError()
     {

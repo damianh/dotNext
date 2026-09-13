@@ -1,15 +1,687 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 
+using AsyncAutoResetEventSlim = Threading.AsyncAutoResetEventSlim;
 using static IO.DataTransferObject;
 
 [Collection(TestCollections.WriteAheadLog)]
 public sealed class WriteAheadLogFlushTests : Test
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public static async Task PageFailureFailsExplicitRequests(bool flushOnCommit, bool subsequent)
+    {
+        var startup = new PausedFlusherContext();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
+        await using var wal = startup.CreateLog(options);
+        using var cancellation = new CancellationTokenSource();
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        Task[] pending = [];
+        Task[] requests = [];
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("not persisted"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            pending = [wal.FlushAsync(cancellation.Token), wal.FlushAsync(cancellation.Token)];
+            All(pending, static request => False(request.IsCompleted));
+
+            Directory.Move(data, unavailable);
+            startup.Resume();
+            await FlusherTask(wal).WaitAsync(TestToken);
+
+            // Worker termination plus its stored I/O error establishes the failed pass.
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => wal.WaitForApplyAsync(0L, TestToken).AsTask());
+            IsAssignableFrom<IOException>(stored.InnerException);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            False(File.Exists(Path.Combine(unavailable, "0")));
+            Equal(0L, new FileInfo(Path.Combine(options.Location, "checkpoint")).Length);
+
+            requests = subsequent ? new[] { wal.FlushAsync(cancellation.Token) } : pending;
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Worker completed: {FlusherTask(wal).IsCompleted}; stored: {stored.InnerException.GetType().Name}; " +
+                $"target: 1; checkpoint bytes: 0; subsequent: {subsequent}; " +
+                $"requests completed: {string.Join(", ", requests.Select(static request => request.IsCompleted))}");
+            foreach (var request in requests)
+            {
+                var error = await ThrowsAsync<WriteAheadLog.InternalException>(
+                    () => request.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+                Same(stored.InnerException, error.InnerException);
+            }
+        }
+        finally
+        {
+            cancellation.Cancel();
+            startup.Resume();
+            await Task.WhenAll(pending.Concat(requests)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "flusherTask")]
+    private static extern ref Task FlusherTask(WriteAheadLog wal);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task FlusherFailureStopsIdleApplierWithoutAnotherCommit(bool flushOnCommit)
+    {
+        var startup = new PausedFlusherContext();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
+        await using var wal = startup.CreateLog(options);
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("not persisted"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await wal.WaitForApplyAsync(1L, TestToken);
+            AssertApplierIsWaiting(wal);
+
+            Directory.Move(data, unavailable);
+            startup.Resume();
+            await FlusherTask(wal).WaitAsync(TestToken);
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            IsType<DirectoryNotFoundException>(stored.InnerException);
+            True(FlusherTask(wal).IsCompletedSuccessfully);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            Equal(1L, wal.LastAppliedIndex);
+            False(File.Exists(Path.Combine(unavailable, "0")));
+            Equal(0L, new FileInfo(Path.Combine(options.Location, "checkpoint")).Length);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Flusher terminated with {stored.InnerException.GetType().Name}; flush-on-commit: {flushOnCommit}; " +
+                $"applier was parked; no new commits or disposal; applier completed: {ApplierTask(wal).IsCompleted}");
+
+            await ApplierTask(wal).WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+            True(ApplierTask(wal).IsCompletedSuccessfully);
+            var retained = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(stored.InnerException, retained.InnerException);
+        }
+        finally
+        {
+            startup.Resume();
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [Fact]
+    public static async Task CleanerFailureStopsIdleApplierWithoutAnotherCommit()
+    {
+        var machine = new GatedFailureStateMachine(failApply: false);
+        var startup = new PausedFlusherContext();
+        await using var wal = startup.CreateLog(CreateOptions(TimeSpan.Zero), machine);
+        try
+        {
+            startup.Resume();
+            for (var i = 0; i < 3; i++)
+                await wal.AppendAsync(new TestLogEntry("snapshot payload"), TestToken);
+            await wal.CommitAsync(3L, TestToken);
+            await wal.WaitForApplyAsync(3L, TestToken);
+            await wal.FlushAsync(TestToken);
+            await wal.AppendAsync(new TestLogEntry("trigger cleanup"), TestToken);
+            await wal.CommitAsync(4L, TestToken);
+            await wal.FlushAsync(TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            True(CleanupTask(wal).TryGetTarget(out var cleanup));
+            await wal.WaitForApplyAsync(4L, TestToken);
+            AssertApplierIsWaiting(wal);
+
+            machine.Release.TrySetResult();
+            await cleanup.WaitAsync(TestToken);
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, stored.InnerException);
+            True(cleanup.IsCompletedSuccessfully);
+            Equal(4L, wal.LastCommittedEntryIndex);
+            Equal(4L, wal.LastAppliedIndex);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Cleaner terminated with the injected storage error; applier was parked; " +
+                $"no new commits or disposal; applier completed: {ApplierTask(wal).IsCompleted}");
+
+            await ApplierTask(wal).WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+            True(ApplierTask(wal).IsCompletedSuccessfully);
+            var retained = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, retained.InnerException);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            startup.Resume();
+        }
+    }
+
+    private static void AssertApplierIsWaiting(WriteAheadLog wal)
+    {
+        // Read the trigger's CallbackAttachedState without signaling or replacing it.
+        True(SpinWait.SpinUntil(() => Volatile.Read(ref TriggerState(ApplyTrigger(wal))) is 2,
+            TimeSpan.FromSeconds(2)));
+        False(ApplierTask(wal).IsCompleted);
+    }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "applyTrigger")]
+    private static extern ref AsyncAutoResetEventSlim ApplyTrigger(WriteAheadLog wal);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "state")]
+    private static extern ref int TriggerState(AsyncAutoResetEventSlim trigger);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task ApplierFailureStopsIdleFlusherWithoutAnotherCommit(bool flushOnCommit)
+    {
+        var options = CreateOptions(Timeout.InfiniteTimeSpan);
+        await using (var seed = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            await seed.AppendAsync(new TestLogEntry("persisted payload"), TestToken);
+            await seed.CommitAsync(1L, TestToken);
+            await seed.FlushAsync(TestToken);
+        }
+
+        var machine = new GatedFailureStateMachine(failApply: true);
+        var startup = new PausedFlusherContext();
+        await using var wal = startup.CreateLog(new()
+        {
+            Location = options.Location,
+            MemoryManagement = options.MemoryManagement,
+            FlushInterval = flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1),
+        }, machine);
+        try
+        {
+            await machine.Entered.Task.WaitAsync(TestToken);
+            // Recovery already persisted the target. The initial callback has no I/O
+            // to await, so Resume returns only after the flusher parks on its trigger.
+            startup.Resume();
+            False(FlusherTask(wal).IsCompleted);
+            var completed = wal.FlushAsync(TestToken);
+            await completed.WaitAsync(TestToken);
+
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, error.InnerException);
+            True(completed.IsCompletedSuccessfully);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Applier failed; flush-on-commit: {flushOnCommit}; no new commits or disposal; " +
+                $"flusher completed: {FlusherTask(wal).IsCompleted}");
+
+            await FlusherTask(wal).WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+            True(FlusherTask(wal).IsCompletedSuccessfully);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            startup.Resume();
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public static async Task ApplierFailureFailsFlushRequests(int mode)
+    {
+        var machine = new GatedFailureStateMachine(failApply: true);
+        var startup = new PausedFlusherContext();
+        var interval = mode switch { 0 => TimeSpan.Zero, 1 => TimeSpan.FromDays(1), _ => Timeout.InfiniteTimeSpan };
+        await using var wal = startup.CreateLog(CreateOptions(interval), machine);
+        using var cancellation = new CancellationTokenSource();
+        Task[] pending = [];
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            if (mode != 2)
+            {
+                pending = [wal.FlushAsync(cancellation.Token), wal.FlushAsync(cancellation.Token)];
+                All(pending, static request => False(request.IsCompleted));
+            }
+
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => wal.WaitForApplyAsync(0L, TestToken).AsTask());
+            Same(machine.Error, stored.InnerException);
+
+            foreach (var request in pending.Append(wal.FlushAsync(cancellation.Token)))
+            {
+                var error = await ThrowsAsync<WriteAheadLog.InternalException>(
+                    () => request.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+                Same(machine.Error, error.InnerException);
+            }
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            cancellation.Cancel();
+            startup.Resume();
+            await Task.WhenAll(pending).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    [Fact]
+    public static async Task CleanerFailureFailsPendingFlushRequests()
+    {
+        var machine = new GatedFailureStateMachine(failApply: false);
+        var startup = new PausedFlusherContext();
+        using var passes = new FlushPasses(initiallyEnabled: false);
+        await using var wal = startup.CreateLog(CreateOptions(TimeSpan.Zero, passes.Tags), machine);
+        using var cancellation = new CancellationTokenSource();
+        Task pending = Task.CompletedTask;
+        try
+        {
+            // Start before any snapshot exists so a later pass schedules cleanup.
+            startup.Resume();
+            for (var i = 0; i < 3; i++)
+                await wal.AppendAsync(new TestLogEntry("snapshot payload"), TestToken);
+            await wal.CommitAsync(3L, TestToken);
+            await wal.WaitForApplyAsync(3L, TestToken);
+            await wal.FlushAsync(TestToken);
+            await wal.AppendAsync(new TestLogEntry("trigger cleanup"), TestToken);
+            await wal.CommitAsync(4L, TestToken);
+            await wal.FlushAsync(TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            True(CleanupTask(wal).TryGetTarget(out var cleanup));
+
+            // Hold the next page flush before its checkpoint, while cleanup fails.
+            passes.Enable();
+            await wal.AppendAsync(new TestLogEntry("pending target"), TestToken);
+            await wal.CommitAsync(5L, TestToken);
+            await passes.First.Entered.Task.WaitAsync(TestToken);
+            pending = wal.FlushAsync(cancellation.Token);
+            False(pending.IsCompleted);
+            machine.Release.TrySetResult();
+            await cleanup.WaitAsync(TestToken);
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => wal.WaitForApplyAsync(0L, TestToken).AsTask());
+            Same(machine.Error, stored.InnerException);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            Same(machine.Error, error.InnerException);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            cancellation.Cancel();
+            passes.First.Release();
+            passes.Second.Release();
+            await pending.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "appenderTask")]
+    private static extern ref Task ApplierTask(WriteAheadLog wal);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "cleanupTask")]
+    private static extern ref WeakReference<Task> CleanupTask(WriteAheadLog wal);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task FirstWorkerFailureIsRetained(bool flusherFirst)
+    {
+        var machine = new GatedFailureStateMachine(failApply: true);
+        var startup = new PausedFlusherContext();
+        using var passes = new FlushPasses();
+        var options = CreateOptions(TimeSpan.Zero, passes.Tags);
+        await using var wal = startup.CreateLog(options, machine);
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        Task resumed = Task.CompletedTask;
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            Directory.Move(data, unavailable);
+            resumed = Task.Run(startup.Resume, TestToken);
+            await passes.First.Entered.Task.WaitAsync(TestToken);
+
+            if (flusherFirst)
+                passes.First.Release();
+            else
+                machine.Release.TrySetResult();
+            await (flusherFirst ? FlusherTask(wal) : ApplierTask(wal)).WaitAsync(TestToken);
+            var first = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            if (flusherFirst)
+                IsType<DirectoryNotFoundException>(first.InnerException);
+            else
+                Same(machine.Error, first.InnerException);
+
+            passes.First.Release();
+            machine.Release.TrySetResult();
+            await Task.WhenAll(FlusherTask(wal), ApplierTask(wal)).WaitAsync(TestToken);
+            var afterBoth = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(first.InnerException, afterBoth.InnerException);
+        }
+        finally
+        {
+            passes.First.Release();
+            passes.Second.Release();
+            machine.Release.TrySetResult();
+            startup.Resume();
+            await resumed;
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [Fact]
+    public static async Task FailedManualRequestDoesNotWaitForActivePass()
+    {
+        var machine = new GatedFailureStateMachine(failApply: true);
+        using var passes = new FlushPasses();
+        await using var wal = new WriteAheadLog(CreateOptions(Timeout.InfiniteTimeSpan, passes.Tags), machine);
+        Task active = Task.CompletedTask, queued = Task.CompletedTask, later = Task.CompletedTask;
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            active = Task.Run(() => wal.FlushAsync(TestToken), TestToken);
+            await passes.First.Entered.Task.WaitAsync(TestToken);
+            queued = wal.FlushAsync(cancellation.Token);
+            False(queued.IsCompleted);
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+
+            later = wal.FlushAsync(cancellation.Token);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => later.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            Same(machine.Error, error.InnerException);
+            False(active.IsCompleted);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Applier failed; active pass held; queued request completed: {queued.IsCompleted}");
+            var queuedError = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => queued.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            Same(machine.Error, queuedError.InnerException);
+            False(active.IsCompleted);
+            passes.First.Release();
+            await ThrowsAsync<WriteAheadLog.InternalException>(() => active.WaitAsync(TestToken));
+            await ThrowsAsync<WriteAheadLog.InternalException>(() => queued.WaitAsync(TestToken));
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            cancellation.Cancel();
+            passes.First.Release();
+            passes.Second.Release();
+            await Task.WhenAll(active, queued, later).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task ManualFailurePreservesCancellationAndDisposalOwnership(bool cancelFirst)
+    {
+        var machine = new GatedFailureStateMachine(failApply: true);
+        using var passes = new FlushPasses();
+        using var cancellation = new CancellationTokenSource();
+        await using var wal = new WriteAheadLog(CreateOptions(Timeout.InfiniteTimeSpan, passes.Tags), machine);
+        Task active = Task.CompletedTask, canceled = Task.CompletedTask, pending = Task.CompletedTask;
+        Task disposal = Task.CompletedTask;
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            active = Task.Run(() => wal.FlushAsync(TestToken), TestToken);
+            await passes.First.Entered.Task.WaitAsync(TestToken);
+            canceled = wal.FlushAsync(cancellation.Token);
+            pending = wal.FlushAsync(TestToken);
+            False(canceled.IsCompleted);
+            False(pending.IsCompleted);
+            if (cancelFirst)
+            {
+                cancellation.Cancel();
+                var error = await ThrowsAnyAsync<OperationCanceledException>(
+                    () => canceled.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+                Equal(cancellation.Token, error.CancellationToken);
+                False(pending.IsCompleted);
+            }
+
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+            if (!cancelFirst)
+            {
+                cancellation.Cancel();
+                var error = await ThrowsAsync<WriteAheadLog.InternalException>(
+                    () => canceled.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+                Same(machine.Error, error.InnerException);
+            }
+            var fatal = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => pending.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            Same(machine.Error, fatal.InnerException);
+            False(active.IsCompleted);
+
+            disposal = wal.DisposeAsync().AsTask();
+            False(disposal.IsCompleted);
+            passes.First.Release();
+            var activeError = await Record.ExceptionAsync(() => active.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+            True(activeError is WriteAheadLog.InternalException or ObjectDisposedException);
+            if (activeError is WriteAheadLog.InternalException activeFatal)
+                Same(machine.Error, activeFatal.InnerException);
+            await disposal.WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            cancellation.Cancel();
+            passes.First.Release();
+            passes.Second.Release();
+            await Task.WhenAll(active, canceled, pending).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await disposal.WaitAsync(TestToken);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public static async Task DisposedFlushCannotReportSuccess(int mode)
+    {
+        var interval = mode switch { 0 => TimeSpan.Zero, 1 => TimeSpan.FromDays(1), _ => Timeout.InfiniteTimeSpan };
+        var wal = new WriteAheadLog(CreateOptions(interval), IStateMachine.CreateNoOp());
+        await wal.FlushAsync(TestToken);
+        await wal.DisposeAsync();
+        await ThrowsAsync<ObjectDisposedException>(() => wal.FlushAsync(TestToken));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task FailurePublicationRacesWithCallers(bool flushOnCommit)
+    {
+        var startup = new PausedFlusherContext();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
+        await using var wal = startup.CreateLog(options);
+        using var cancellation = new CancellationTokenSource();
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task[] callers = [];
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            var canceled = wal.FlushAsync(cancellation.Token);
+            var pending = wal.FlushAsync(TestToken);
+            cancellation.Cancel();
+            var canceledError = await ThrowsAsync<OperationCanceledException>(() => canceled.WaitAsync(TestToken));
+            Equal(cancellation.Token, canceledError.CancellationToken);
+            False(pending.IsCompleted);
+            Directory.Move(data, unavailable);
+            callers = Enumerable.Range(0, 32).Select(_ => Task.Run(async () =>
+            {
+                await start.Task.WaitAsync(TestToken);
+                await ThrowsAsync<WriteAheadLog.InternalException>(
+                    () => wal.FlushAsync(TestToken).WaitAsync(TimeSpan.FromSeconds(10), TestToken));
+            }, TestToken)).ToArray();
+            start.SetResult();
+            startup.Resume();
+            await FlusherTask(wal).WaitAsync(TestToken);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(() => pending.WaitAsync(TestToken));
+            IsAssignableFrom<IOException>(error.InnerException);
+            var later = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(error.InnerException, later.InnerException);
+            await Task.WhenAll(callers).WaitAsync(TestToken);
+        }
+        finally
+        {
+            start.TrySetResult();
+            startup.Resume();
+            await Task.WhenAll(callers).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 0)]
+    [InlineData(true, 1)]
+    [InlineData(true, 2)]
+    public static async Task FailureAndDisposalCompleteEveryCaller(bool flushOnCommit, int order)
+    {
+        var startup = new PausedFlusherContext();
+        using var passes = new FlushPasses();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1), passes.Tags);
+        var wal = startup.CreateLog(options);
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        Task resumed = Task.CompletedTask, disposal = Task.CompletedTask;
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            var callers = Enumerable.Range(0, 8).Select(_ => wal.FlushAsync(TestToken)).ToArray();
+            All(callers, static caller => False(caller.IsCompleted));
+            Directory.Move(data, unavailable);
+            resumed = Task.Run(startup.Resume, TestToken);
+            await passes.First.Entered.Task.WaitAsync(TestToken);
+            if (order == 0)
+            {
+                disposal = wal.DisposeAsync().AsTask();
+                foreach (var caller in callers)
+                    await ThrowsAsync<ObjectDisposedException>(() => caller.WaitAsync(TestToken));
+                False(disposal.IsCompleted);
+                passes.First.Release();
+            }
+            else if (order == 1)
+            {
+                passes.First.Release();
+                await FlusherTask(wal).WaitAsync(TestToken);
+                foreach (var caller in callers)
+                    await ThrowsAsync<WriteAheadLog.InternalException>(() => caller.WaitAsync(TestToken));
+                disposal = wal.DisposeAsync().AsTask();
+            }
+            else
+            {
+                disposal = Task.Run(async () => await wal.DisposeAsync(), TestToken);
+                passes.First.Release();
+                foreach (var caller in callers)
+                {
+                    var error = await Record.ExceptionAsync(() => caller.WaitAsync(TimeSpan.FromSeconds(10), TestToken));
+                    True(error is ObjectDisposedException or WriteAheadLog.InternalException);
+                    if (error is WriteAheadLog.InternalException fatal)
+                        IsAssignableFrom<IOException>(fatal.InnerException);
+                }
+            }
+            await disposal.WaitAsync(TestToken);
+            await ThrowsAsync<ObjectDisposedException>(() => wal.FlushAsync(TestToken));
+        }
+        finally
+        {
+            passes.First.Release();
+            passes.Second.Release();
+            startup.Resume();
+            await resumed;
+            await disposal;
+            await wal.DisposeAsync();
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task FatalErrorRejectsAlreadyPersistedTarget(bool manual)
+    {
+        var machine = new GatedFailureStateMachine(failApply: true);
+        await using var wal = new WriteAheadLog(
+            CreateOptions(manual ? Timeout.InfiniteTimeSpan : TimeSpan.Zero), machine);
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("persisted"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            var completed = wal.FlushAsync(TestToken);
+            await completed.WaitAsync(TestToken);
+            machine.Release.TrySetResult();
+            await ApplierTask(wal).WaitAsync(TestToken);
+            True(completed.IsCompletedSuccessfully);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, error.InnerException);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public static async Task FailedLaterTargetPreservesDurablePrefix()
+    {
+        var options = CreateOptions(TimeSpan.Zero);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            var data = Path.Combine(options.Location, "data");
+            var unavailable = Path.Combine(options.Location, "data-unavailable");
+            try
+            {
+                await wal.AppendAsync(new TestLogEntry("durable prefix"), TestToken);
+                await wal.CommitAsync(1L, TestToken);
+                var completed = wal.FlushAsync(TestToken);
+                await completed.WaitAsync(TestToken);
+                await wal.AppendAsync(new TestLogEntry("failed target"), TestToken);
+                Directory.Move(data, unavailable);
+                await wal.CommitAsync(2L, TestToken);
+                var failed = wal.FlushAsync(TestToken);
+                await FlusherTask(wal).WaitAsync(TestToken);
+                await ThrowsAsync<WriteAheadLog.InternalException>(() => failed.WaitAsync(TestToken));
+                True(completed.IsCompletedSuccessfully);
+                Equal(2L, wal.LastCommittedEntryIndex);
+            }
+            finally
+            {
+                if (Directory.Exists(unavailable))
+                    Directory.Move(unavailable, data);
+            }
+        }
+
+        await using var reopened = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        Equal(1L, reopened.LastEntryIndex);
+        Equal(1L, reopened.LastCommittedEntryIndex);
+        using var reader = await reopened.ReadAsync(1L, 1L, TestToken);
+        Equal("durable prefix", await reader[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
     [Fact]
     public static async Task SingleCommittedEntryMustBeFlushed()
     {
@@ -399,13 +1071,17 @@ public sealed class WriteAheadLogFlushTests : Test
         private readonly string id = Guid.NewGuid().ToString();
         private readonly MeterListener listener = new();
         private int count;
+        private volatile bool enabled;
 
         internal readonly Pass First = new(), Second = new();
 
         internal TagList Tags => new() { { "flush-test", id } };
 
-        internal FlushPasses()
+        internal void Enable() => enabled = true;
+
+        internal FlushPasses(bool initiallyEnabled = true)
         {
+            enabled = initiallyEnabled;
             // This synchronous metric runs after target capture, before checkpoint persistence.
             listener.InstrumentPublished = (instrument, listener) =>
             {
@@ -414,6 +1090,8 @@ public sealed class WriteAheadLogFlushTests : Test
             };
             listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
             {
+                if (!enabled)
+                    return;
                 foreach (var tag in tags)
                 {
                     if (tag.Key == "flush-test" && Equals(tag.Value, id))
@@ -468,13 +1146,13 @@ public sealed class WriteAheadLogFlushTests : Test
         public override void Post(SendOrPostCallback d, object state)
             => callbacks.Enqueue((d, state));
 
-        internal WriteAheadLog CreateLog(WriteAheadLog.Options options)
+        internal WriteAheadLog CreateLog(WriteAheadLog.Options options, IStateMachine machine = null)
         {
             var previous = Current;
             SetSynchronizationContext(this);
             try
             {
-                return new(options, IStateMachine.CreateNoOp());
+                return new(options, machine ?? IStateMachine.CreateNoOp());
             }
             finally
             {
@@ -486,6 +1164,36 @@ public sealed class WriteAheadLogFlushTests : Test
         {
             while (callbacks.TryDequeue(out var callback))
                 callback.Callback(callback.State);
+        }
+    }
+
+    private sealed class GatedFailureStateMachine(bool failApply) : IStateMachine
+    {
+        private readonly IStateMachine inner = IStateMachine.CreateNoOp(2L);
+        internal readonly IOException Error = new("Injected state machine storage failure.");
+        internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ISnapshot Snapshot => inner.Snapshot;
+
+        public async ValueTask<long> ApplyAsync(LogEntry entry, CancellationToken token)
+        {
+            if (failApply)
+                await FailAsync(token);
+            return await inner.ApplyAsync(entry, token);
+        }
+
+        public async ValueTask ReclaimGarbageAsync(long watermark, CancellationToken token)
+        {
+            if (!failApply)
+                await FailAsync(token);
+        }
+
+        private async Task FailAsync(CancellationToken token)
+        {
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(token);
+            throw Error;
         }
     }
 }

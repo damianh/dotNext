@@ -23,8 +23,7 @@ partial class WriteAheadLog
         }
         catch (Exception e) when (e is not OperationCanceledException canceledEx || canceledEx.CancellationToken != token)
         {
-            backgroundTaskFailure = e;
-            appliedEvent.Interrupt(new InternalException(e));
+            OnBackgroundTaskFailure(e);
         }
         finally
         {

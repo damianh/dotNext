@@ -6,6 +6,7 @@ using System.Text;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 
+using AsyncAutoResetEventSlim = Threading.AsyncAutoResetEventSlim;
 using static IO.DataTransferObject;
 
 [Collection(TestCollections.WriteAheadLog)]
@@ -69,6 +70,109 @@ public sealed class WriteAheadLogFlushTests : Test
 
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "flusherTask")]
     private static extern ref Task FlusherTask(WriteAheadLog wal);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task FlusherFailureStopsIdleApplierWithoutAnotherCommit(bool flushOnCommit)
+    {
+        var startup = new PausedFlusherContext();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
+        await using var wal = startup.CreateLog(options);
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("not persisted"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            await wal.WaitForApplyAsync(1L, TestToken);
+            AssertApplierIsWaiting(wal);
+
+            Directory.Move(data, unavailable);
+            startup.Resume();
+            await FlusherTask(wal).WaitAsync(TestToken);
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            IsType<DirectoryNotFoundException>(stored.InnerException);
+            True(FlusherTask(wal).IsCompletedSuccessfully);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            Equal(1L, wal.LastAppliedIndex);
+            False(File.Exists(Path.Combine(unavailable, "0")));
+            Equal(0L, new FileInfo(Path.Combine(options.Location, "checkpoint")).Length);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Flusher terminated with {stored.InnerException.GetType().Name}; flush-on-commit: {flushOnCommit}; " +
+                $"applier was parked; no new commits or disposal; applier completed: {ApplierTask(wal).IsCompleted}");
+
+            await ApplierTask(wal).WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+            True(ApplierTask(wal).IsCompletedSuccessfully);
+            var retained = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(stored.InnerException, retained.InnerException);
+        }
+        finally
+        {
+            startup.Resume();
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [Fact]
+    public static async Task CleanerFailureStopsIdleApplierWithoutAnotherCommit()
+    {
+        var machine = new GatedFailureStateMachine(failApply: false);
+        var startup = new PausedFlusherContext();
+        await using var wal = startup.CreateLog(CreateOptions(TimeSpan.Zero), machine);
+        try
+        {
+            startup.Resume();
+            for (var i = 0; i < 3; i++)
+                await wal.AppendAsync(new TestLogEntry("snapshot payload"), TestToken);
+            await wal.CommitAsync(3L, TestToken);
+            await wal.WaitForApplyAsync(3L, TestToken);
+            await wal.FlushAsync(TestToken);
+            await wal.AppendAsync(new TestLogEntry("trigger cleanup"), TestToken);
+            await wal.CommitAsync(4L, TestToken);
+            await wal.FlushAsync(TestToken);
+            await machine.Entered.Task.WaitAsync(TestToken);
+            True(CleanupTask(wal).TryGetTarget(out var cleanup));
+            await wal.WaitForApplyAsync(4L, TestToken);
+            AssertApplierIsWaiting(wal);
+
+            machine.Release.TrySetResult();
+            await cleanup.WaitAsync(TestToken);
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, stored.InnerException);
+            True(cleanup.IsCompletedSuccessfully);
+            Equal(4L, wal.LastCommittedEntryIndex);
+            Equal(4L, wal.LastAppliedIndex);
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Cleaner terminated with the injected storage error; applier was parked; " +
+                $"no new commits or disposal; applier completed: {ApplierTask(wal).IsCompleted}");
+
+            await ApplierTask(wal).WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+            True(ApplierTask(wal).IsCompletedSuccessfully);
+            var retained = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
+            Same(machine.Error, retained.InnerException);
+        }
+        finally
+        {
+            machine.Release.TrySetResult();
+            startup.Resume();
+        }
+    }
+
+    private static void AssertApplierIsWaiting(WriteAheadLog wal)
+    {
+        // Read the trigger's CallbackAttachedState without signaling or replacing it.
+        True(SpinWait.SpinUntil(() => Volatile.Read(ref TriggerState(ApplyTrigger(wal))) is 2,
+            TimeSpan.FromSeconds(2)));
+        False(ApplierTask(wal).IsCompleted);
+    }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "applyTrigger")]
+    private static extern ref AsyncAutoResetEventSlim ApplyTrigger(WriteAheadLog wal);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "state")]
+    private static extern ref int TriggerState(AsyncAutoResetEventSlim trigger);
 
     [Theory]
     [InlineData(false)]

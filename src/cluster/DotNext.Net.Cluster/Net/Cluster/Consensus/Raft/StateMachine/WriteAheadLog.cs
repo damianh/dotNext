@@ -141,19 +141,22 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         // flusher
         {
             var interval = configuration.FlushInterval;
-            flusherPreviousIndex = commitIndex + 1L;
+            nextUnflushedIndex = commitIndex + 1L;
             if (interval == TimeSpan.Zero)
             {
                 flushTrigger = new(initialState: false);
-                flusherTask = FlushAsync(new BackgroundTrigger(flushTrigger, out flushCompleted), lifetimeToken);
+                flushCompleted = new();
+                flusherTask = FlushAsync(new BackgroundTrigger(flushTrigger, flushCompleted), lifetimeToken);
             }
             else if (interval == InfiniteTimeSpan)
             {
+                foregroundFlushLock = new();
                 flusherTask = Task.CompletedTask;
             }
             else
             {
-                flusherTask = FlushAsync(new TimeoutTrigger(interval, out flushCompleted), lifetimeToken);
+                flushCompleted = new();
+                flusherTask = FlushAsync(new TimeoutTrigger(interval, flushCompleted), lifetimeToken);
             }
         }
 
@@ -640,6 +643,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         metadataPages.Dispose();
         dataPages.Dispose();
         Dispose<QueuedSynchronizer>(lockManager, appliedEvent, stateLock);
+        flushCompleted?.Dispose();
         checkpoint.Dispose();
         state.Dispose();
         context.Clear();
@@ -666,6 +670,9 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         CancelBackgroundJobs();
         
         await flusherTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        if (foregroundFlushLock is not null)
+            await foregroundFlushLock.DisposeAsync().ConfigureAwait(false);
+
         await appenderTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
         if (cleanupTask.TryGetTarget(out var task))

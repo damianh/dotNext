@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
@@ -10,6 +11,64 @@ using static IO.DataTransferObject;
 [Collection(TestCollections.WriteAheadLog)]
 public sealed class WriteAheadLogFlushTests : Test
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public static async Task PageFailureFailsExplicitRequests(bool flushOnCommit, bool subsequent)
+    {
+        var startup = new PausedFlusherContext();
+        var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
+        await using var wal = startup.CreateLog(options);
+        using var cancellation = new CancellationTokenSource();
+        var data = Path.Combine(options.Location, "data");
+        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        Task[] pending = [];
+        try
+        {
+            await wal.AppendAsync(new TestLogEntry("not persisted"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            pending = [wal.FlushAsync(cancellation.Token), wal.FlushAsync(cancellation.Token)];
+            All(pending, static request => False(request.IsCompleted));
+
+            Directory.Move(data, unavailable);
+            startup.Resume();
+            await FlusherTask(wal).WaitAsync(TestToken);
+
+            // Worker termination plus its stored I/O error establishes the failed pass.
+            var stored = await ThrowsAsync<WriteAheadLog.InternalException>(
+                () => wal.WaitForApplyAsync(0L, TestToken).AsTask());
+            IsAssignableFrom<IOException>(stored.InnerException);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            False(File.Exists(Path.Combine(unavailable, "0")));
+            Equal(0L, new FileInfo(Path.Combine(options.Location, "checkpoint")).Length);
+
+            var requests = subsequent ? new[] { wal.FlushAsync(cancellation.Token) } : pending;
+            TestContext.Current.TestOutputHelper.WriteLine(
+                $"Worker completed: {FlusherTask(wal).IsCompleted}; stored: {stored.InnerException.GetType().Name}; " +
+                $"target: 1; checkpoint bytes: 0; subsequent: {subsequent}; " +
+                $"requests completed: {string.Join(", ", requests.Select(static request => request.IsCompleted))}");
+            foreach (var request in requests)
+            {
+                var error = await ThrowsAsync<WriteAheadLog.InternalException>(
+                    () => request.WaitAsync(TimeSpan.FromSeconds(2), TestToken));
+                Same(stored.InnerException, error.InnerException);
+            }
+        }
+        finally
+        {
+            cancellation.Cancel();
+            startup.Resume();
+            await Task.WhenAll(pending).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            if (Directory.Exists(unavailable))
+                Directory.Move(unavailable, data);
+        }
+    }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "flusherTask")]
+    private static extern ref Task FlusherTask(WriteAheadLog wal);
+
     [Fact]
     public static async Task SingleCommittedEntryMustBeFlushed()
     {

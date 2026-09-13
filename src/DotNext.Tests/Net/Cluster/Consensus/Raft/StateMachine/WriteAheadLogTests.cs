@@ -7,6 +7,7 @@ using static System.Threading.Timeout;
 namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 
 using Buffers.Binary;
+using IO;
 using Membership;
 using Text.Json;
 using Threading;
@@ -469,6 +470,46 @@ public sealed class WriteAheadLogTests : Test
         config = await storage.LoadConfigurationAsync(TestToken);
         Contains(address, config.Members);
     }
+
+    [Fact]
+    public static async Task ConcurrentOverwriteDoesNotDeadlockBehindAppend()
+    {
+        await using var wal = new WriteAheadLog(new() { Location = GetTempPath() }, IStateMachine.CreateNoOp());
+        await wal.AppendAsync(new TestLogEntry("first") { Term = 1L }, TestToken);
+        await wal.AppendAsync(new TestLogEntry("second") { Term = 2L }, TestToken);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+        var appendAEntry = new GatedLogEntry(3) { Term = 3L };
+        var appendA = wal.AppendAsync(appendAEntry, cts.Token).AsTask();
+
+        try
+        {
+            await appendAEntry.WriteStarted.WaitAsync(TestToken);
+
+            var overwriteB = wal.AppendAsync(new TestLogEntry("replacement") { Term = 4L }, 2L, cts.Token).AsTask();
+            False(overwriteB.IsCompleted);
+
+            var appendC = wal.AppendAsync(new TestLogEntry("tail") { Term = 5L }, cts.Token).AsTask();
+            False(appendC.IsCompleted);
+
+            appendAEntry.Release();
+            await Task.WhenAll(appendA, overwriteB, appendC).WaitAsync(TimeSpan.FromSeconds(2), TestToken);
+
+            Equal(3L, wal.LastEntryIndex);
+            using var entries = await wal.ReadAsync(1L, 3L, TestToken);
+            Equal(3, entries.Count);
+            Equal(1L, entries[0].Term);
+            Equal(4L, entries[1].Term);
+            Equal("replacement", await entries[1].ToStringAsync(Encoding.UTF8, token: TestToken));
+            Equal(5L, entries[2].Term);
+            Equal("tail", await entries[2].ToStringAsync(Encoding.UTF8, token: TestToken));
+        }
+        finally
+        {
+            appendAEntry.Release();
+            await cts.CancelAsync();
+        }
+    }
     
     [Fact]
     public static async Task UseTimeBasedFlush()
@@ -506,6 +547,32 @@ public sealed class WriteAheadLogTests : Test
             Equal(entry2.Content, await reader[1].ToStringAsync(Encoding.UTF8,  token: TestToken));
             Equal(entry3.Content, await reader[2].ToStringAsync(Encoding.UTF8,  token: TestToken));
             Equal(entry4.Content, await reader[3].ToStringAsync(Encoding.UTF8,  token: TestToken));
+        }
+    }
+
+    private sealed class GatedLogEntry(byte value) : IRaftLogEntry
+    {
+        private readonly TaskCompletionSource writeStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WriteStarted => writeStarted.Task;
+
+        public long Term { get; init; }
+
+        public bool IsSnapshot => false;
+
+        public long? Length => 1L;
+
+        public bool IsReusable => true;
+
+        public void Release() => release.TrySetResult();
+
+        public async ValueTask WriteToAsync<TWriter>(TWriter writer, CancellationToken token)
+            where TWriter : IAsyncBinaryWriter
+        {
+            writeStarted.TrySetResult();
+            await release.Task.WaitAsync(token);
+            await writer.WriteAsync(new ReadOnlyMemory<byte>([value]), token: token);
         }
     }
 }

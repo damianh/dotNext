@@ -186,6 +186,8 @@ partial class WriteAheadLog
     /// <remarks>
     /// Captures <see cref="LastCommittedEntryIndex"/> when called and waits until entries through
     /// that index are persisted. Later commits do not extend this request's target.
+    /// A snapshot installed while the request is in flight does extend it, because the snapshot
+    /// replaces every index below it and those indices can no longer be persisted on their own.
     /// Uncommitted appended entries are not included in the recoverable checkpoint.
     /// When automatic flushing is enabled, this method waits for the background flusher;
     /// otherwise, it performs the flush. Concurrent manual flushes are serialized.

@@ -43,36 +43,43 @@ partial class WriteAheadLog
 
             while (!token.IsCancellationRequested && backgroundTaskFailure is null)
             {
-                var newSnapshot = SnapshotIndex;
-                var newIndex = targetIndex ?? LastCommittedEntryIndex;
-
-                if (newIndex >= nextUnflushedIndex)
+                // Ensure that the flusher is not running with the snapshot installation process concurrently.
+                // The boundaries are read under the lock: an installation moves the commit index, the snapshot
+                // index and the flushing boundary at once, and a pass built from a mixture of both states can
+                // ask for squashed indices or persist a checkpoint that goes backwards.
+                lockManager.SetCallerInformation("Flush Pages");
+                await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
+                long newSnapshot;
+                try
                 {
-                    // Ensure that the flusher is not running with the snapshot installation process concurrently
-                    lockManager.SetCallerInformation("Flush Pages");
-                    await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
-                    try
+                    newSnapshot = SnapshotIndex;
+                    var fromIndex = nextUnflushedIndex;
+
+                    // A snapshot covers everything below its index, so it is always part of the durable boundary.
+                    var newIndex = long.Max(targetIndex ?? LastCommittedEntryIndex, newSnapshot);
+
+                    if (newIndex >= fromIndex)
                     {
                         var ts = new Timestamp();
-                        await Flush(nextUnflushedIndex, newIndex, token).ConfigureAwait(false);
+                        await Flush(fromIndex, newIndex, token).ConfigureAwait(false);
 
-                        // everything up to toIndex is flushed, save the commit index
+                        // everything up to newIndex is flushed, save the commit index
                         await checkpoint.UpdateAsync<CheckpointVersion0>(new(newIndex), token).ConfigureAwait(false);
                         FlushDurationMeter.Record(ts.ElapsedMilliseconds);
+
+                        // A queued manual caller can have an older target than a completed pass.
+                        Atomic.Write(ref nextUnflushedIndex, newIndex + 1L);
                     }
-                    finally
-                    {
-                        lockManager.ReleaseReadLock();
-                    }
+                }
+                finally
+                {
+                    lockManager.ReleaseReadLock();
                 }
 
                 if ((!cleanupTask.TryGetTarget(out var task) || task.IsCompletedSuccessfully) && flusherOldSnapshot < newSnapshot)
                     cleanupTask.SetTarget(CleanUpAsync(newSnapshot, lifetimeToken));
 
                 flusherOldSnapshot = newSnapshot;
-                var flushedThrough = long.Max(newSnapshot, newIndex);
-                // A queued manual caller can have an older target than a completed pass.
-                Atomic.Write(ref nextUnflushedIndex, long.Max(nextUnflushedIndex, flushedThrough + 1L));
                 flushTrigger.NotifyCompleted();
                 if (!await flushTrigger.WaitAsync(token).ConfigureAwait(false))
                     break;
@@ -91,6 +98,15 @@ partial class WriteAheadLog
             flushTrigger.Dispose();
             await cancellation.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    // Called under the overwrite lock right after a snapshot has been installed. The indices below the snapshot
+    // are squashed, so the flusher must not look for their metadata; and the boundary has to be scheduled for
+    // persistence even though no ordinary commit happened.
+    private void OnSnapshotInstalled(long snapshotIndex)
+    {
+        Atomic.Write(ref nextUnflushedIndex, long.Max(Atomic.Read(in nextUnflushedIndex), snapshotIndex));
+        flushTrigger?.Set();
     }
 
     private Task Flush(long fromIndex, long toIndex, CancellationToken token)

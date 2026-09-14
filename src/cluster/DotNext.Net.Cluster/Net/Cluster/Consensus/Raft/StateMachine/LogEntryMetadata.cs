@@ -119,6 +119,11 @@ internal readonly struct LogEntryMetadata : IBinaryFormattable<LogEntryMetadata>
         where TLogEntry : IRaftLogEntry
         => new(entry.Term, offset, length) { Id = entry.CommandId, IsConfiguration = entry.IsConfiguration };
 
+    // Represents the index covered by an installed snapshot rather than by an ordinary entry. The record carries
+    // no payload, and its address lets the flusher and the recovery path resolve the post-snapshot write position.
+    internal static LogEntryMetadata CreateSnapshotBoundary(long term, ulong offset)
+        => new(term, offset, length: 0L);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void FormatSlow(Span<byte> output)
     {

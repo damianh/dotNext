@@ -337,7 +337,11 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 
                 LastAppliedIndex = await stateMachine.ApplyAsync(new LogEntry(entry, startIndex), token).ConfigureAwait(false);
                 var snapshotIndex = stateMachine.Snapshot?.Index ?? startIndex;
+                if (snapshotIndex > tailIndex)
+                    WriteSnapshotBoundary(snapshotIndex, entry.Term);
+
                 LastEntryIndex = long.Max(tailIndex, LastCommittedEntryIndex = snapshotIndex);
+                OnSnapshotInstalled(snapshotIndex);
             }
             else
             {
@@ -513,6 +517,18 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         LastEntryIndex = index;
         AppendRateMeter.Add(1L, measurementTags);
         BytesWrittenMeter.Record(length + LogEntryMetadata.Size, measurementTags);
+    }
+
+    // An installed snapshot squashes every index below it, so those indices have no ordinary metadata and their
+    // pages may never have been allocated. Materializing a payload-free record at the snapshot index keeps the
+    // flushing, checkpointing, recovery and page reclamation paths working on a real metadata entry.
+    private void WriteSnapshotBoundary(long index, long term)
+    {
+        var writer = metadataPages.GetView<MetadataWriter>(index);
+        writer.WriteMetadata(LogEntryMetadata.CreateSnapshotBoundary(term, dataPages.LastWrittenAddress));
+
+        if (hash is not null)
+            writer.CompleteAndWriteHash(hash);
     }
 
     /// <inheritdoc cref="IAuditTrail.CommitAsync(long, CancellationToken)"/>

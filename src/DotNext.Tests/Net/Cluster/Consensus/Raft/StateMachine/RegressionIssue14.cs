@@ -10,7 +10,7 @@ using IO;
 using AsyncAutoResetEventSlim = Threading.AsyncAutoResetEventSlim;
 
 [Collection(TestCollections.WriteAheadLog)]
-public sealed class RegressionIssue14 : Test
+public sealed partial class RegressionIssue14 : Test
 {
     private const long SnapshotIndex = 1000L;
     private const long SnapshotTerm = 7L;

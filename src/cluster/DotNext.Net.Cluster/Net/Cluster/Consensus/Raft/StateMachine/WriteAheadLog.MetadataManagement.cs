@@ -43,7 +43,10 @@ partial class WriteAheadLog
         
         public long DeletePages(long toIndex)
         {
-            var toPage = GetEndPageIndex(toIndex, out _);
+            // The record at toIndex must survive: it's the snapshot boundary that recovery resolves to restore
+            // the write position. Taking the end page would roll over to the next page when that record occupies
+            // the last slot of its own page, and the page holding it would be deleted.
+            var toPage = GetStartPageIndex(toIndex, out _);
             return manager.DeletePages(toPage) * manager.PageSize;
         }
         

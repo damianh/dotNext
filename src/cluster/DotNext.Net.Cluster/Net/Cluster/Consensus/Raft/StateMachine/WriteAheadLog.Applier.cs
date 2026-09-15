@@ -24,16 +24,20 @@ partial class WriteAheadLog
     [AsyncMethodBuilder(typeof(SpawningAsyncTaskMethodBuilder))]
     private async Task ApplyAsync(CancellationToken token)
     {
-        for (long newIndex; !token.IsCancellationRequested && backgroundTaskFailure is null; await applyTrigger.WaitAsync().ConfigureAwait(false))
+        for (; !token.IsCancellationRequested && backgroundTaskFailure is null; await applyTrigger.WaitAsync().ConfigureAwait(false))
         {
-            newIndex = LastCommittedEntryIndex;
-
             // Ensure that the appender is not running with the snapshot installation process concurrently
             lockManager.SetCallerInformation(ApplierCallerInfo);
             await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
             try
             {
-                await ApplyAsync(LastAppliedIndex + 1L, newIndex, token).ConfigureAwait(false);
+                // The target and the published progress must both be observed under the lock. Otherwise, a
+                // snapshot installation completing in between can be rolled back by a stale target, see #15.
+                var newIndex = LastCommittedEntryIndex;
+
+                // Never walk back over the metadata reclaimed by an installation.
+                await ApplyAsync(long.Max(LastAppliedIndex, SnapshotIndex) + 1L, newIndex, token).ConfigureAwait(false);
+                LastAppliedIndex = newIndex;
             }
             catch (Exception e) when (e is not OperationCanceledException canceledEx || canceledEx.CancellationToken != token)
             {
@@ -44,8 +48,6 @@ partial class WriteAheadLog
             {
                 lockManager.ReleaseReadLock();
             }
-
-            LastAppliedIndex = newIndex;
         }
     }
 
@@ -58,7 +60,10 @@ partial class WriteAheadLog
         
         private set
         {
-            Atomic.Write(ref appliedIndex, value);
+            // Applied progress is monotonic: the applier and a snapshot installation can both publish it.
+            if (value > Atomic.Read(in appliedIndex))
+                Atomic.Write(ref appliedIndex, value);
+
             appliedEvent.Signal(resumeAll: true);
         }
     }

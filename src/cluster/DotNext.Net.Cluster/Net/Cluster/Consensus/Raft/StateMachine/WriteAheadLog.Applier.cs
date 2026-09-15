@@ -11,6 +11,9 @@ using Threading;
 
 partial class WriteAheadLog
 {
+    // Diagnostics only, see QueuedSynchronizer.TrackSuspendedCallers.
+    internal const string ApplierCallerInfo = "Apply Entries";
+
     private readonly AsyncAutoResetEventSlim applyTrigger;
     private readonly Task appenderTask;
     
@@ -26,6 +29,7 @@ partial class WriteAheadLog
             newIndex = LastCommittedEntryIndex;
 
             // Ensure that the appender is not running with the snapshot installation process concurrently
+            lockManager.SetCallerInformation(ApplierCallerInfo);
             await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
             try
             {

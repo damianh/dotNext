@@ -341,7 +341,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 if (snapshotIndex > tailIndex)
                     WriteSnapshotBoundary(snapshotIndex, entry.Term);
 
-                LastEntryIndex = long.Max(tailIndex, LastCommittedEntryIndex = snapshotIndex);
+                var committedIndex = long.Max(LastCommittedEntryIndex, snapshotIndex);
+                LastEntryIndex = long.Max(tailIndex, LastCommittedEntryIndex = committedIndex);
                 OnSnapshotInstalled(snapshotIndex);
             }
             else

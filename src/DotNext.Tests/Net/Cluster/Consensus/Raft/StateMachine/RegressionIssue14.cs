@@ -242,9 +242,8 @@ public sealed partial class RegressionIssue14 : Test
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "state")]
     private static extern ref int TriggerState(AsyncAutoResetEventSlim trigger);
 
-    // The applier can regress the applied index when it samples a target and then waits behind an installation
-    // (issue #15). That is a separate defect, so park the applier first and keep this suite focused on the
-    // flushing boundary.
+    // Park the applier first so that this suite stays focused on the flushing boundary and does not depend on
+    // the applier's progress.
     private static void QuiesceApplier(WriteAheadLog wal)
     {
         // Read the trigger's CallbackAttachedState without signaling or replacing it.

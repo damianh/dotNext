@@ -332,6 +332,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             var tailIndex = LastEntryIndex;
             if (entry.IsSnapshot)
             {
+                lockManager.SetCallerInformation("Install Snapshot");
                 await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
                 if (startIndex <= LastCommittedEntryIndex)
                     throw new InvalidOperationException(ExceptionMessages.InvalidAppendIndex);
@@ -352,6 +353,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                     case > 0:
                         throw new ArgumentOutOfRangeException(nameof(startIndex));
                     case < 0:
+                        lockManager.SetCallerInformation("Overwrite Uncommitted Tail");
                         await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
                         if (startIndex <= LastCommittedEntryIndex)
                             throw new InvalidOperationException(ExceptionMessages.InvalidAppendIndex);
@@ -386,6 +388,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 case > 0:
                     throw new ArgumentOutOfRangeException(nameof(startIndex));
                 case < 0:
+                    lockManager.SetCallerInformation("Overwrite Uncommitted Tail");
                     await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
                     break;
             }
@@ -452,6 +455,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 case < 0:
                     // No need to call PostCommit here since the o/w lock will suspend the flusher and applier.
                     // Thus, we can resume them later, out of the o/w lock
+                    lockManager.SetCallerInformation("Overwrite Uncommitted Tail");
                     await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
                     delayedPostCommit = committedCount > 0L;
                     break;

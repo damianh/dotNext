@@ -19,7 +19,7 @@ partial class WriteAheadLog
     
     private Checkpoint checkpoint;
     private long commitIndex; // Commit lock protects modification of this field
-    private long nextUnflushedIndex, flusherOldSnapshot;
+    private long nextUnflushedIndex, flushFloorIndex, flusherOldSnapshot;
 
     private async Task FlushAsync<T>(T flushTrigger, CancellationToken token, long? targetIndex = null)
         where T : struct, IFlushTrigger
@@ -48,7 +48,7 @@ partial class WriteAheadLog
                 try
                 {
                     newSnapshot = SnapshotIndex;
-                    var fromIndex = nextUnflushedIndex;
+                    var fromIndex = long.Max(Atomic.Read(in nextUnflushedIndex), Atomic.Read(in flushFloorIndex));
 
                     // A snapshot covers everything below its index, so it is always part of the durable boundary.
                     var newIndex = long.Max(targetIndex ?? LastCommittedEntryIndex, newSnapshot);
@@ -100,7 +100,7 @@ partial class WriteAheadLog
     // persistence even though no ordinary commit happened.
     private void OnSnapshotInstalled(long snapshotIndex)
     {
-        Atomic.Write(ref nextUnflushedIndex, long.Max(Atomic.Read(in nextUnflushedIndex), snapshotIndex));
+        Atomic.Write(ref flushFloorIndex, long.Max(Atomic.Read(in flushFloorIndex), snapshotIndex));
         flushTrigger?.Set();
     }
 

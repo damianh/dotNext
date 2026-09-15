@@ -36,11 +36,6 @@ partial class WriteAheadLog
         // by the async state machine.
         try
         {
-            if (T.IsBackground)
-            {
-                flusherOldSnapshot = SnapshotIndex;
-            }
-
             while (!token.IsCancellationRequested && backgroundTaskFailure is null)
             {
                 // Ensure that the flusher is not running with the snapshot installation process concurrently.

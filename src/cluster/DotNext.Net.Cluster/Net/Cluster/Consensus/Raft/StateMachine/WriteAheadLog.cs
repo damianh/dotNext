@@ -143,6 +143,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         {
             var interval = configuration.FlushInterval;
             nextUnflushedIndex = commitIndex + 1L;
+            flusherOldSnapshot = snapshotIndex;
             if (interval == TimeSpan.Zero)
             {
                 flushTrigger = new(initialState: false);

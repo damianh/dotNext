@@ -279,7 +279,7 @@ public sealed partial class RegressionIssue14 : Test
         };
 
     private static long ReadCheckpoint(string location)
-        => WriteAheadLogFlushTests.ReadCommittedCheckpoint(location);
+        => WalCheckpointAssertions.ReadCommittedCheckpoint(location);
 
     private sealed class ByteArrayStateMachine(DirectoryInfo location) : SimpleStateMachine(location)
     {

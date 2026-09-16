@@ -124,5 +124,5 @@ public sealed class RegressionIssue16 : Test
         };
 
     private static long ReadCheckpoint(string location)
-        => WriteAheadLogFlushTests.ReadCommittedCheckpoint(location);
+        => WalCheckpointAssertions.ReadCommittedCheckpoint(location);
 }

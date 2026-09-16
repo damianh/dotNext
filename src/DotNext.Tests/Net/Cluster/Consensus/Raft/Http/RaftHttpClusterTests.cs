@@ -10,6 +10,7 @@ using static System.Threading.Timeout;
 namespace DotNext.Net.Cluster.Consensus.Raft.Http;
 
 using Diagnostics;
+using InProcess;
 using IO.Log;
 using Messaging;
 using Replication;
@@ -29,7 +30,7 @@ public sealed class RaftHttpClusterTests : RaftTest
             => cluster.LeaderChanged -= OnLeaderChanged;
     }
 
-    private static IHost CreateHost<TStartup>(int port, IDictionary<string, string> configuration, IClusterMemberLifetime configurator = null, Func<TimeSpan, IRaftClusterMember, IFailureDetector> failureDetectorFactory = null)
+    private static IHost CreateHost<TStartup>(int port, IDictionary<string, string> configuration, IClusterMemberLifetime configurator = null, Func<TimeSpan, IRaftClusterMember, IFailureDetector> failureDetectorFactory = null, Action<IServiceCollection> configureServices = null)
         where TStartup : class
     {
         return new HostBuilder()
@@ -44,6 +45,7 @@ public sealed class RaftHttpClusterTests : RaftTest
                 })
                 .UseStartup<TStartup>()
             )
+            .ConfigureServices(services => configureServices?.Invoke(services))
             .ConfigureHostOptions(static options => options.ShutdownTimeout = DefaultTimeout)
             .ConfigureAppConfiguration(builder => builder.AddInMemoryCollection(configuration))
             .ConfigureLogging(builder => builder.AddDebugLogger(port.ToString()).SetMinimumLevel(LogLevel.Debug))
@@ -274,6 +276,10 @@ public sealed class RaftHttpClusterTests : RaftTest
     [InlineData(false)]
     public static async Task Leadership(bool optimizedLogEntryTransfer)
     {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+        timeout.CancelAfter(DefaultTimeout);
+        var token = timeout.Token;
+        var clock = new ManualTimeProvider();
         var config1 = new Dictionary<string, string>
         {
             { "partitioning", "false" },
@@ -300,26 +306,28 @@ public sealed class RaftHttpClusterTests : RaftTest
         };
 
         var listener = new LeaderTracker();
-        using var host1 = CreateHost<Startup>(3262, config1, listener);
-        await host1.StartAsync(TestToken);
+        using var host1 = CreateLeadershipHost(3262, config1, listener);
+        await host1.StartAsync(token);
         True(GetLocalClusterView(host1).Readiness.IsCompletedSuccessfully);
 
         // two nodes in frozen state
-        using var host2 = CreateHost<Startup>(3263, config2);
-        await host2.StartAsync(TestToken);
+        using var host2 = CreateLeadershipHost(3263, config2);
+        await host2.StartAsync(token);
 
-        using var host3 = CreateHost<Startup>(3264, config3);
-        await host3.StartAsync(TestToken);
+        using var host3 = CreateLeadershipHost(3264, config3);
+        await host3.StartAsync(token);
 
-        await listener.Task.WaitAsync(TestToken);
+        await listener.Task.WaitAsync(token);
         Equal(new UriEndPoint(GetLocalClusterView(host1).LocalMemberAddress), (await listener.Task).EndPoint, UriEndPoint.Comparer);
+        var leadershipToken = GetLocalClusterView(host1).LeadershipToken;
+        False(leadershipToken.IsCancellationRequested);
 
         // add two nodes to the cluster
-        True(await GetLocalClusterView(host1).AddMemberAsync(GetLocalClusterView(host2).LocalMemberAddress, TestToken));
-        await GetLocalClusterView(host2).Readiness.WaitAsync(TestToken);
+        True(await GetLocalClusterView(host1).AddMemberAsync(GetLocalClusterView(host2).LocalMemberAddress, token));
+        await ReplicateUntilReadyAsync(GetLocalClusterView(host2));
 
-        True(await GetLocalClusterView(host1).AddMemberAsync(GetLocalClusterView(host3).LocalMemberAddress, TestToken));
-        await GetLocalClusterView(host3).Readiness.WaitAsync(TestToken);
+        True(await GetLocalClusterView(host1).AddMemberAsync(GetLocalClusterView(host3).LocalMemberAddress, token));
+        await ReplicateUntilReadyAsync(GetLocalClusterView(host3));
 
         await AssertLeadershipAsync(
             UriEndPoint.Comparer,
@@ -331,15 +339,41 @@ public sealed class RaftHttpClusterTests : RaftTest
         {
             if (member.IsRemote)
             {
-                NotEmpty(await member.GetMetadataAsync(token: TestToken));
+                NotEmpty(await member.GetMetadataAsync(token: token));
             }
 
             Equal(ClusterMemberStatus.Available, member.Status);
         }
 
-        await host3.StopAsync(TestToken);
-        await host2.StopAsync(TestToken);
-        await host1.StopAsync(TestToken);
+        False(leadershipToken.IsCancellationRequested);
+
+        await host3.StopAsync(token);
+        await host2.StopAsync(token);
+        await host1.StopAsync(token);
+
+        IHost CreateLeadershipHost(int port, IDictionary<string, string> configuration, IClusterMemberLifetime configurator = null)
+        {
+            // This tests healthy membership, not wall-clock failure detection under CI/coverage load.
+            configuration["rpcTimeout"] = DefaultTimeout.ToString();
+            configuration["requestTimeout"] = DefaultTimeout.ToString();
+            return CreateHost<Startup>(port, configuration, configurator, configureServices: services =>
+                services.AddSingleton<TimeProvider>(clock)
+                    .AddSingleton<IHttpMessageHandlerFactory>(new RaftClientHandlerFactory { ConnectTimeout = DefaultTimeout }));
+        }
+
+        async Task ReplicateUntilReadyAsync(IRaftHttpCluster member)
+        {
+            // Configuration publication and follower application are asynchronous. With the clock
+            // stopped, drive real replication rounds until the joining member applies its membership.
+            while (!member.Readiness.IsCompleted)
+            {
+                token.ThrowIfCancellationRequested();
+                await GetLocalClusterView(host1).ForceReplicationAsync(token);
+            }
+
+            await member.Readiness.WaitAsync(token);
+            await GetLocalClusterView(host1).ForceReplicationAsync(token);
+        }
     }
 
     [Fact]

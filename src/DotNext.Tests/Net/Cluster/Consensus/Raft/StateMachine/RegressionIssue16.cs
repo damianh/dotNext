@@ -33,6 +33,8 @@ public sealed class RegressionIssue16 : Test
             for (var i = 1L; i <= entryCount; i++)
                 Equal(i, await wal.AppendAsync(new BinaryLogEntry { Content = BitConverter.GetBytes(i), Term = 1L }, TestToken));
 
+            True(File.Exists(firstMetadataPage));
+
             // Reclamation piggybacks on flush passes. Committing in two steps guarantees that, with flush-on-commit,
             // at least one pass runs after the no-op snapshot has advanced past the first metadata page.
             await wal.CommitAsync(entryCount - 1L, TestToken);
@@ -116,7 +118,8 @@ public sealed class RegressionIssue16 : Test
         => new()
         {
             Location = GetTempPath(),
-            MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
+            // Memory-mapped pages exist on disk before commits can start reclamation.
+            MemoryManagement = WriteAheadLog.MemoryManagementStrategy.SharedMemory,
             FlushInterval = interval,
         };
 

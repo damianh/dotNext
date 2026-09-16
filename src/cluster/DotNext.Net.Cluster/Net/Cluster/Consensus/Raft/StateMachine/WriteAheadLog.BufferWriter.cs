@@ -61,6 +61,12 @@ public partial class WriteAheadLog
             var endPage = manager.GetPageIndex(endAddress, out var endOffset);
             return manager.FlushAsync(startPage, startOffset, endPage, endOffset, token);
         }
+
+        public void ValidateRange(ulong address, long length)
+        {
+            foreach (var segment in manager.GetRange(address, length))
+                _ = segment.Length;
+        }
         
         void IBufferWriter<byte>.Advance(int count)
         {

@@ -6,7 +6,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 public sealed partial class RegressionIssue14 : Test
 {
     [Fact]
-    public static async Task SnapshotInsideUncommittedSuffixDoesNotRecoverThatSuffix()
+    public static async Task SnapshotInsideUncommittedSuffixRecoversThatSuffixWithoutCommittingIt()
     {
         const long committedIndex = 2L;
         const long reportedSnapshotIndex = 4L;
@@ -56,14 +56,19 @@ public sealed partial class RegressionIssue14 : Test
             await wal.InitializeAsync(TestToken);
 
             Equal(reportedSnapshotIndex, wal.LastCommittedEntryIndex);
-            Equal(reportedSnapshotIndex, wal.LastEntryIndex);
-            await ThrowsAsync<ArgumentOutOfRangeException>(wal.ReadAsync(installationIndex, installationIndex, TestToken).AsTask);
+            Equal(tailIndex, wal.LastEntryIndex);
+            Equal(reportedSnapshotIndex, wal.LastAppliedIndex);
+            using (var retained = await wal.ReadAsync(installationIndex, tailIndex, TestToken))
+            {
+                Equal(retainedPayload, await retained[0].ToByteArrayAsync(token: TestToken));
+                Equal(BitConverter.GetBytes(tailIndex), await retained[1].ToByteArrayAsync(token: TestToken));
+            }
 
-            Equal(
+            await wal.AppendAsync(
+                new BinaryLogEntry { Content = replacementPayload, Term = SnapshotTerm },
                 reportedSnapshotIndex + 1L,
-                await wal.AppendAsync(
-                    new BinaryLogEntry { Content = replacementPayload, Term = SnapshotTerm },
-                    TestToken));
+                TestToken);
+            Equal(reportedSnapshotIndex + 1L, wal.LastEntryIndex);
             await wal.CommitAsync(reportedSnapshotIndex + 1L, TestToken);
             await wal.FlushAsync(TestToken);
             Equal(reportedSnapshotIndex + 1L, ReadCheckpoint(options.Location));

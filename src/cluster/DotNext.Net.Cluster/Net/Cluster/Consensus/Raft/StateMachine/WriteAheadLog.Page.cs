@@ -69,8 +69,9 @@ partial class WriteAheadLog
             if (OperatingSystem.IsWindows())
             {
                 File.SetLastWriteTimeUtc(fileHandle, DateTime.UtcNow);
-                RandomAccess.FlushToDisk(fileHandle); // update file metadata and size
             }
+
+            RandomAccess.FlushToDisk(fileHandle);
         }
 
         public override unsafe Span<byte> GetSpan() =>

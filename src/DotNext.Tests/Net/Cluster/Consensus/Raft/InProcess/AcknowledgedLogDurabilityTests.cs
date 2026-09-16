@@ -7,10 +7,31 @@ using StateMachine;
 
 public sealed class AcknowledgedLogDurabilityTests : RaftTest
 {
+    private const string Payload = "client acknowledged N";
+
     [Fact]
     public static async Task SurvivingMajorityRetainsClientAcknowledgedEntry()
+        => await RunAsync(Enumerable.Range(0, 3).Select(_ => GetTempPath()).ToArray());
+
+    [Fact]
+    public static async Task SurvivingMajorityRetainsEntryAfterProcessTermination()
     {
-        var locations = Enumerable.Range(0, 3).Select(_ => GetTempPath()).ToArray();
+        var location = GetTempPath();
+        await WalCrashWorker.KillAfterAcknowledgmentAsync(new(location, WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
+            false, 0, WriteAheadLog.IntegrityHashAlgorithm.None, "raft"));
+        await using var cluster = new InProcessClusterFixture(3, i => new WriteAheadLog(new()
+        {
+            Location = Path.Combine(location, i.ToString()),
+            MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
+            FlushInterval = Timeout.InfiniteTimeSpan,
+        }, IStateMachine.CreateNoOp()));
+        await cluster.StartAsync();
+        await cluster.Leader.StopAsync(TestToken);
+        await VerifySurvivorsAsync(cluster);
+    }
+
+    internal static async Task RunAsync(string[] locations, Func<Task> afterAcknowledgment = null)
+    {
         await using var cluster = new InProcessClusterFixture(3, i => Open(i));
         await cluster.StartLeaderAsync();
         await cluster.DeliverRoundAsync();
@@ -26,8 +47,7 @@ public sealed class AcknowledgedLogDurabilityTests : RaftTest
         var follower = cluster.Nodes[1];
         var stale = cluster.Nodes[2];
         var network = cluster.Network;
-        const string payload = "client acknowledged N";
-        Equal(2L, await leader.AuditTrail.AppendAsync(new TestLogEntry(payload) { Term = leader.Term }, TestToken));
+        Equal(2L, await leader.AuditTrail.AppendAsync(new TestLogEntry(Payload) { Term = leader.Term }, TestToken));
         var replication = leader.ForceReplicationAsync(TestToken).AsTask();
         var toFollower = await cluster.PendingAsync(1, RaftMessageType.AppendEntries);
         var toStale = await cluster.PendingAsync(2, RaftMessageType.AppendEntries);
@@ -46,6 +66,8 @@ public sealed class AcknowledgedLogDurabilityTests : RaftTest
         network.Partition(leader.EndPoint, follower.EndPoint);
         network.Partition(leader.EndPoint, stale.EndPoint);
         await leader.StopAsync(TestToken);
+        if (afterAcknowledgment is not null)
+            await afterAcknowledgment();
         follower = await follower.RestartAsync(old =>
         {
             ((WriteAheadLog)old).Dispose();
@@ -54,6 +76,21 @@ public sealed class AcknowledgedLogDurabilityTests : RaftTest
         await cluster.Nodes[1].DisposeAsync();
         cluster.Nodes[1] = follower;
         cluster.States[1] = follower.AuditTrail;
+        await VerifySurvivorsAsync(cluster);
+
+        WriteAheadLog Open(int index) => new(new()
+        {
+            Location = locations[index],
+            MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
+            FlushInterval = Timeout.InfiniteTimeSpan,
+        }, IStateMachine.CreateNoOp());
+    }
+
+    private static async Task VerifySurvivorsAsync(InProcessClusterFixture cluster)
+    {
+        var follower = cluster.Nodes[1];
+        var stale = cluster.Nodes[2];
+        var network = cluster.Network;
         Equal(1L, follower.AuditTrail.LastCommittedEntryIndex);
         Equal(1L, stale.AuditTrail.LastEntryIndex);
         TestContext.Current.TestOutputHelper.WriteLine(
@@ -78,7 +115,7 @@ public sealed class AcknowledgedLogDurabilityTests : RaftTest
         Equal(PreVoteResult.RejectedByFollower, response.Value);
         Equal(2L, follower.AuditTrail.LastEntryIndex);
         using (var entries = await ((WriteAheadLog)follower.AuditTrail).ReadAsync(2L, 2L, TestToken))
-            Equal(payload, await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+            Equal(Payload, await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
 
         // Positive control: preserving the tail must still allow useful leadership.
         network.Release(stale.EndPoint, follower.EndPoint);
@@ -90,13 +127,6 @@ public sealed class AcknowledgedLogDurabilityTests : RaftTest
         await follower.ForceReplicationAsync(TestToken);
         await stale.AuditTrail.WaitForApplyAsync(2L, TestToken);
         using var replicated = await ((WriteAheadLog)stale.AuditTrail).ReadAsync(2L, 2L, TestToken);
-        Equal(payload, await replicated[0].ToStringAsync(Encoding.UTF8, token: TestToken));
-
-        WriteAheadLog Open(int index) => new(new()
-        {
-            Location = locations[index],
-            MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
-            FlushInterval = Timeout.InfiniteTimeSpan,
-        }, IStateMachine.CreateNoOp());
+        Equal(Payload, await replicated[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 }

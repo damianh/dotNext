@@ -124,19 +124,5 @@ public sealed class RegressionIssue16 : Test
         };
 
     private static long ReadCheckpoint(string location)
-    {
-        // The log keeps the checkpoint file open for writing.
-        using var handle = File.OpenHandle(
-            Path.Combine(location, "checkpoint"),
-            access: FileAccess.Read,
-            share: FileShare.ReadWrite);
-
-        Span<byte> content = stackalloc byte[sizeof(uint) + sizeof(long)];
-        return RandomAccess.Read(handle, content, fileOffset: 0L) switch
-        {
-            0 => 0L,
-            sizeof(long) => BinaryPrimitives.ReadInt64LittleEndian(content),
-            _ => BinaryPrimitives.ReadInt64LittleEndian(content.Slice(sizeof(uint))),
-        };
-    }
+        => WriteAheadLogFlushTests.ReadCommittedCheckpoint(location);
 }

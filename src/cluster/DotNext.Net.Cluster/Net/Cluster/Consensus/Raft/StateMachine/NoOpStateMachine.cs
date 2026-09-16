@@ -22,9 +22,9 @@ internal sealed class NoOpStateMachine : IStateMachine
         return snapshotIndex - snapshotIndex % snapshotDepth;
     }
 
-    internal void SetLastCommittedIndex(long committedIndex)
+    internal void SetLastCommittedIndex(long committedIndex, long snapshotIndex = 0L)
     {
-        var snapshotIndex = GetSnapshotIndex(committedIndex);
+        snapshotIndex = long.Max(snapshotIndex, GetSnapshotIndex(committedIndex));
         snapshot = snapshotIndex > 0L ? new EmptySnapshot(snapshotIndex) : null;
     }
 

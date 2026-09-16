@@ -314,13 +314,15 @@ public sealed class WriteAheadLogTests : Test
         await using (var wal = new WriteAheadLog(options, new ContextAwareStateMachine()))
         {
             Equal(3L, wal.LastCommittedEntryIndex);
-            Equal(3L, wal.LastEntryIndex);
+            Equal(5L, wal.LastEntryIndex);
 
             using var reader = await wal.ReadAsync(1L, wal.LastEntryIndex, TestToken);
             False(reader[0].IsSnapshot);
             Equal(entry1.Content, await reader[0].ToStringAsync(Encoding.UTF8, token: TestToken));
             Equal(entry2.Content, await reader[1].ToStringAsync(Encoding.UTF8,  token: TestToken));
             Equal(entry3.Content, await reader[2].ToStringAsync(Encoding.UTF8,  token: TestToken));
+            Equal(entry4.Content, await reader[3].ToStringAsync(Encoding.UTF8, token: TestToken));
+            Equal(entry5.Content, await reader[4].ToStringAsync(Encoding.UTF8, token: TestToken));
         }
     }
 
@@ -540,6 +542,7 @@ public sealed class WriteAheadLogTests : Test
         await using (var wal = new WriteAheadLog(options, new ContextAwareStateMachine()))
         {
             Equal(4L, wal.LastCommittedEntryIndex);
+            Equal(5L, wal.LastEntryIndex);
 
             using var reader = await wal.ReadAsync(1L, wal.LastEntryIndex, TestToken);
             False(reader[0].IsSnapshot);
@@ -547,6 +550,7 @@ public sealed class WriteAheadLogTests : Test
             Equal(entry2.Content, await reader[1].ToStringAsync(Encoding.UTF8,  token: TestToken));
             Equal(entry3.Content, await reader[2].ToStringAsync(Encoding.UTF8,  token: TestToken));
             Equal(entry4.Content, await reader[3].ToStringAsync(Encoding.UTF8,  token: TestToken));
+            Equal(entry5.Content, await reader[4].ToStringAsync(Encoding.UTF8, token: TestToken));
         }
     }
 

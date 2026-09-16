@@ -1,6 +1,8 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.IO.Hashing;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -17,24 +19,23 @@ public sealed class WriteAheadLogFlushTests : Test
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public static async Task PageFailureFailsExplicitRequests(bool flushOnCommit, bool subsequent)
+    public static async Task CheckpointFailureFailsExplicitRequests(bool flushOnCommit, bool subsequent)
     {
         var startup = new PausedFlusherContext();
         var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
         await using var wal = startup.CreateLog(options);
+        using var failure = new CheckpointFailure(options.Location);
         using var cancellation = new CancellationTokenSource();
-        var data = Path.Combine(options.Location, "data");
-        var unavailable = Path.Combine(options.Location, "data-unavailable");
         Task[] pending = [];
         Task[] requests = [];
         try
         {
-            await wal.AppendAsync(new TestLogEntry("not persisted"), TestToken);
+            await wal.AppendAsync(new TestLogEntry("durable append, unpersisted commit"), TestToken);
             await wal.CommitAsync(1L, TestToken);
             pending = [wal.FlushAsync(cancellation.Token), wal.FlushAsync(cancellation.Token)];
             All(pending, static request => False(request.IsCompleted));
 
-            Directory.Move(data, unavailable);
+            failure.Inject();
             startup.Resume();
             await FlusherTask(wal).WaitAsync(TestToken);
 
@@ -43,13 +44,14 @@ public sealed class WriteAheadLogFlushTests : Test
                 () => wal.WaitForApplyAsync(0L, TestToken).AsTask());
             IsAssignableFrom<IOException>(stored.InnerException);
             Equal(1L, wal.LastCommittedEntryIndex);
-            False(File.Exists(Path.Combine(unavailable, "0")));
-            Equal(0L, new FileInfo(Path.Combine(options.Location, "checkpoint")).Length);
+            True(File.Exists(Path.Combine(options.Location, "data", "0")));
+            Equal(0L, ReadCommittedCheckpoint(options.Location));
+            failure.AssertUnchanged();
 
             requests = subsequent ? new[] { wal.FlushAsync(cancellation.Token) } : pending;
             TestContext.Current.TestOutputHelper.WriteLine(
                 $"Worker completed: {FlusherTask(wal).IsCompleted}; stored: {stored.InnerException.GetType().Name}; " +
-                $"target: 1; checkpoint bytes: 0; subsequent: {subsequent}; " +
+                $"target: 1; durable committed index: 0; subsequent: {subsequent}; " +
                 $"requests completed: {string.Join(", ", requests.Select(static request => request.IsCompleted))}");
             foreach (var request in requests)
             {
@@ -63,8 +65,6 @@ public sealed class WriteAheadLogFlushTests : Test
             cancellation.Cancel();
             startup.Resume();
             await Task.WhenAll(pending.Concat(requests)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-            if (Directory.Exists(unavailable))
-                Directory.Move(unavailable, data);
         }
     }
 
@@ -79,25 +79,25 @@ public sealed class WriteAheadLogFlushTests : Test
         var startup = new PausedFlusherContext();
         var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
         await using var wal = startup.CreateLog(options);
-        var data = Path.Combine(options.Location, "data");
-        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        using var failure = new CheckpointFailure(options.Location);
         try
         {
-            await wal.AppendAsync(new TestLogEntry("not persisted"), TestToken);
+            await wal.AppendAsync(new TestLogEntry("durable append, unpersisted commit"), TestToken);
             await wal.CommitAsync(1L, TestToken);
             await wal.WaitForApplyAsync(1L, TestToken);
             AssertApplierIsWaiting(wal);
 
-            Directory.Move(data, unavailable);
+            failure.Inject();
             startup.Resume();
             await FlusherTask(wal).WaitAsync(TestToken);
             var stored = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
-            IsType<DirectoryNotFoundException>(stored.InnerException);
+            IsAssignableFrom<IOException>(stored.InnerException);
             True(FlusherTask(wal).IsCompletedSuccessfully);
             Equal(1L, wal.LastCommittedEntryIndex);
             Equal(1L, wal.LastAppliedIndex);
-            False(File.Exists(Path.Combine(unavailable, "0")));
-            Equal(0L, new FileInfo(Path.Combine(options.Location, "checkpoint")).Length);
+            True(File.Exists(Path.Combine(options.Location, "data", "0")));
+            Equal(0L, ReadCommittedCheckpoint(options.Location));
+            failure.AssertUnchanged();
             TestContext.Current.TestOutputHelper.WriteLine(
                 $"Flusher terminated with {stored.InnerException.GetType().Name}; flush-on-commit: {flushOnCommit}; " +
                 $"applier was parked; no new commits or disposal; applier completed: {ApplierTask(wal).IsCompleted}");
@@ -110,8 +110,6 @@ public sealed class WriteAheadLogFlushTests : Test
         finally
         {
             startup.Resume();
-            if (Directory.Exists(unavailable))
-                Directory.Move(unavailable, data);
         }
     }
 
@@ -275,7 +273,7 @@ public sealed class WriteAheadLogFlushTests : Test
     {
         var machine = new GatedFailureStateMachine(failApply: false);
         var startup = new PausedFlusherContext();
-        using var passes = new FlushPasses(initiallyEnabled: false);
+        using var passes = new FlushPasses();
         await using var wal = startup.CreateLog(CreateOptions(TimeSpan.Zero, passes.Tags), machine);
         using var cancellation = new CancellationTokenSource();
         Task pending = Task.CompletedTask;
@@ -294,9 +292,9 @@ public sealed class WriteAheadLogFlushTests : Test
             await machine.Entered.Task.WaitAsync(TestToken);
             True(CleanupTask(wal).TryGetTarget(out var cleanup));
 
-            // Hold the next page flush before its checkpoint, while cleanup fails.
-            passes.Enable();
+            // Append persistence must finish before holding the committed checkpoint pass.
             await wal.AppendAsync(new TestLogEntry("pending target"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(5L, TestToken);
             await passes.First.Entered.Task.WaitAsync(TestToken);
             pending = wal.FlushAsync(cancellation.Token);
@@ -336,15 +334,15 @@ public sealed class WriteAheadLogFlushTests : Test
         using var passes = new FlushPasses();
         var options = CreateOptions(TimeSpan.Zero, passes.Tags);
         await using var wal = startup.CreateLog(options, machine);
-        var data = Path.Combine(options.Location, "data");
-        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        using var failure = new CheckpointFailure(options.Location);
         Task resumed = Task.CompletedTask;
         try
         {
             await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             await machine.Entered.Task.WaitAsync(TestToken);
-            Directory.Move(data, unavailable);
+            failure.Inject();
             resumed = Task.Run(startup.Resume, TestToken);
             await passes.First.Entered.Task.WaitAsync(TestToken);
 
@@ -355,7 +353,7 @@ public sealed class WriteAheadLogFlushTests : Test
             await (flusherFirst ? FlusherTask(wal) : ApplierTask(wal)).WaitAsync(TestToken);
             var first = await ThrowsAsync<WriteAheadLog.InternalException>(() => wal.FlushAsync(TestToken));
             if (flusherFirst)
-                IsType<DirectoryNotFoundException>(first.InnerException);
+                IsAssignableFrom<IOException>(first.InnerException);
             else
                 Same(machine.Error, first.InnerException);
 
@@ -372,8 +370,6 @@ public sealed class WriteAheadLogFlushTests : Test
             machine.Release.TrySetResult();
             startup.Resume();
             await resumed;
-            if (Directory.Exists(unavailable))
-                Directory.Move(unavailable, data);
         }
     }
 
@@ -388,6 +384,7 @@ public sealed class WriteAheadLogFlushTests : Test
         try
         {
             await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             await machine.Entered.Task.WaitAsync(TestToken);
             active = Task.Run(() => wal.FlushAsync(TestToken), TestToken);
@@ -436,6 +433,7 @@ public sealed class WriteAheadLogFlushTests : Test
         try
         {
             await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             await machine.Entered.Task.WaitAsync(TestToken);
             active = Task.Run(() => wal.FlushAsync(TestToken), TestToken);
@@ -508,11 +506,10 @@ public sealed class WriteAheadLogFlushTests : Test
         var startup = new PausedFlusherContext();
         var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1));
         await using var wal = startup.CreateLog(options);
+        using var failure = new CheckpointFailure(options.Location);
         using var cancellation = new CancellationTokenSource();
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Task[] callers = [];
-        var data = Path.Combine(options.Location, "data");
-        var unavailable = Path.Combine(options.Location, "data-unavailable");
         try
         {
             await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
@@ -523,7 +520,7 @@ public sealed class WriteAheadLogFlushTests : Test
             var canceledError = await ThrowsAsync<OperationCanceledException>(() => canceled.WaitAsync(TestToken));
             Equal(cancellation.Token, canceledError.CancellationToken);
             False(pending.IsCompleted);
-            Directory.Move(data, unavailable);
+            failure.Inject();
             callers = Enumerable.Range(0, 32).Select(_ => Task.Run(async () =>
             {
                 await start.Task.WaitAsync(TestToken);
@@ -544,8 +541,6 @@ public sealed class WriteAheadLogFlushTests : Test
             start.TrySetResult();
             startup.Resume();
             await Task.WhenAll(callers).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-            if (Directory.Exists(unavailable))
-                Directory.Move(unavailable, data);
         }
     }
 
@@ -562,16 +557,16 @@ public sealed class WriteAheadLogFlushTests : Test
         using var passes = new FlushPasses();
         var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromDays(1), passes.Tags);
         var wal = startup.CreateLog(options);
-        var data = Path.Combine(options.Location, "data");
-        var unavailable = Path.Combine(options.Location, "data-unavailable");
+        using var failure = new CheckpointFailure(options.Location);
         Task resumed = Task.CompletedTask, disposal = Task.CompletedTask;
         try
         {
             await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             var callers = Enumerable.Range(0, 8).Select(_ => wal.FlushAsync(TestToken)).ToArray();
             All(callers, static caller => False(caller.IsCompleted));
-            Directory.Move(data, unavailable);
+            failure.Inject();
             resumed = Task.Run(startup.Resume, TestToken);
             await passes.First.Entered.Task.WaitAsync(TestToken);
             if (order == 0)
@@ -613,8 +608,6 @@ public sealed class WriteAheadLogFlushTests : Test
             await resumed;
             await disposal;
             await wal.DisposeAsync();
-            if (Directory.Exists(unavailable))
-                Directory.Move(unavailable, data);
         }
     }
 
@@ -646,40 +639,35 @@ public sealed class WriteAheadLogFlushTests : Test
     }
 
     [Fact]
-    public static async Task FailedLaterTargetPreservesDurablePrefix()
+    public static async Task FailedLaterCommitPreservesDurableAppendedTail()
     {
         var options = CreateOptions(TimeSpan.Zero);
         await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
         {
-            var data = Path.Combine(options.Location, "data");
-            var unavailable = Path.Combine(options.Location, "data-unavailable");
-            try
-            {
-                await wal.AppendAsync(new TestLogEntry("durable prefix"), TestToken);
-                await wal.CommitAsync(1L, TestToken);
-                var completed = wal.FlushAsync(TestToken);
-                await completed.WaitAsync(TestToken);
-                await wal.AppendAsync(new TestLogEntry("failed target"), TestToken);
-                Directory.Move(data, unavailable);
-                await wal.CommitAsync(2L, TestToken);
-                var failed = wal.FlushAsync(TestToken);
-                await FlusherTask(wal).WaitAsync(TestToken);
-                await ThrowsAsync<WriteAheadLog.InternalException>(() => failed.WaitAsync(TestToken));
-                True(completed.IsCompletedSuccessfully);
-                Equal(2L, wal.LastCommittedEntryIndex);
-            }
-            finally
-            {
-                if (Directory.Exists(unavailable))
-                    Directory.Move(unavailable, data);
-            }
+            using var failure = new CheckpointFailure(options.Location);
+            await wal.AppendAsync(new TestLogEntry("durable prefix"), TestToken);
+            await wal.CommitAsync(1L, TestToken);
+            var completed = wal.FlushAsync(TestToken);
+            await completed.WaitAsync(TestToken);
+            await wal.AppendAsync(new TestLogEntry("durable uncommitted tail"), TestToken);
+            failure.Inject();
+            await wal.CommitAsync(2L, TestToken);
+            var failed = wal.FlushAsync(TestToken);
+            await FlusherTask(wal).WaitAsync(TestToken);
+            var error = await ThrowsAsync<WriteAheadLog.InternalException>(() => failed.WaitAsync(TestToken));
+            IsAssignableFrom<IOException>(error.InnerException);
+            True(completed.IsCompletedSuccessfully);
+            Equal(2L, wal.LastCommittedEntryIndex);
+            Equal(1L, ReadCommittedCheckpoint(options.Location));
+            failure.AssertUnchanged();
         }
 
         await using var reopened = new WriteAheadLog(options, IStateMachine.CreateNoOp());
-        Equal(1L, reopened.LastEntryIndex);
+        Equal(2L, reopened.LastEntryIndex);
         Equal(1L, reopened.LastCommittedEntryIndex);
-        using var reader = await reopened.ReadAsync(1L, 1L, TestToken);
+        using var reader = await reopened.ReadAsync(1L, 2L, TestToken);
         Equal("durable prefix", await reader[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+        Equal("durable uncommitted tail", await reader[1].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
     [Fact]
@@ -753,6 +741,7 @@ public sealed class WriteAheadLogFlushTests : Test
         {
             await wal.AppendAsync(new TestLogEntry("first"), TestToken);
             await wal.AppendAsync(new TestLogEntry("second"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             Task first;
             if (manual)
@@ -820,10 +809,11 @@ public sealed class WriteAheadLogFlushTests : Test
         }
 
         await using var reopened = new WriteAheadLog(options, IStateMachine.CreateNoOp());
-        Equal(1L, reopened.LastEntryIndex);
+        Equal(2L, reopened.LastEntryIndex);
         Equal(1L, reopened.LastCommittedEntryIndex);
-        using var reader = await reopened.ReadAsync(1L, 1L, TestToken);
+        using var reader = await reopened.ReadAsync(1L, 2L, TestToken);
         Equal("committed", await reader[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+        Equal("uncommitted", await reader[1].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
     [Fact]
@@ -836,6 +826,7 @@ public sealed class WriteAheadLogFlushTests : Test
         try
         {
             await wal.AppendAsync(new TestLogEntry("first"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             var first = wal.FlushAsync(TestToken);
             resumed = Task.Run(startup.Resume, TestToken);
@@ -845,7 +836,9 @@ public sealed class WriteAheadLogFlushTests : Test
             await first.WaitAsync(TestToken);
             await wal.FlushAsync(TestToken);
 
+            passes.Disable();
             await wal.AppendAsync(new TestLogEntry("second"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(2L, TestToken);
             await passes.Second.Entered.Task.WaitAsync(TestToken);
             var second = wal.FlushAsync(TestToken);
@@ -931,6 +924,7 @@ public sealed class WriteAheadLogFlushTests : Test
             {
                 await wal.AppendAsync(new TestLogEntry("first"), TestToken);
                 await wal.AppendAsync(new TestLogEntry("second"), TestToken);
+                passes.Enable();
                 await wal.CommitAsync(1L, TestToken);
                 first = Task.Run(() => wal.FlushAsync(TestToken), TestToken);
                 await passes.First.Entered.Task.WaitAsync(TestToken);
@@ -987,6 +981,7 @@ public sealed class WriteAheadLogFlushTests : Test
         try
         {
             await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             var active = Task.Run(() => wal.FlushAsync(TestToken), TestToken);
             await passes.First.Entered.Task.WaitAsync(TestToken);
@@ -1034,6 +1029,7 @@ public sealed class WriteAheadLogFlushTests : Test
         try
         {
             await wal.AppendAsync(new TestLogEntry("payload"), TestToken);
+            passes.Enable();
             await wal.CommitAsync(1L, TestToken);
             resumed = Task.Run(startup.Resume, TestToken);
             await passes.First.Entered.Task.WaitAsync(TestToken);
@@ -1066,7 +1062,77 @@ public sealed class WriteAheadLogFlushTests : Test
             MeasurementTags = tags,
         };
 
-    private sealed class FlushPasses : IDisposable
+    private static byte[] ReadCheckpointBytes(string location)
+    {
+        using var handle = File.OpenHandle(
+            Path.Combine(location, "checkpoint"),
+            access: FileAccess.Read,
+            share: FileShare.ReadWrite | FileShare.Delete);
+        var content = new byte[checked((int)RandomAccess.GetLength(handle))];
+        for (var offset = 0; offset < content.Length;)
+        {
+            var count = RandomAccess.Read(handle, content.AsSpan(offset), offset);
+            True(count > 0);
+            offset += count;
+        }
+
+        return content;
+    }
+
+    internal static long ReadCommittedCheckpoint(string location)
+    {
+        ReadOnlySpan<byte> content = ReadCheckpointBytes(location);
+        switch (content.Length)
+        {
+            case 0:
+                return 0L;
+            case sizeof(long):
+                return BinaryPrimitives.ReadInt64LittleEndian(content);
+            case sizeof(uint) + sizeof(long):
+                Equal(0U, BinaryPrimitives.ReadUInt32LittleEndian(content));
+                return BinaryPrimitives.ReadInt64LittleEndian(content.Slice(sizeof(uint)));
+        }
+
+        Equal(1U, BinaryPrimitives.ReadUInt32LittleEndian(content));
+        var blockSize = BinaryPrimitives.ReadInt32LittleEndian(content.Slice(12));
+        Equal(blockSize * 3, content.Length);
+        var first = ReadSlot(content.Slice(blockSize, blockSize));
+        var second = ReadSlot(content.Slice(blockSize * 2, blockSize));
+        return first.Generation > second.Generation ? first.CommittedIndex : second.CommittedIndex;
+
+        static (long Generation, long CommittedIndex) ReadSlot(ReadOnlySpan<byte> slot)
+        {
+            Equal(1U, BinaryPrimitives.ReadUInt32LittleEndian(slot));
+            Equal(Crc64.HashToUInt64(slot[..^sizeof(ulong)]),
+                BinaryPrimitives.ReadUInt64LittleEndian(slot[^sizeof(ulong)..]));
+            return (BinaryPrimitives.ReadInt64LittleEndian(slot.Slice(64)),
+                BinaryPrimitives.ReadInt64LittleEndian(slot.Slice(32)));
+        }
+    }
+
+    private sealed class CheckpointFailure(string location) : IDisposable
+    {
+        private readonly string pendingPath = Path.Combine(location, "checkpoint.pending");
+        private byte[] before = [];
+
+        internal void Inject()
+        {
+            before = ReadCheckpointBytes(location);
+            // Appends already persisted the pages. Fail publication of the next commit's intent
+            // before either checkpoint slot can change, retaining the actual filesystem exception.
+            Directory.CreateDirectory(pendingPath);
+        }
+
+        internal void AssertUnchanged() => Equal(before, ReadCheckpointBytes(location));
+
+        public void Dispose()
+        {
+            if (Directory.Exists(pendingPath))
+                Directory.Delete(pendingPath);
+        }
+    }
+
+    internal sealed class FlushPasses : IDisposable
     {
         private readonly string id = Guid.NewGuid().ToString();
         private readonly MeterListener listener = new();
@@ -1079,10 +1145,12 @@ public sealed class WriteAheadLogFlushTests : Test
 
         internal void Enable() => enabled = true;
 
-        internal FlushPasses(bool initiallyEnabled = true)
+        internal void Disable() => enabled = false;
+
+        internal FlushPasses()
         {
-            enabled = initiallyEnabled;
-            // This synchronous metric runs after target capture, before checkpoint persistence.
+            // Append also emits this synchronous metric. Arm the gate after appends complete
+            // to hold only the committed flush pass, after target capture and before checkpoint persistence.
             listener.InstrumentPublished = (instrument, listener) =>
             {
                 if (instrument.Meter.Name == "DotNext.IO.WriteAheadLog" && instrument.Name == "entries-flush-count")

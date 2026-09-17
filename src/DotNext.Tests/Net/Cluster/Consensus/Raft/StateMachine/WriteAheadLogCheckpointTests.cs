@@ -2,9 +2,11 @@ using System.Buffers.Binary;
 using System.IO.Hashing;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Text;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 
+using IO;
 using IO.Log;
 
 [Collection(TestCollections.WriteAheadLog)]
@@ -241,6 +243,71 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
+    [Theory]
+    [InlineData(1UL)]
+    [InlineData(ulong.MaxValue)]
+    public static async Task ChecksummedEmptyCheckpointRejectsNonzeroWritePosition(ulong position)
+    {
+        var location = CreateLocation();
+        using (var checkpoint = new CheckpointFile(location))
+            await checkpoint.UpdateAsync(0L, 0L, 0UL, 0L, 1L, TestToken);
+
+        var path = Path.Combine(location.FullName, "checkpoint");
+        var bytes = File.ReadAllBytes(path);
+        // Keep the identical initial generations valid apart from their empty-log write position.
+        for (var offset = BlockSize; offset < FileSize; offset += BlockSize)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(offset + 48), position);
+            Seal(bytes.AsSpan(offset, BlockSize));
+        }
+
+        File.WriteAllBytes(path, bytes);
+        Throws<IntegrityException>(() =>
+        {
+            using var checkpoint = new CheckpointFile(location);
+        });
+        var options = WriteAheadLogDurabilityTests.CreateOptions(location.FullName,
+            WriteAheadLog.MemoryManagementStrategy.PrivateMemory, false, 0,
+            WriteAheadLog.IntegrityHashAlgorithm.None);
+        Throws<IntegrityException>(() =>
+        {
+            using var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        });
+    }
+
+    [Fact]
+    public static async Task EmptyVersion1CheckpointAllowsAppendAndRestart()
+    {
+        var location = CreateLocation();
+        using (var checkpoint = new CheckpointFile(location))
+            await checkpoint.UpdateAsync(0L, 0L, 0UL, 0L, 1L, TestToken);
+
+        using (var checkpoint = new CheckpointFile(location))
+        {
+            Equal(1U, checkpoint.Version);
+            Equal(0L, checkpoint.Read<long>("LastIndex"));
+            Equal(0UL, checkpoint.Read<ulong>("WritePosition"));
+        }
+
+        var options = WriteAheadLogDurabilityTests.CreateOptions(location.FullName,
+            WriteAheadLog.MemoryManagementStrategy.PrivateMemory, false, 0,
+            WriteAheadLog.IntegrityHashAlgorithm.None);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            await wal.InitializeAsync(TestToken);
+            Equal(0L, wal.LastEntryIndex);
+            Equal(0L, wal.LastCommittedEntryIndex);
+            Equal(1L, await wal.AppendAsync(new TestLogEntry("first") { Term = 1L }, TestToken));
+        }
+
+        await using var reopened = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await reopened.InitializeAsync(TestToken);
+        Equal(1L, reopened.LastEntryIndex);
+        Equal(0L, reopened.LastCommittedEntryIndex);
+        using var entries = await reopened.ReadAsync(1L, 1L, TestToken);
+        Equal("first", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
     [Fact]
     public static async Task ChecksummedUnsupportedSlotVersionRetainsExceptionType()
     {
@@ -338,6 +405,8 @@ public sealed class WriteAheadLogCheckpointTests : Test
         using var checkpoint = new CheckpointFile(location);
         await ThrowsAsync<IntegrityException>(
             () => checkpoint.UpdateAsync(2L, 1L, 0UL, 0L, 1L, TestToken).AsTask());
+        await ThrowsAsync<IntegrityException>(
+            () => checkpoint.UpdateAsync(0L, 0L, 1UL, 0L, 1L, TestToken).AsTask());
         await ThrowsAsync<ArgumentOutOfRangeException>(
             () => checkpoint.UpdateAsync(0L, 1L, 0UL, 0L, 2L, TestToken).AsTask());
         await ThrowsAnyAsync<OperationCanceledException>(

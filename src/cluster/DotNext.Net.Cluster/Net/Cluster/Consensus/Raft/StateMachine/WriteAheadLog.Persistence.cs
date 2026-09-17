@@ -27,7 +27,7 @@ partial class WriteAheadLog
     {
         var snapshotIndex = SnapshotIndex;
         var lastIndex = long.Max(stagedLastIndex, snapshotIndex);
-        firstIndex = long.Max(firstIndex, snapshotIndex);
+        firstIndex = GetFlushStartIndex(firstIndex, snapshotIndex);
         if (firstIndex <= lastIndex)
             await Flush(firstIndex, lastIndex, token).ConfigureAwait(false);
 
@@ -38,6 +38,11 @@ partial class WriteAheadLog
         LastEntryIndex = lastIndex;
         overwriteJournal.Clear();
     }
+
+    // Call under persistenceLock. A restored snapshot can have an in-memory-only boundary,
+    // which must be flushed even when ordinary entries start on a later metadata page.
+    private long GetFlushStartIndex(long firstIndex, long snapshotIndex)
+        => snapshotIndex > durableState.SnapshotIndex ? snapshotIndex : long.Max(firstIndex, snapshotIndex);
 
     private async ValueTask PersistCheckpointAsync(long lastIndex, long committedIndex,
         long snapshotIndex, ulong writePosition, CancellationToken token)

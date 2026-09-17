@@ -52,15 +52,14 @@ partial class WriteAheadLog
                     {
                         ThrowOnInternalError();
                         newSnapshot = SnapshotIndex;
-                        var fromIndex = long.Max(Atomic.Read(in nextUnflushedIndex),
-                            long.Max(Atomic.Read(in flushFloorIndex), newSnapshot));
+                        var fromIndex = GetFlushStartIndex(
+                            long.Max(Atomic.Read(in nextUnflushedIndex), Atomic.Read(in flushFloorIndex)), newSnapshot);
 
                         var newIndex = long.Max(targetIndex ?? LastCommittedEntryIndex, newSnapshot);
-                        if (newIndex >= fromIndex || newSnapshot > durableState.SnapshotIndex)
+                        if (newIndex >= fromIndex)
                         {
                             var ts = new Timestamp();
-                            if (newIndex >= fromIndex)
-                                await Flush(fromIndex, newIndex, token).ConfigureAwait(false);
+                            await Flush(fromIndex, newIndex, token).ConfigureAwait(false);
                             Checkpoint.FlushDirectory(dataLocation);
                             Checkpoint.FlushDirectory(metadataLocation);
                             await PersistCheckpointAsync(long.Max(LastEntryIndex, newSnapshot), newIndex,
@@ -201,6 +200,8 @@ partial class WriteAheadLog
     /// that index are persisted. Later commits do not extend this request's target.
     /// A snapshot installed while the request is in flight does extend it, because the snapshot
     /// replaces every index below it and those indices can no longer be persisted on their own.
+    /// A restored snapshot newer than the recovered checkpoint also requires its metadata boundary
+    /// to be persisted before this request completes, even if no entries have been appended.
     /// Appended entries are persisted by the append operation independently of this committed target.
     /// Recovering those entries does not mark them committed.
     /// When automatic flushing is enabled, this method waits for the background flusher;

@@ -240,6 +240,7 @@ partial class WriteAheadLog
         {
             if (checkpoint.Checkpoint < 0L || checkpoint.LastIndex < checkpoint.Checkpoint
                 || checkpoint.SnapshotIndex < 0L || checkpoint.SnapshotIndex > checkpoint.Checkpoint
+                || checkpoint.LastIndex == 0L && checkpoint.WritePosition != 0UL
                 || checkpoint.Generation < 1L)
             {
                 throw new IntegrityException("Invalid WAL checkpoint boundaries.");

@@ -172,7 +172,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         // flusher
         {
             var interval = configuration.FlushInterval;
-            nextUnflushedIndex = commitIndex + 1L;
+            // A restored snapshot can advance commitIndex without persisting its boundary yet.
+            nextUnflushedIndex = durableState.Checkpoint + 1L;
             flusherOldSnapshot = snapshotIndex;
             if (interval == TimeSpan.Zero)
             {

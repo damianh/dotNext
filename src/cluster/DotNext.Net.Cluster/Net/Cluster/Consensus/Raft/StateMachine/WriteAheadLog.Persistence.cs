@@ -10,10 +10,10 @@ partial class WriteAheadLog
     private CheckpointVersion1 durableState;
     private long stagedLastIndex;
 
-    // Call with Append (and, for replacements, Overwrite) before taking persistenceLock.
+    // Call under Append (and, for replacements, Overwrite) and persistenceLock after pre-mutation checks.
+    // Journal publication can fail after modifying storage, so the caller must already be in the fatal scope.
     private async ValueTask PrepareAppendAsync(long firstIndex, CancellationToken token)
     {
-        ThrowOnInternalError();
         stagedLastIndex = LastEntryIndex;
         firstIndex = long.Max(firstIndex, LastCommittedEntryIndex + 1L);
         if (firstIndex <= stagedLastIndex)

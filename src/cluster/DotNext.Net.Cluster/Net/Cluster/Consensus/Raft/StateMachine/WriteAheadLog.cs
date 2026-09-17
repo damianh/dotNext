@@ -23,6 +23,8 @@ using Threading.Tasks;
 /// advances logical commitment; <see cref="FlushAsync"/> persists its captured committed boundary.
 /// Opening legacy stores preserves their known committed history; the first durable update upgrades
 /// the checkpoint format, after which older versions cannot open the store.
+/// Cancellation or validation failure before an append starts modifying the log leaves the WAL usable.
+/// A failed append that may have partially modified the log requires reopening the WAL for recovery.
 /// </remarks>
 public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState
 {
@@ -147,7 +149,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 LastWrittenAddress = writePosition,
             };
             durableState = durableState with { WritePosition = writePosition };
-            if (durableState.LastIndex > snapshotIndex)
+            // Index zero has no metadata record, but a nonempty snapshot boundary must retain one.
+            if (durableState.LastIndex > 0L && durableState.LastIndex >= snapshotIndex)
             {
                 if (!metadataPages.TryGetMetadata(durableState.LastIndex, out var tail)
                     || tail.Length < 0L || tail.End < tail.Offset || tail.End != writePosition)
@@ -266,14 +269,20 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         {
             currentIndex = LastEntryIndex + 1L;
             await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+            var mutationStarted = false;
             try
             {
+                ThrowOnInternalError();
+                token.ThrowIfCancellationRequested();
+                var length = entry.Length;
+                token.ThrowIfCancellationRequested();
+                mutationStarted = true;
                 await PrepareAppendAsync(currentIndex, token).ConfigureAwait(false);
-                await AppendAsync(entry, out var startAddress, token).ConfigureAwait(false);
+                await AppendAsync(entry, length, out var startAddress, token).ConfigureAwait(false);
                 WriteMetadata(entry, currentIndex, startAddress);
                 await PersistAppendAsync(currentIndex, token).ConfigureAwait(false);
             }
-            catch (Exception e)
+            catch (Exception e) when (mutationStarted)
             {
                 OnBackgroundTaskFailure(e);
                 throw;
@@ -295,30 +304,40 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         where TEntry : struct, IBufferedLogEntry
     {
         lockManager.SetCallerInformation("Append Single Buffered Entry");
-        await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
         try
         {
-            await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+            await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
             try
             {
-                await PrepareAppendAsync(LastEntryIndex + 1L, token).ConfigureAwait(false);
-                var index = AppendBuffered(entry);
-                await PersistAppendAsync(index, token).ConfigureAwait(false);
-                return index;
-            }
-            catch (Exception e)
-            {
-                OnBackgroundTaskFailure(e);
-                throw;
+                await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                var mutationStarted = false;
+                try
+                {
+                    ThrowOnInternalError();
+                    token.ThrowIfCancellationRequested();
+                    mutationStarted = true;
+                    await PrepareAppendAsync(LastEntryIndex + 1L, token).ConfigureAwait(false);
+                    var index = AppendBuffered(entry);
+                    await PersistAppendAsync(index, token).ConfigureAwait(false);
+                    return index;
+                }
+                catch (Exception e) when (mutationStarted)
+                {
+                    OnBackgroundTaskFailure(e);
+                    throw;
+                }
+                finally
+                {
+                    persistenceLock.Release();
+                }
             }
             finally
             {
-                persistenceLock.Release();
+                lockManager.ReleaseAppendLock();
             }
         }
         finally
         {
-            lockManager.ReleaseAppendLock();
             if (typeof(TEntry) == typeof(BufferedLogEntry))
                 Unsafe.As<TEntry, BufferedLogEntry>(ref entry).Dispose();
         }
@@ -410,10 +429,15 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                     throw new InvalidOperationException(ExceptionMessages.InvalidAppendIndex);
                 
                 await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                var mutationStarted = false;
                 try
                 {
                     ThrowOnInternalError();
-                    LastAppliedIndex = await stateMachine.ApplyAsync(new LogEntry(entry, startIndex), token).ConfigureAwait(false);
+                    token.ThrowIfCancellationRequested();
+                    var snapshot = new LogEntry(entry, startIndex);
+                    token.ThrowIfCancellationRequested();
+                    mutationStarted = true;
+                    LastAppliedIndex = await stateMachine.ApplyAsync(snapshot, token).ConfigureAwait(false);
                     var snapshotIndex = stateMachine.Snapshot?.Index ?? startIndex;
                     if (snapshotIndex > tailIndex)
                         WriteSnapshotBoundary(snapshotIndex, entry.Term);
@@ -423,7 +447,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                     await PersistAppendAsync(snapshotIndex, token).ConfigureAwait(false);
                     OnSnapshotInstalled(snapshotIndex);
                 }
-                catch (Exception e)
+                catch (Exception e) when (mutationStarted)
                 {
                     OnBackgroundTaskFailure(e);
                     throw;
@@ -448,14 +472,20 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 }
 
                 await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                var mutationStarted = false;
                 try
                 {
+                    ThrowOnInternalError();
+                    token.ThrowIfCancellationRequested();
+                    var length = entry.Length;
+                    token.ThrowIfCancellationRequested();
+                    mutationStarted = true;
                     await PrepareAppendAsync(startIndex, token).ConfigureAwait(false);
-                    await AppendAsync(entry, out var startAddress, token).ConfigureAwait(false);
+                    await AppendAsync(entry, length, out var startAddress, token).ConfigureAwait(false);
                     WriteMetadata(entry, startIndex, startAddress);
                     await PersistAppendAsync(startIndex, token).ConfigureAwait(false);
                 }
-                catch (Exception e)
+                catch (Exception e) when (mutationStarted)
                 {
                     OnBackgroundTaskFailure(e);
                     throw;
@@ -508,13 +538,16 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         where TEntry : IRaftLogEntry
     {
         await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+        var mutationStarted = false;
         try
         {
+            ThrowOnInternalError();
+            token.ThrowIfCancellationRequested();
             var commitIndex = LastCommittedEntryIndex;
             var firstIndex = long.Max(startIndex, commitIndex + 1L);
-            await PrepareAppendAsync(firstIndex, token).ConfigureAwait(false);
             for (; await entries.MoveNextAsync().ConfigureAwait(false); startIndex++)
             {
+                token.ThrowIfCancellationRequested();
                 if (entries.Current is not { IsSnapshot: false } currentEntry)
                     throw new InvalidOperationException(ExceptionMessages.SnapshotDetected);
 
@@ -525,7 +558,17 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                         continue;
 
                     preserveMatching = false;
-                    await AppendAsync(currentEntry, out var startAddress, token).ConfigureAwait(false);
+                    var length = currentEntry.Length;
+                    if (!mutationStarted)
+                    {
+                        // Producer validation and skipped entries must not create an overwrite journal.
+                        token.ThrowIfCancellationRequested();
+                        mutationStarted = true;
+                        firstIndex = startIndex;
+                        await PrepareAppendAsync(firstIndex, token).ConfigureAwait(false);
+                    }
+
+                    await AppendAsync(currentEntry, length, out var startAddress, token).ConfigureAwait(false);
                     WriteMetadata(currentEntry, startIndex, startAddress);
                 }
                 else if (!skipCommitted)
@@ -534,9 +577,11 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 }
             }
 
-            await PersistAppendAsync(firstIndex, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            if (mutationStarted)
+                await PersistAppendAsync(firstIndex, token).ConfigureAwait(false);
         }
-        catch (Exception e)
+        catch (Exception e) when (mutationStarted)
         {
             OnBackgroundTaskFailure(e);
             throw;
@@ -568,28 +613,26 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     {
         // the best case for this method - raise flusher and applier in parallel with the appending process
         var committedCount = await CommitCoreAsync<FalseConstant>(commitIndex, token).ConfigureAwait(false);
-        bool delayedPostCommit;
+        var delayedPostCommit = committedCount > 0L;
+        var appendLockTaken = false;
 
-        lockManager.SetCallerInformation("Append and Commit");
-        await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
         try
         {
+            lockManager.SetCallerInformation("Append and Commit");
+            await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
+            appendLockTaken = true;
             switch (startIndex.CompareTo(LastEntryIndex + 1L))
             {
                 case > 0:
                     throw new ArgumentOutOfRangeException(nameof(startIndex));
                 case < 0:
-                    // No need to call PostCommit here since the o/w lock will suspend the flusher and applier.
-                    // Thus, we can resume them later, out of the o/w lock
+                    // Defer notification until the overwrite lock no longer suspends the workers.
                     lockManager.SetCallerInformation("Overwrite Uncommitted Tail");
                     await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
-                    delayedPostCommit = committedCount > 0L;
                     break;
-                case 0 when committedCount > 0L:
-                    OnCommitted(committedCount);
-                    goto default;
-                default:
+                case 0 when delayedPostCommit:
                     delayedPostCommit = false;
+                    OnCommitted(committedCount);
                     break;
             }
 
@@ -597,12 +640,12 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         }
         finally
         {
-            lockManager.ReleaseAppendLock();
-        }
+            if (appendLockTaken)
+                lockManager.ReleaseAppendLock();
 
-        if (delayedPostCommit)
-        {
-            OnCommitted(committedCount);
+            // Commitment is independent of appending, including cancellation while acquiring its locks.
+            if (delayedPostCommit)
+                OnCommitted(committedCount);
         }
 
         return committedCount;
@@ -632,10 +675,10 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         return await CommitAsync(commitIndex, token).ConfigureAwait(false);
     }
 
-    private ValueTask AppendAsync<TEntry>(TEntry entry, out ulong startAddress, CancellationToken token)
+    private ValueTask AppendAsync<TEntry>(TEntry entry, long? length, out ulong startAddress, CancellationToken token)
         where TEntry : IRaftLogEntry
     {
-        var hasCapacity = dataPages.TryEnsureCapacity(entry.Length);
+        var hasCapacity = dataPages.TryEnsureCapacity(length);
         startAddress = dataPages.LastWrittenAddress;
 
         return hasCapacity

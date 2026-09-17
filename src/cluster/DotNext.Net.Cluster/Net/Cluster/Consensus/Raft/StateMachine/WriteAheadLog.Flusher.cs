@@ -47,34 +47,45 @@ partial class WriteAheadLog
                 long newSnapshot;
                 try
                 {
-                    newSnapshot = SnapshotIndex;
-                    var fromIndex = long.Max(Atomic.Read(in nextUnflushedIndex), Atomic.Read(in flushFloorIndex));
-
-                    // A snapshot covers everything below its index, so it is always part of the durable boundary.
-                    var newIndex = long.Max(targetIndex ?? LastCommittedEntryIndex, newSnapshot);
-
-                    if (newIndex >= fromIndex)
+                    await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                    try
                     {
-                        var ts = new Timestamp();
-                        await Flush(fromIndex, newIndex, token).ConfigureAwait(false);
+                        ThrowOnInternalError();
+                        newSnapshot = SnapshotIndex;
+                        var fromIndex = GetFlushStartIndex(
+                            long.Max(Atomic.Read(in nextUnflushedIndex), Atomic.Read(in flushFloorIndex)), newSnapshot);
 
-                        // everything up to newIndex is flushed, save the commit index
-                        await checkpoint.UpdateAsync<CheckpointVersion0>(new(newIndex), token).ConfigureAwait(false);
-                        FlushDurationMeter.Record(ts.ElapsedMilliseconds);
-
-                        // A queued manual caller can have an older target than a completed pass.
-                        Atomic.Write(ref nextUnflushedIndex, newIndex + 1L);
+                        var newIndex = long.Max(targetIndex ?? LastCommittedEntryIndex, newSnapshot);
+                        if (newIndex >= fromIndex)
+                        {
+                            var ts = new Timestamp();
+                            await Flush(fromIndex, newIndex, token).ConfigureAwait(false);
+                            Checkpoint.FlushDirectory(dataLocation);
+                            Checkpoint.FlushDirectory(metadataLocation);
+                            await PersistCheckpointAsync(long.Max(LastEntryIndex, newSnapshot), newIndex,
+                                newSnapshot, durableState.WritePosition, token).ConfigureAwait(false);
+                            FlushDurationMeter.Record(ts.ElapsedMilliseconds);
+                        }
                     }
+                    finally
+                    {
+                        persistenceLock.Release();
+                    }
+
                 }
                 finally
                 {
                     lockManager.ReleaseReadLock();
                 }
 
-                if ((!cleanupTask.TryGetTarget(out var task) || task.IsCompletedSuccessfully) && flusherOldSnapshot < newSnapshot)
+                if (flusherOldSnapshot < newSnapshot)
+                {
+                    if (cleanupTask.TryGetTarget(out var task))
+                        await task.ConfigureAwait(false);
+                    ThrowOnInternalError();
                     cleanupTask.SetTarget(CleanUpAsync(newSnapshot, lifetimeToken));
-
-                flusherOldSnapshot = newSnapshot;
+                    flusherOldSnapshot = newSnapshot;
+                }
                 flushTrigger.NotifyCompleted();
                 if (!await flushTrigger.WaitAsync(token).ConfigureAwait(false))
                     break;
@@ -87,6 +98,12 @@ partial class WriteAheadLog
         catch (Exception e) when (T.IsBackground)
         {
             OnBackgroundTaskFailure(e);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            OnBackgroundTaskFailure(e);
+            ThrowOnInternalError();
+            throw;
         }
         finally
         {
@@ -183,7 +200,10 @@ partial class WriteAheadLog
     /// that index are persisted. Later commits do not extend this request's target.
     /// A snapshot installed while the request is in flight does extend it, because the snapshot
     /// replaces every index below it and those indices can no longer be persisted on their own.
-    /// Uncommitted appended entries are not included in the recoverable checkpoint.
+    /// A restored snapshot newer than the recovered checkpoint also requires its metadata boundary
+    /// to be persisted before this request completes, even if no entries have been appended.
+    /// Appended entries are persisted by the append operation independently of this committed target.
+    /// Recovering those entries does not mark them committed.
     /// When automatic flushing is enabled, this method waits for the background flusher;
     /// otherwise, it performs the flush. Concurrent manual flushes are serialized.
     /// A fatal error in the flusher, applier, or cleanup worker fails pending flush waits.
@@ -210,6 +230,8 @@ partial class WriteAheadLog
     
     private long Commit(long index)
     {
+        ThrowOnInternalError();
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(index, LastEntryIndex);
         var oldCommitIndex = LastCommittedEntryIndex;
         if (index > oldCommitIndex)
         {

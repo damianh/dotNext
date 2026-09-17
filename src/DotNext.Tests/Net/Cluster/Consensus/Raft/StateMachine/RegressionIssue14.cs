@@ -1,5 +1,5 @@
-using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using static System.Threading.Timeout;
@@ -53,8 +53,7 @@ public sealed partial class RegressionIssue14 : Test
     [InlineData(false)]
     public static async Task BackgroundFlushAfterSnapshotInstallIntoEmptyLog(bool flushOnCommit)
     {
-        // The worker yields once before its initial pass, so pausing the context lets the snapshot be installed
-        // before the worker observes any boundary at all.
+        // Snapshot append persists in the foreground even before the worker observes any boundary.
         var startup = new PausedFlusherContext();
         var options = CreateOptions(flushOnCommit ? TimeSpan.Zero : TimeSpan.FromMilliseconds(50));
         var machineLocation = new DirectoryInfo(GetTempPath());
@@ -66,6 +65,7 @@ public sealed partial class RegressionIssue14 : Test
 
         QuiesceApplier(wal);
         await wal.AppendAsync(new SnapshotEntry(state, SnapshotTerm), SnapshotIndex, TestToken);
+        Equal(SnapshotIndex, ReadCheckpoint(options.Location));
         startup.Resume();
 
         await wal.FlushAsync(TestToken);
@@ -267,31 +267,19 @@ public sealed partial class RegressionIssue14 : Test
 
     private static WriteAheadLog.Options CreateOptions(
         TimeSpan interval,
-        WriteAheadLog.IntegrityHashAlgorithm hashAlgorithm = WriteAheadLog.IntegrityHashAlgorithm.None)
+        WriteAheadLog.IntegrityHashAlgorithm hashAlgorithm = WriteAheadLog.IntegrityHashAlgorithm.None,
+        TagList tags = default)
         => new()
         {
             Location = GetTempPath(),
             MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
             FlushInterval = interval,
             HashAlgorithm = hashAlgorithm,
+            MeasurementTags = tags,
         };
 
     private static long ReadCheckpoint(string location)
-    {
-        // The log keeps the checkpoint file open for writing.
-        using var handle = File.OpenHandle(
-            Path.Combine(location, "checkpoint"),
-            access: FileAccess.Read,
-            share: FileShare.ReadWrite);
-
-        Span<byte> content = stackalloc byte[sizeof(uint) + sizeof(long)];
-        return RandomAccess.Read(handle, content, fileOffset: 0L) switch
-        {
-            0 => 0L,
-            sizeof(long) => BinaryPrimitives.ReadInt64LittleEndian(content),
-            _ => BinaryPrimitives.ReadInt64LittleEndian(content.Slice(sizeof(uint))),
-        };
-    }
+        => WalCheckpointAssertions.ReadCommittedCheckpoint(location);
 
     private sealed class ByteArrayStateMachine(DirectoryInfo location) : SimpleStateMachine(location)
     {

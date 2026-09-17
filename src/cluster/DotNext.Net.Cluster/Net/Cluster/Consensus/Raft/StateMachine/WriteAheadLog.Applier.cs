@@ -34,10 +34,13 @@ partial class WriteAheadLog
                 // The target and the published progress must both be observed under the lock. Otherwise, a
                 // snapshot installation completing in between can be rolled back by a stale target, see #15.
                 var newIndex = LastCommittedEntryIndex;
+                var oldSnapshot = SnapshotIndex;
 
                 // Never walk back over the metadata reclaimed by an installation.
                 await ApplyAsync(long.Max(LastAppliedIndex, SnapshotIndex) + 1L, newIndex, token).ConfigureAwait(false);
                 LastAppliedIndex = newIndex;
+                if (SnapshotIndex > oldSnapshot)
+                    flushTrigger?.Set();
             }
             catch (Exception e) when (e is not OperationCanceledException canceledEx || canceledEx.CancellationToken != token)
             {

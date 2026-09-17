@@ -93,13 +93,14 @@ partial class WriteAheadLog
         } = string.Empty;
 
         /// <summary>
-        /// Gets or sets the interval of the checkpoint.
+        /// Gets or sets the interval of committed checkpoints.
         /// </summary>
         /// <value>
         /// Use <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable automatic
-        /// checkpoints. The checkpoint must be triggered manually by calling <see cref="FlushAsync(CancellationToken)"/>
-        /// method. Use <see cref="TimeSpan.Zero"/> to enable automatic checkpoint on every commit.
-        /// Otherwise, the checkpoint is produced every specified time interval.
+        /// committed checkpoints. Persist a committed target manually by calling <see cref="FlushAsync(CancellationToken)"/>.
+        /// Use <see cref="TimeSpan.Zero"/> to enable automatic checkpoint on every commit.
+        /// Otherwise, committed checkpoints are produced every specified time interval.
+        /// Appends always persist their entries and recovery boundary before completing, independently of this interval.
         /// </value>
         public TimeSpan FlushInterval
         {

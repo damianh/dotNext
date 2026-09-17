@@ -17,6 +17,21 @@ partial class WriteAheadLog
         public const string LocationPrefix = "metadata";
 
         private readonly int MetadataEntryAlignedSize = GetAlignedSize(LogEntryMetadata.Size + hashSizeInBytes, manager.PageSize);
+
+        public ReadOnlyMemory<byte> GetRecord(long index)
+        {
+            var pageIndex = GetStartPageIndex(index, out var offset);
+            return manager[pageIndex].Memory.Slice(offset, MetadataEntryAlignedSize);
+        }
+
+        public void RestoreRecord(long index, ReadOnlySpan<byte> record)
+        {
+            if (record.Length != MetadataEntryAlignedSize)
+                throw new InvalidDataException("The overwrite journal metadata size does not match the WAL.");
+
+            var pageIndex = GetStartPageIndex(index, out var offset);
+            record.CopyTo(manager.GetOrAddPage(pageIndex).GetSpan().Slice(offset, MetadataEntryAlignedSize));
+        }
         
         private static int GetAlignedSize(int headerSize, int containerSize)
         {

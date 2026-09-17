@@ -123,7 +123,24 @@ its retry, and account for every worker's setup RPC before beginning another
 round. A completed quorum alone does not prove that a lagging worker has finished
 its earlier rounds.
 
-These tests do not exercise disk recovery or fix issue #2.
+`AcknowledgedLogDurabilityTests` exercises issue #2 with three real WAL-backed
+nodes. After a durable prefix, only F1 acknowledges N while retaining commit
+N-1. The leader commits/persists N and completes the client operation; no later
+commit notification reaches F1. With the leader unavailable, reopening F1 must
+preserve N, reject stale F2's election, and still permit F1 to win and replicate
+the preserved payload. The process-termination variant kills a child hosting
+the cluster at the acknowledged milestone and reopens F1/F2; L remains offline.
+
+`WriteAheadLogDurabilityTests` includes an explicit-tail-page-flush control and
+the memory/flush/hash restart matrix. `WalCrashWorker` is a test-only child entry
+point: parents select it in the existing MTP executable and use a unique named
+pipe to observe acknowledgment before terminating that specific process.
+Ordinary test discovery skips the worker. Process termination bypasses WAL
+disposal but does not simulate loss of the operating system's page cache.
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.AcknowledgedLogDurabilityTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.StateMachine.WriteAheadLogDurabilityTests' --progress off --timeout 120s
+```
 
 `QuorumLossTests` covers issue #5 with valid two- and four-member clusters.
 After a healthy election and write-barrier retry, it supplies every response

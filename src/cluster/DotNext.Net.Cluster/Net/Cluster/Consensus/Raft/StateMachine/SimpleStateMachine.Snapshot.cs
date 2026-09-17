@@ -73,6 +73,7 @@ partial class SimpleStateMachine
         public void Commit()
         {
             Commit(sourceFileName, Destination.FullName);
+            DurableFile.FlushPublication(Destination);
             Destination.Refresh();
             if (backupFileName is not null)
                 File.Delete(backupFileName);
@@ -93,13 +94,15 @@ partial class SimpleStateMachine
             {
                 File.Delete(sourceFileName);
             }
+
+            DurableFile.FlushDirectory(Destination.Directory!);
         }
 
         internal virtual ValueTask CompleteWriteAsync(CancellationToken token)
             => WriteAsync(token);
 
         internal virtual void CompleteFlush()
-            => FlushToDisk();
+            => DurableFile.Flush(handle);
 
         protected override void Dispose(bool disposing)
         {

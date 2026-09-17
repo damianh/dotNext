@@ -36,7 +36,17 @@ partial class WriteAheadLog
     {
         lockManager.SetCallerInformation("Enumerate Entries");
         await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
-        return CreateReader(startIndex, endIndex);
+        try
+        {
+            ThrowOnInternalError();
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(endIndex, LastEntryIndex);
+            return CreateReader(startIndex, endIndex);
+        }
+        catch
+        {
+            lockManager.ReleaseReadLock();
+            throw;
+        }
     }
 
     private LogEntryReader CreateReader(long startIndex, long endIndex)

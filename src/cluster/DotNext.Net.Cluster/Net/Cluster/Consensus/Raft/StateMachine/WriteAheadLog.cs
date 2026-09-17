@@ -16,6 +16,16 @@ using Threading.Tasks;
 /// <summary>
 /// Represents the general-purpose Raft WAL.
 /// </summary>
+/// <remarks>
+/// Successful append operations persist their entries and recovery boundary before exposing the new
+/// <see cref="LastEntryIndex"/>. This applies even when automatic committed checkpoints are disabled.
+/// Recovery retains uncommitted appended entries without applying them. <see cref="CommitAsync"/>
+/// advances logical commitment; <see cref="FlushAsync"/> persists its captured committed boundary.
+/// Opening legacy stores preserves their known committed history; the first durable update upgrades
+/// the checkpoint format, after which older versions cannot open the store.
+/// Cancellation or validation failure before an append starts modifying the log leaves the WAL usable.
+/// A failed append that may have partially modified the log requires reopening the WAL for recovery.
+/// </remarks>
 public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState
 {
     private const int DictionaryConcurrencyLevel = 3; // append flow and cleaner and applier
@@ -59,7 +69,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         cancellationTokens = new();
         var rootPath = new DirectoryInfo(configuration.Location);
         rootPath.CreateIfNeeded();
-        var dataLocation = rootPath.GetSubdirectory(PagedBufferWriter.LocationPrefix);
+        dataLocation = rootPath.GetSubdirectory(PagedBufferWriter.LocationPrefix);
         PageManager.ValidatePageSize(dataLocation, configuration.ChunkSize);
 
         context = new(DictionaryConcurrencyLevel, configuration.ConcurrencyLevel);
@@ -85,17 +95,24 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         {
             case CheckpointVersion0 cp:
                 lastReliablyWrittenEntryIndex = cp.Checkpoint;
+                durableState = new(cp.Checkpoint, cp.Checkpoint, 0UL, 0L, 0L);
+                break;
+            case CheckpointVersion1 cp:
+                durableState = cp;
+                lastReliablyWrittenEntryIndex = cp.Checkpoint;
                 break;
             default:
                 checkpoint.Dispose();
                 throw new UnsupportedCheckpointVersionException(checkpoint.Version);
         }
         
-        (stateMachine as NoOpStateMachine)?.SetLastCommittedIndex(lastReliablyWrittenEntryIndex);
+        (stateMachine as NoOpStateMachine)?.SetLastCommittedIndex(lastReliablyWrittenEntryIndex, durableState.SnapshotIndex);
+        snapshotIndex = stateMachine.Snapshot?.Index ?? 0L;
+        overwriteJournal = new(rootPath);
         
         // page management
         {
-            var metadataLocation = rootPath.GetSubdirectory(MetadataPageManager.LocationPrefix);
+            metadataLocation = rootPath.GetSubdirectory(MetadataPageManager.LocationPrefix);
             metadataLocation.CreateIfNeeded();
 
             dataLocation.CreateIfNeeded();
@@ -123,15 +140,28 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             }
             
             metadataPages = new(m, hash?.HashLengthInBytes ?? 0);
+            overwriteJournal.Recover(durableState, metadataPages);
+            var writePosition = version is CheckpointVersion1
+                ? durableState.WritePosition
+                : metadataPages.TryGetMetadata(durableState.LastIndex, out var metadata) ? metadata.End : 0UL;
             dataPages = new(d)
             {
-                LastWrittenAddress = metadataPages.TryGetMetadata(lastReliablyWrittenEntryIndex, out var metadata)
-                    ? metadata.End
-                    : 0UL,
+                LastWrittenAddress = writePosition,
             };
+            durableState = durableState with { WritePosition = writePosition };
+            // Index zero has no metadata record, but a nonempty snapshot boundary must retain one.
+            if (durableState.LastIndex > 0L && durableState.LastIndex >= snapshotIndex)
+            {
+                if (!metadataPages.TryGetMetadata(durableState.LastIndex, out var tail)
+                    || tail.Length < 0L || tail.End < tail.Offset || tail.End != writePosition)
+                    throw new InvalidDataException("The durable WAL tail does not match its checkpoint.");
+            }
+            if (snapshotIndex > durableState.LastIndex)
+                WriteSnapshotBoundary(snapshotIndex, stateMachine.Snapshot!.Term);
         }
         
-        LastEntryIndex = LastCommittedEntryIndex = long.Max(lastReliablyWrittenEntryIndex, snapshotIndex);
+        LastEntryIndex = long.Max(durableState.LastIndex, snapshotIndex);
+        LastCommittedEntryIndex = long.Max(lastReliablyWrittenEntryIndex, snapshotIndex);
         applyTrigger = new();
         appliedEvent = new()
         {
@@ -142,7 +172,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         // flusher
         {
             var interval = configuration.FlushInterval;
-            nextUnflushedIndex = commitIndex + 1L;
+            // A restored snapshot can advance commitIndex without persisting its boundary yet.
+            nextUnflushedIndex = durableState.Checkpoint + 1L;
             flusherOldSnapshot = snapshotIndex;
             if (interval == TimeSpan.Zero)
             {
@@ -187,23 +218,38 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     /// <returns></returns>
     public virtual async Task InitializeAsync(CancellationToken token = default)
     {
-        if (hash is not null)
+        ObjectDisposedException.ThrowIf(IsDisposingOrDisposed, this);
+        ThrowOnInternalError();
+        await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
+        try
+        {
+            await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
             VerifyIntegrity(token);
+        }
+        finally
+        {
+            lockManager.ReleaseAppendLock();
+        }
         
         await WaitForApplyAsync(LastCommittedEntryIndex, token).ConfigureAwait(false);
     }
 
     private void VerifyIntegrity(CancellationToken token)
     {
-        Debug.Assert(hash is not null);
-
         // skip snapshot from verification
         for (var index = SnapshotIndex + 1L; index <= LastEntryIndex; index++, token.ThrowIfCancellationRequested())
         {
             var reader = metadataPages.GetView<MetadataReader>(index);
             var metadata = reader.Metadata;
-            dataPages.ComputeHash(hash, metadata.Offset, metadata.Length);
-            reader.CompleteAndVerifyHash(hash);
+            if (metadata.Length < 0L || metadata.Offset > durableState.WritePosition
+                || (ulong)metadata.Length > durableState.WritePosition - metadata.Offset)
+                throw new InvalidDataException("A WAL entry extends beyond the durable data boundary.");
+            dataPages.ValidateRange(metadata.Offset, metadata.Length);
+            if (hash is not null)
+            {
+                dataPages.ComputeHash(hash, metadata.Offset, metadata.Length);
+                reader.CompleteAndVerifyHash(hash);
+            }
         }
     }
 
@@ -223,9 +269,29 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         try
         {
             currentIndex = LastEntryIndex + 1L;
-
-            await AppendAsync(entry, out var startAddress, token).ConfigureAwait(false);
-            WriteMetadata(entry, currentIndex, startAddress);
+            await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+            var mutationStarted = false;
+            try
+            {
+                ThrowOnInternalError();
+                token.ThrowIfCancellationRequested();
+                var length = entry.Length;
+                token.ThrowIfCancellationRequested();
+                mutationStarted = true;
+                await PrepareAppendAsync(currentIndex, token).ConfigureAwait(false);
+                await AppendAsync(entry, length, out var startAddress, token).ConfigureAwait(false);
+                WriteMetadata(entry, currentIndex, startAddress);
+                await PersistAppendAsync(currentIndex, token).ConfigureAwait(false);
+            }
+            catch (Exception e) when (mutationStarted)
+            {
+                OnBackgroundTaskFailure(e);
+                throw;
+            }
+            finally
+            {
+                persistenceLock.Release();
+            }
         }
         finally
         {
@@ -239,14 +305,40 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         where TEntry : struct, IBufferedLogEntry
     {
         lockManager.SetCallerInformation("Append Single Buffered Entry");
-        await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
         try
         {
-            return AppendBuffered(entry);
+            await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
+            try
+            {
+                await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                var mutationStarted = false;
+                try
+                {
+                    ThrowOnInternalError();
+                    token.ThrowIfCancellationRequested();
+                    mutationStarted = true;
+                    await PrepareAppendAsync(LastEntryIndex + 1L, token).ConfigureAwait(false);
+                    var index = AppendBuffered(entry);
+                    await PersistAppendAsync(index, token).ConfigureAwait(false);
+                    return index;
+                }
+                catch (Exception e) when (mutationStarted)
+                {
+                    OnBackgroundTaskFailure(e);
+                    throw;
+                }
+                finally
+                {
+                    persistenceLock.Release();
+                }
+            }
+            finally
+            {
+                lockManager.ReleaseAppendLock();
+            }
         }
         finally
         {
-            lockManager.ReleaseAppendLock();
             if (typeof(TEntry) == typeof(BufferedLogEntry))
                 Unsafe.As<TEntry, BufferedLogEntry>(ref entry).Dispose();
         }
@@ -255,7 +347,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     private long AppendBuffered<TEntry>(TEntry entry)
         where TEntry : struct, IBufferedLogEntry
     {
-        var currentIndex = LastEntryIndex + 1L;
+        var currentIndex = stagedLastIndex + 1L;
         var startAddress = dataPages.LastWrittenAddress;
         dataPages.Write(entry.Content);
         WriteMetadata(entry, currentIndex, startAddress);
@@ -337,14 +429,34 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 if (startIndex <= LastCommittedEntryIndex)
                     throw new InvalidOperationException(ExceptionMessages.InvalidAppendIndex);
                 
-                LastAppliedIndex = await stateMachine.ApplyAsync(new LogEntry(entry, startIndex), token).ConfigureAwait(false);
-                var snapshotIndex = stateMachine.Snapshot?.Index ?? startIndex;
-                if (snapshotIndex > tailIndex)
-                    WriteSnapshotBoundary(snapshotIndex, entry.Term);
+                await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                var mutationStarted = false;
+                try
+                {
+                    ThrowOnInternalError();
+                    token.ThrowIfCancellationRequested();
+                    var snapshot = new LogEntry(entry, startIndex);
+                    token.ThrowIfCancellationRequested();
+                    mutationStarted = true;
+                    LastAppliedIndex = await stateMachine.ApplyAsync(snapshot, token).ConfigureAwait(false);
+                    var snapshotIndex = stateMachine.Snapshot?.Index ?? startIndex;
+                    if (snapshotIndex > tailIndex)
+                        WriteSnapshotBoundary(snapshotIndex, entry.Term);
 
-                var committedIndex = long.Max(LastCommittedEntryIndex, snapshotIndex);
-                LastEntryIndex = long.Max(tailIndex, LastCommittedEntryIndex = committedIndex);
-                OnSnapshotInstalled(snapshotIndex);
+                    LastCommittedEntryIndex = long.Max(LastCommittedEntryIndex, snapshotIndex);
+                    stagedLastIndex = long.Max(tailIndex, LastCommittedEntryIndex);
+                    await PersistAppendAsync(snapshotIndex, token).ConfigureAwait(false);
+                    OnSnapshotInstalled(snapshotIndex);
+                }
+                catch (Exception e) when (mutationStarted)
+                {
+                    OnBackgroundTaskFailure(e);
+                    throw;
+                }
+                finally
+                {
+                    persistenceLock.Release();
+                }
             }
             else
             {
@@ -360,8 +472,29 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                         break;
                 }
 
-                await AppendAsync(entry, out var startAddress, token).ConfigureAwait(false);
-                WriteMetadata(entry, startIndex, startAddress);
+                await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                var mutationStarted = false;
+                try
+                {
+                    ThrowOnInternalError();
+                    token.ThrowIfCancellationRequested();
+                    var length = entry.Length;
+                    token.ThrowIfCancellationRequested();
+                    mutationStarted = true;
+                    await PrepareAppendAsync(startIndex, token).ConfigureAwait(false);
+                    await AppendAsync(entry, length, out var startAddress, token).ConfigureAwait(false);
+                    WriteMetadata(entry, startIndex, startAddress);
+                    await PersistAppendAsync(startIndex, token).ConfigureAwait(false);
+                }
+                catch (Exception e) when (mutationStarted)
+                {
+                    OnBackgroundTaskFailure(e);
+                    throw;
+                }
+                finally
+                {
+                    persistenceLock.Release();
+                }
             }
         }
         finally
@@ -401,23 +534,62 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         }
     }
 
-    private async ValueTask AppendCoreAsync<TEntry>(ILogEntryProducer<TEntry> entries, long startIndex, bool skipCommitted, CancellationToken token)
+    private async ValueTask AppendCoreAsync<TEntry>(ILogEntryProducer<TEntry> entries, long startIndex, bool skipCommitted,
+        CancellationToken token, bool preserveMatching = false)
         where TEntry : IRaftLogEntry
     {
-        for (var commitIndex = LastCommittedEntryIndex; await entries.MoveNextAsync().ConfigureAwait(false); startIndex++)
+        await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+        var mutationStarted = false;
+        try
         {
-            if (entries.Current is not { IsSnapshot: false } currentEntry)
-                throw new InvalidOperationException(ExceptionMessages.SnapshotDetected);
+            ThrowOnInternalError();
+            token.ThrowIfCancellationRequested();
+            var commitIndex = LastCommittedEntryIndex;
+            var firstIndex = long.Max(startIndex, commitIndex + 1L);
+            for (; await entries.MoveNextAsync().ConfigureAwait(false); startIndex++)
+            {
+                token.ThrowIfCancellationRequested();
+                if (entries.Current is not { IsSnapshot: false } currentEntry)
+                    throw new InvalidOperationException(ExceptionMessages.SnapshotDetected);
 
-            if (startIndex > commitIndex)
-            {
-                await AppendAsync(currentEntry, out var startAddress, token).ConfigureAwait(false);
-                WriteMetadata(currentEntry, startIndex, startAddress);
+                if (startIndex > commitIndex)
+                {
+                    if (preserveMatching && startIndex <= LastEntryIndex
+                        && metadataPages.GetView<MetadataReader>(startIndex).Metadata.Term == currentEntry.Term)
+                        continue;
+
+                    preserveMatching = false;
+                    var length = currentEntry.Length;
+                    if (!mutationStarted)
+                    {
+                        // Producer validation and skipped entries must not create an overwrite journal.
+                        token.ThrowIfCancellationRequested();
+                        mutationStarted = true;
+                        firstIndex = startIndex;
+                        await PrepareAppendAsync(firstIndex, token).ConfigureAwait(false);
+                    }
+
+                    await AppendAsync(currentEntry, length, out var startAddress, token).ConfigureAwait(false);
+                    WriteMetadata(currentEntry, startIndex, startAddress);
+                }
+                else if (!skipCommitted)
+                {
+                    throw new InvalidOperationException(ExceptionMessages.InvalidAppendIndex);
+                }
             }
-            else if (!skipCommitted)
-            {
-                throw new InvalidOperationException(ExceptionMessages.InvalidAppendIndex);
-            }
+
+            token.ThrowIfCancellationRequested();
+            if (mutationStarted)
+                await PersistAppendAsync(firstIndex, token).ConfigureAwait(false);
+        }
+        catch (Exception e) when (mutationStarted)
+        {
+            OnBackgroundTaskFailure(e);
+            throw;
+        }
+        finally
+        {
+            persistenceLock.Release();
         }
     }
 
@@ -442,41 +614,39 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     {
         // the best case for this method - raise flusher and applier in parallel with the appending process
         var committedCount = await CommitCoreAsync<FalseConstant>(commitIndex, token).ConfigureAwait(false);
-        bool delayedPostCommit;
+        var delayedPostCommit = committedCount > 0L;
+        var appendLockTaken = false;
 
-        lockManager.SetCallerInformation("Append and Commit");
-        await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
         try
         {
+            lockManager.SetCallerInformation("Append and Commit");
+            await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
+            appendLockTaken = true;
             switch (startIndex.CompareTo(LastEntryIndex + 1L))
             {
                 case > 0:
                     throw new ArgumentOutOfRangeException(nameof(startIndex));
                 case < 0:
-                    // No need to call PostCommit here since the o/w lock will suspend the flusher and applier.
-                    // Thus, we can resume them later, out of the o/w lock
+                    // Defer notification until the overwrite lock no longer suspends the workers.
                     lockManager.SetCallerInformation("Overwrite Uncommitted Tail");
                     await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
-                    delayedPostCommit = committedCount > 0L;
                     break;
-                case 0 when committedCount > 0L:
-                    OnCommitted(committedCount);
-                    goto default;
-                default:
+                case 0 when delayedPostCommit:
                     delayedPostCommit = false;
+                    OnCommitted(committedCount);
                     break;
             }
 
-            await AppendCoreAsync(entries, startIndex, skipCommitted, token).ConfigureAwait(false);
+            await AppendCoreAsync(entries, startIndex, skipCommitted, token, preserveMatching: true).ConfigureAwait(false);
         }
         finally
         {
-            lockManager.ReleaseAppendLock();
-        }
+            if (appendLockTaken)
+                lockManager.ReleaseAppendLock();
 
-        if (delayedPostCommit)
-        {
-            OnCommitted(committedCount);
+            // Commitment is independent of appending, including cancellation while acquiring its locks.
+            if (delayedPostCommit)
+                OnCommitted(committedCount);
         }
 
         return committedCount;
@@ -487,14 +657,29 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         long commitIndex, CancellationToken token)
         where TEntry : IRaftLogEntry
     {
-        await AppendAsync(entries, startIndex, skipCommitted, token).ConfigureAwait(false);
+        lockManager.SetCallerInformation("Append and Commit");
+        await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (startIndex > LastEntryIndex + 1L)
+                throw new ArgumentOutOfRangeException(nameof(startIndex));
+            if (startIndex <= LastEntryIndex)
+                await lockManager.UpgradeToOverwriteLockAsync(token).ConfigureAwait(false);
+
+            await AppendCoreAsync(entries, startIndex, skipCommitted, token, preserveMatching: true).ConfigureAwait(false);
+        }
+        finally
+        {
+            lockManager.ReleaseAppendLock();
+        }
+
         return await CommitAsync(commitIndex, token).ConfigureAwait(false);
     }
 
-    private ValueTask AppendAsync<TEntry>(TEntry entry, out ulong startAddress, CancellationToken token)
+    private ValueTask AppendAsync<TEntry>(TEntry entry, long? length, out ulong startAddress, CancellationToken token)
         where TEntry : IRaftLogEntry
     {
-        var hasCapacity = dataPages.TryEnsureCapacity(entry.Length);
+        var hasCapacity = dataPages.TryEnsureCapacity(length);
         startAddress = dataPages.LastWrittenAddress;
 
         return hasCapacity
@@ -520,7 +705,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             context[index] = ctx;
         }
 
-        LastEntryIndex = index;
+        stagedLastIndex = index;
         AppendRateMeter.Add(1L, measurementTags);
         BytesWrittenMeter.Record(length + LogEntryMetadata.Size, measurementTags);
     }
@@ -568,8 +753,15 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
 
         if (lockManager.TryAcquireCommitLock())
         {
-            var count = Commit(endIndex);
-            lockManager.ReleaseCommitLock();
+            long count;
+            try
+            {
+                count = Commit(endIndex);
+            }
+            finally
+            {
+                lockManager.ReleaseCommitLock();
+            }
             
             // notify out of the lock
             try
@@ -597,8 +789,15 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     {
         lockManager.SetCallerInformation("Commit");
         await lockManager.AcquireCommitLockAsync(token).ConfigureAwait(false);
-        var count = Commit(endIndex);
-        lockManager.ReleaseCommitLock();
+        long count;
+        try
+        {
+            count = Commit(endIndex);
+        }
+        finally
+        {
+            lockManager.ReleaseCommitLock();
+        }
 
         if (TNotify.Value && count > 0L)
             OnCommitted(count);
@@ -646,6 +845,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
         try
         {
+            ThrowOnInternalError();
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(endIndex, LastEntryIndex);
             var list = new LogEntryList(
                 stateMachine,
                 startIndex,
@@ -667,6 +868,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         dataPages.Dispose();
         Dispose<QueuedSynchronizer>(lockManager, appliedEvent, stateLock);
         flushCompleted?.Dispose();
+        persistenceLock.Dispose();
         checkpoint.Dispose();
         state.Dispose();
         context.Clear();

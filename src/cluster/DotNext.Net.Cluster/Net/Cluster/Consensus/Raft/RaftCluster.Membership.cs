@@ -220,7 +220,8 @@ public partial class RaftCluster<TMember>
                 throw new ConcurrentMembershipModificationException();
 
             var config = await configurationStorage.LoadConfigurationAsync(tokenSource.Token).ConfigureAwait(false);
-            if (!IClusterConfiguration<TAddress>.TryAdd(ref config, addressProvider(member)))
+            var address = addressProvider(member);
+            if (!IClusterConfiguration<TAddress>.TryAdd(ref config, address))
                 return false;
 
             // assume that the member is up-to-date with the leader
@@ -230,16 +231,13 @@ public partial class RaftCluster<TMember>
             if (!await process.CatchUpAsync(rounds, tokenSource.Token).ConfigureAwait(false))
                 return false;
 
-            // make sure that the previous configuration is committed
-            var commitIndex = await AuditTrail
-                .AppendAsync(new EmptyLogEntry { Term = leaderState.Term }, tokenSource.Token)
-                .ConfigureAwait(false);
-            leaderState.ForceReplication();
-            await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
+            config = await LoadCommittedConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
+            if (!IClusterConfiguration<TAddress>.TryAdd(ref config, address))
+                return false;
 
             // Append new config to the log (extra empty log entry is required to be sure that other cluster members committed
             // the configuration
-            commitIndex = await AuditTrail.AppendAsync(config, leaderState.Term, tokenSource.Token).ConfigureAwait(false);
+            var commitIndex = await AuditTrail.AppendAsync(config, leaderState.Term, tokenSource.Token).ConfigureAwait(false);
             leaderState.ForceReplication();
 
             // ensure that the configuration is committed
@@ -296,17 +294,15 @@ public partial class RaftCluster<TMember>
             if (members.TryGetValue(id, out var member))
             {
                 var config = await configurationStorage.LoadConfigurationAsync(tokenSource.Token).ConfigureAwait(false);
-                if (IClusterConfiguration<TAddress>.TryRemove(ref config, addressProvider(member)))
+                var address = addressProvider(member);
+                if (IClusterConfiguration<TAddress>.TryRemove(ref config, address))
                 {
-                    // make sure that the previous configuration is committed
-                    var commitIndex = await AuditTrail
-                        .AppendAsync(new EmptyLogEntry { Term = leaderState.Term }, tokenSource.Token)
-                        .ConfigureAwait(false);
-                    leaderState.ForceReplication();
-                    await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
+                    config = await LoadCommittedConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
+                    if (!IClusterConfiguration<TAddress>.TryRemove(ref config, address))
+                        return false;
 
                     // append new config to the log
-                    commitIndex = await AuditTrail.AppendAsync(config, leaderState.Term, tokenSource.Token).ConfigureAwait(false);
+                    var commitIndex = await AuditTrail.AppendAsync(config, leaderState.Term, tokenSource.Token).ConfigureAwait(false);
                     leaderState.ForceReplication();
                     await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
                     return true;
@@ -330,6 +326,17 @@ public partial class RaftCluster<TMember>
         }
 
         return false;
+    }
+
+    private async ValueTask<IClusterConfiguration<TAddress>> LoadCommittedConfigurationAsync<TAddress>(
+        LeaderState<TMember> leaderState, IClusterConfigurationStorage<TAddress> configurationStorage, CancellationToken token)
+        where TAddress : notnull
+    {
+        // A previous detector or leader may have appended a configuration that has not applied yet.
+        var commitIndex = await AuditTrail.AppendAsync(new EmptyLogEntry { Term = leaderState.Term }, token).ConfigureAwait(false);
+        leaderState.ForceReplication();
+        await AuditTrail.WaitForApplyAsync(commitIndex, token).ConfigureAwait(false);
+        return await configurationStorage.LoadConfigurationAsync(token).ConfigureAwait(false);
     }
 
     private async ValueTask ProcessMembershipChangesAsync(IReadOnlySet<TMember> added, IReadOnlySet<TMember> removed)
@@ -423,7 +430,9 @@ public partial class RaftCluster<TMember>
         var config = await configurationStorage.LoadConfigurationAsync(token).ConfigureAwait(false);
         if (IClusterConfiguration<TAddress>.TryRemove(ref config, address))
         {
-            await AuditTrail.AppendAsync(config, term, token).ConfigureAwait(false);
+            config = await LoadCommittedConfigurationAsync(LeaderStateOrException, configurationStorage, token).ConfigureAwait(false);
+            if (IClusterConfiguration<TAddress>.TryRemove(ref config, address))
+                await AuditTrail.AppendAsync(config, term, token).ConfigureAwait(false);
         }
     }
 

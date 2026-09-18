@@ -60,6 +60,35 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
         await Leader.WaitForMembersAsync(members => !members.Contains(member.EndPoint));
     }
 
+    internal void Hold(MembershipNode source)
+    {
+        foreach (var node in Nodes.Where(node => !object.ReferenceEquals(source, node)))
+            Network.Hold(source.EndPoint, node.EndPoint);
+    }
+
+    internal async Task PumpAsync(MembershipNode source, Task operation)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+        timeout.CancelAfter(DefaultTimeout);
+        try
+        {
+            while (!operation.IsCompleted)
+            {
+                var next = Network.WaitForMessageAsync(source.EndPoint, timeout.Token);
+                if (await Task.WhenAny(operation, next) == operation)
+                    break;
+                var message = await next;
+                if (!message.IsCompleted)
+                    await Network.DeliverAsync(message);
+            }
+            await operation;
+        }
+        finally
+        {
+            await timeout.CancelAsync();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         try

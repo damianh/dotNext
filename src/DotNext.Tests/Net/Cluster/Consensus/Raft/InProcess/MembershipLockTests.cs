@@ -16,7 +16,8 @@ public sealed class MembershipLockTests : RaftTest
         await leader.DetectAsync(caller, cluster.Nodes[4].EndPoint, leader.LeadershipToken);
         True(caller.Cleared);
         Equal(1, caller.Validations);
-        Equal(before + 1L, leader.Log.LastEntryIndex);
+        using (var entries = await leader.Log.ReadAsync(before + 1L, leader.Log.LastEntryIndex, TestToken))
+            True(entries[^1].IsConfiguration);
         TestContext.Current.TestOutputHelper.WriteLine(
             $"Dispatcher completed; caller cleared={caller.Cleared}; membership lock held={leader.IsMembershipLockHeld}.");
 
@@ -138,6 +139,13 @@ public sealed class MembershipLockTests : RaftTest
         True(queuedCaller.Cleared);
         Equal(1, queuedCaller.Validations);
         False(leader.IsMembershipLockHeld);
+        leader.OnUnavailable = null;
+        foreach (var node in cluster.Nodes)
+            cluster.Hold(node);
+        await cluster.PumpAsync(leader, cluster.ElectAsync(leader));
+        var change = leader.RemoveAsync(cluster.Nodes[2].EndPoint, TestToken);
+        await cluster.PumpAsync(leader, change);
+        True(await change);
     }
 
     [Fact]
@@ -149,14 +157,15 @@ public sealed class MembershipLockTests : RaftTest
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbacks = 0;
-        leader.OnUnavailable = async (member, term, token) =>
+        // Keep this callback notification-only: removal barriers can legitimately
+        // schedule more notifications. Configuration removal is covered separately.
+        leader.OnUnavailable = async (_, _, token) =>
         {
             if (Interlocked.Increment(ref callbacks) is 1)
             {
                 entered.SetResult();
                 await release.Task.WaitAsync(token);
             }
-            await leader.RemoveUnavailableAsync(member, term, token);
         };
         // Require the detector's worker for this round's quorum. Its health check
         // finishes before it contributes, unlike an arbitrary late follower.

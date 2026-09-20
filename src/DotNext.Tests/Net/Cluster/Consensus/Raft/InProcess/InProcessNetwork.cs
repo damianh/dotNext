@@ -123,19 +123,31 @@ internal sealed class InProcessNetwork
         => WaitForMessageAsync(source, target,
             static type => type is RaftMessageType.AppendEntries or RaftMessageType.InstallSnapshot, token);
 
-    private async Task<PendingMessage> WaitForMessageAsync(
+    private Task<PendingMessage> WaitForMessageAsync(
         EndPoint source, EndPoint target, Predicate<RaftMessageType> messageFilter, CancellationToken token)
     {
         var sourceId = ClusterMemberId.FromEndPoint(source);
         var targetId = ClusterMemberId.FromEndPoint(target);
+        return WaitForMessageAsync(message =>
+            message.SourceId == sourceId && message.TargetId == targetId
+            && messageFilter(message.MessageType), token);
+    }
+
+    internal Task<PendingMessage> WaitForMessageAsync(EndPoint source, CancellationToken token)
+    {
+        var sourceId = ClusterMemberId.FromEndPoint(source);
+        return WaitForMessageAsync(message => message.SourceId == sourceId, token);
+    }
+
+    private async Task<PendingMessage> WaitForMessageAsync(Predicate<PendingMessage> filter, CancellationToken token)
+    {
         for (;;)
         {
             Task changed;
             lock (syncRoot)
             {
                 var message = pendingMessages.FirstOrDefault(message =>
-                    !message.IsCompleted && message.SourceId == sourceId
-                    && message.TargetId == targetId && messageFilter(message.MessageType));
+                    !message.IsCompleted && filter(message));
                 if (message is not null)
                     return message;
 

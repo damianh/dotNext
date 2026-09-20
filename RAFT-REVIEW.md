@@ -105,6 +105,62 @@ state is obsolete. Subsequent membership changes fail or wait indefinitely.
 
 **Fix:** Release the lock in `finally` whenever acquisition succeeded.
 
+#### Implementation follow-up: #17 and #18
+
+The historical finding above is repaired. The dispatcher clears its caller
+identity and releases `membershipLock` if and only if acquisition succeeded.
+Cancellation before acquisition does not release another operation's ownership;
+callback exceptions, cancellation after acquisition, and stale callers still
+execute cleanup.
+
+**Recorded red baseline for #17:** `be3aecc482af4a23042e0f8e91ca3d042b997fef`,
+with test scaffolding only. `CompletedDetectionAllowsManualMembershipChange`
+elected a real WAL-backed leader, awaited the unavailable-member dispatcher,
+and observed `caller cleared=True; membership lock held=True`. The following
+manual removal was expected to succeed but instead threw
+`ConcurrentMembershipModificationException`. The manual-add variant failed in
+the same way. The finalized eight-case lock suite failed on the unfixed
+production code and passed with the guarded release.
+
+**Independent #17-fixed checkpoint:** `adea2ec5d04449769fb7d8ea3b2ce639d47f287d`.
+The #18 investigation ran on this commit with its new test scaffolding, before
+any configuration-ordering production change. Six behavioral regressions failed
+and three controls passed:
+
+- An unapplied detector removal at index 2 was committed by the next manual
+  operation's barrier, but that operation appended its previously captured
+  configuration at index 4. Both add and remove resurrected `member-4`.
+- A real term-2 election inherited an uncommitted removal from a stopped leader.
+  Subsequent manual add, manual remove, and automatic removal each resurrected
+  `member-4`.
+- Consecutive automatic removals lost the first removal.
+- Applying the predecessor first preserved it for both manual operations.
+  Explicit re-add after an applied removal and a missed committed entry also
+  succeeded.
+
+The exact baseline commands were:
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipLockTests' --progress off --timeout 90s
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --progress off --timeout 120s
+```
+
+**#18 disposition:** C3 is confirmed and repaired, not merely unblocked.
+Manual add/remove retain their initial eligibility checks and joining-node
+catch-up, then reload and modify configuration after the current-term
+commit/application barrier. Automatic removal uses the same barrier/reload
+before appending its change. Configuration versions alone did not prevent the
+resurrection: the stale member set had been appended with a newer log index.
+
+The same configuration regressions now pass. Additional coverage checks exact
+stored and live member sets, versions, cancellation at each operation's barrier,
+post-barrier revalidation, unchanged no-op checks, and progress after stale
+leadership. The lock regression still checks completed dispatch and subsequent
+manual progress; it permits the automatic helper's added barrier entry.
+
+This resolves the specified #18 release gate for the combined repair. The lock
+fix alone must not be released without the configuration-ordering repair.
+
 ## Persistence and recovery
 
 Paths in this section are additionally relative to `StateMachine\`.
@@ -367,7 +423,7 @@ confirmed core defects; overlapping consequences are not counted twice.
 |---|---|---|
 | C1: durable replication acknowledgments | Confirmed new finding 15 | Restart forgets the acknowledged uncommitted tail even when its pages were persisted. This was a material omission from the first review. |
 | C2: election log freshness | Confirmed duplicate of finding 2 | Compare terms first, then indices when terms match. |
-| C3: resurrecting a removed member | Conditional; stated interleaving blocked | Finding 6 leaves `membershipLock` held after failure detection, so the subsequent same-leader membership operation cannot acquire it. Loading configuration before the barrier remains suspect for inherited uncommitted configurations or after repairing that lock leak; the alternate scenario was not reproduced. |
+| C3: resurrecting a removed member | Confirmed after finding 6 repair; fixed | The historical review could not pass the retained lock. Follow-up #18 reproduced both detector-then-update and inherited-configuration scenarios on the independent #17-fixed baseline. Add, remove, and automatic removal now reload configuration after an application barrier; see the evidence under finding 6. |
 | C4: snapshot-aware comparison | Not an independent finding | The second review itself folds this into C2 and states that snapshot-term lookup works. |
 | C5: snapshot/configuration length validation | Validation omission; proposed fix too strict | Require a nonnegative configuration length and compare it against total length only when known. Unknown `Content-Length` is valid streaming behavior. Do not duplicate finding 7. |
 | C6: unbounded append count | Conditional availability risk; explanation incomplete | One stalled entry is enough to block a read; a huge count is unnecessary. Completed truncation differs from an open stalled request. Bounds alone do not resolve missing effective cancellation/deadlines; preserve streaming and use overflow-safe length checks. |

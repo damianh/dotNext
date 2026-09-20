@@ -1362,6 +1362,18 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         finally
         {
             callerState.Clear();
+
+            if (lockTaken)
+            {
+                try
+                {
+                    membershipLock.Release();
+                }
+                catch (ObjectDisposedException) when (IsDisposingOrDisposed)
+                {
+                    // Notifications can finish after cluster disposal has destroyed the lock.
+                }
+            }
         }
     }
 

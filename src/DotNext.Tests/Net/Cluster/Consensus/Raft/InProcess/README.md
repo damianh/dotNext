@@ -78,9 +78,13 @@ or an arbitrary failure of every background task. Request cancellation is
 cooperative, and a dispatched handler must finish cleanup before the sender's
 task completes, so borrowed log-entry payloads remain alive.
 
-The harness uses fixed membership. Configuration and snapshot installation
+The base harness uses fixed membership. Configuration and snapshot installation
 invoke the production handlers with the caller's configuration storage;
 it does not emulate dynamic membership discovery or socket serialization.
+`MembershipClusterFixture` opts into dynamic membership with real WALs and
+configuration storage. Its node subclass queues committed configuration events
+before applying the production configuration-change scope, matching the default
+and HTTP clusters. Existing fixed-membership fixtures are unchanged.
 
 `RestartAsync` always requires a callback that explicitly chooses the durable
 state for the replacement:
@@ -159,3 +163,50 @@ outcomes, the overflow buffer, and reuse after late replies. Run both layers wit
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils.*' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.QuorumLossTests' --progress off --timeout 90s
 ```
+
+## Membership ownership and configuration ordering
+
+`MembershipLockTests` covers issue #17. An elected, WAL-backed leader runs the
+real unavailable-member dispatcher and configuration-removal helper. The test
+awaits the dispatcher task, observes caller-identity cleanup, and then completes
+a manual add or removal. Read-only private-field accessors observe the actual
+leader identity and lock ownership; they never install a state or release a lock.
+The primary unfixed failure is `ConcurrentMembershipModificationException`
+after the dispatcher has completed, not an arbitrary membership timeout.
+
+Additional schedules cover canceled acquisition without releasing another
+owner's lock, cancellation/exception after acquisition, real resignation while a
+callback owns the lock, stale queued caller validation, and membership progress
+after reelection. A controlled detector response runs the actual replication
+worker-to-leader-to-callback path. Its notification-only override isolates lock
+serialization from extra notifications caused by configuration replication.
+Disposal-race cases hold a callback until synchronous or asynchronous disposal
+has destroyed the membership lock, then allow it to complete or throw. Cleanup
+tolerates only lock-release disposal exceptions while the cluster is disposing
+or disposed; callback failures still reach the existing error logger.
+
+`MembershipConfigurationTests` covers issue #18 on the independently repaired
+#17 baseline. Held RPCs keep a detector's removal unapplied until a subsequent
+manual add/remove crosses its barrier. The inherited-configuration case sends
+the removal to only one follower in a five-member cluster, stops the leader
+before commitment, and elects that follower through real pre-votes/votes.
+Manual add/remove and automatic removal must preserve the inherited removal.
+The automatic test uses the leader's `ConsensusToken`, as the real dispatcher
+does internally; the public `LeadershipToken` is deliberately canceled until
+the newly elected leader's write barrier commits.
+
+The oracles check the exact final member set, configuration version, WAL applied
+index, and live membership. Controls cover already-applied removal, consecutive
+automatic removals, explicit re-add with a real catch-up suffix, unchanged no-op
+checks, revalidation after a barrier, and caller cancellation during the barrier
+for add/remove/detection. `PumpAsync` delivers held messages until an observed
+operation completes, without advancing virtual time or fabricating a log.
+Competing election traffic stays held in the inherited-configuration schedule.
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipLockTests' --progress off --timeout 90s
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --progress off --timeout 120s
+```
+
+The baseline failures and issue #18 release-gate disposition are recorded with
+finding 6 in the repository's `RAFT-REVIEW.md`.

@@ -180,6 +180,10 @@ callback owns the lock, stale queued caller validation, and membership progress
 after reelection. A controlled detector response runs the actual replication
 worker-to-leader-to-callback path. Its notification-only override isolates lock
 serialization from extra notifications caused by configuration replication.
+Disposal-race cases hold a callback until synchronous or asynchronous disposal
+has destroyed the membership lock, then allow it to complete or throw. Cleanup
+tolerates only lock-release disposal exceptions while the cluster is disposing
+or disposed; callback failures still reach the existing error logger.
 
 `MembershipConfigurationTests` covers issue #18 on the independently repaired
 #17 baseline. Held RPCs keep a detector's removal unapplied until a subsequent

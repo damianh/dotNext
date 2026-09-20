@@ -72,6 +72,59 @@ public sealed class MembershipLockTests : RaftTest
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public static async Task CallbackCompletesAfterDisposal(bool asynchronous, bool fail)
+    {
+        await using var cluster = new MembershipClusterFixture();
+        await cluster.StartAsync();
+        var leader = cluster.Leader;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failure = new ObjectDisposedException("Callback resource");
+        leader.OnUnavailable = async (_, _, _) =>
+        {
+            entered.SetResult();
+            // Delay observing shutdown until after the cluster has disposed its lock.
+            await release.Task;
+            if (fail)
+                throw failure;
+        };
+        var token = leader.LeadershipToken;
+        var caller = leader.CaptureCaller();
+        var detection = leader.DetectAsync(caller, cluster.Nodes[4].EndPoint, token);
+        try
+        {
+            await entered.Task.WaitAsync(DefaultTimeout, TestToken);
+            True(leader.IsMembershipLockHeld);
+            if (asynchronous)
+            {
+                await leader.DisposeAsync().AsTask().WaitAsync(DefaultTimeout, TestToken);
+            }
+            else
+            {
+                await leader.StopAsync(TestToken).WaitAsync(DefaultTimeout, TestToken);
+                leader.Dispose();
+            }
+            True(token.IsCancellationRequested);
+            False(detection.IsCompleted);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await detection.WaitAsync(DefaultTimeout, TestToken);
+        }
+        True(caller.Cleared);
+        Equal(1, caller.Validations);
+        if (fail)
+            Same(failure, Single(leader.Errors.Exceptions));
+        else
+            Empty(leader.Errors.Exceptions);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CanceledWaiterDoesNotReleaseAnotherOwner(bool alreadyCanceled)

@@ -539,7 +539,7 @@ public sealed partial class DelegateHelpersTests : Test
         True(func.Invoke(42, 42, new(canceled: false)).IsFaulted);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ToAsync4()
     {
         var func = new Func<int, int, int>(static (x, y) => x + y).ToAsync();
@@ -550,7 +550,7 @@ public sealed partial class DelegateHelpersTests : Test
         await ThrowsAsync<Exception>(func.Invoke(42, 42, new(canceled: false)).AsTask);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ToAsync5()
     {
         var func = new Func<int, int>(Func<int, int>.Identity).ToAsync();
@@ -561,7 +561,7 @@ public sealed partial class DelegateHelpersTests : Test
         await ThrowsAsync<Exception>(func.Invoke(42, new(canceled: false)).AsTask);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ToAsync6()
     {
         var func = Func<int>.Constant(42).ToAsync();

@@ -4,7 +4,7 @@ using static MembershipClusterFixture;
 
 public sealed class MembershipHarnessTests : RaftTest
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ElectionRequiresExplicitDelivery()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -21,7 +21,7 @@ public sealed class MembershipHarnessTests : RaftTest
         Equal(0L, cluster.Joiner.Log.LastEntryIndex);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AppliedConfigurationReachesMembersOnlyWhenPropagated()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -42,7 +42,7 @@ public sealed class MembershipHarnessTests : RaftTest
         False(leader.IsMembershipLockHeld);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task JoinerCatchesUpBeforeItsAddressIsCommitted()
     {
         await using var cluster = new MembershipClusterFixture();

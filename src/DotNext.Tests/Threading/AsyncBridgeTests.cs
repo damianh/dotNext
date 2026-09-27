@@ -3,7 +3,7 @@
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncBridgeTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForCancellationNoThrow()
     {
         using var source = new CancellationTokenSource(400);
@@ -11,7 +11,7 @@ public sealed class AsyncBridgeTests : Test
         True(source.IsCancellationRequested);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForCancellation()
     {
         using var source = new CancellationTokenSource(400);
@@ -19,7 +19,7 @@ public sealed class AsyncBridgeTests : Test
         True(source.IsCancellationRequested);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForSignal()
     {
         using var ev = new ManualResetEvent(false);
@@ -27,7 +27,7 @@ public sealed class AsyncBridgeTests : Test
         await ev.WaitAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelWaitForSignal()
     {
         using var ev = new ManualResetEvent(false);
@@ -40,7 +40,7 @@ public sealed class AsyncBridgeTests : Test
         Equal(cts.Token, e.CancellationToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AlreadySignaled()
     {
         using var ev = new ManualResetEvent(true);
@@ -48,7 +48,7 @@ public sealed class AsyncBridgeTests : Test
         True(ev.WaitAsync(TestToken).IsCompletedSuccessfully);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PoolOverflow()
     {
         var tokens = new CancellationTokenSource[AsyncBridge.MaxPoolSize + 1];
@@ -76,7 +76,7 @@ public sealed class AsyncBridgeTests : Test
         await Task.WhenAll(tasks);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancellationTokenAwaitCornerCases()
     {
         await ThrowsAnyAsync<OperationCanceledException>(new CancellationToken(true).WaitAsync(completeAsCanceled: true).AsTask);
@@ -95,7 +95,7 @@ public sealed class AsyncBridgeTests : Test
         False(disposeSource());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TaskAsToken()
     {
         var source = new TaskCompletionSource();
@@ -117,7 +117,7 @@ public sealed class AsyncBridgeTests : Test
         source.SetResult();
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposeTaskTokenAfterCompletion()
     {
         var source = new TaskCompletionSource();

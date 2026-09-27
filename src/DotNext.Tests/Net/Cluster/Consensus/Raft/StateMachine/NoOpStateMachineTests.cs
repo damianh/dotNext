@@ -3,7 +3,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 [Collection(TestCollections.WriteAheadLog)]
 public sealed class NoOpStateMachineTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MakeSnapshot()
     {
         const int threshold = 4;

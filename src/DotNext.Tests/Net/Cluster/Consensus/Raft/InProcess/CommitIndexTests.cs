@@ -7,7 +7,7 @@ using StateMachine;
 
 public sealed class CommitIndexTests : RaftTest
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotAcknowledgmentDoesNotCommitMinorityTail()
     {
         var timeProvider = new ManualTimeProvider();

@@ -204,7 +204,7 @@ public sealed class TextStreamTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteTextAsync()
     {
         var writer = new ArrayBufferWriter<char>();
@@ -229,7 +229,7 @@ public sealed class TextStreamTests : Test
         Equal(expected.ToString(), actual.ToString());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteSequence()
     {
         var sequence = new[] { "abc".AsMemory(), "def".AsMemory(), "g".AsMemory() }.Concat();
@@ -274,7 +274,7 @@ public sealed class TextStreamTests : Test
         Equal(expected.ByteArray, actual.ByteArray);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteInterpolatedString1Async()
     {
         await using var writer = new StringWriter();
@@ -283,7 +283,7 @@ public sealed class TextStreamTests : Test
         Equal($"{x} + {y} = {x + y}", writer.ToString());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteInterpolatedString2Async()
     {
         await using var writer = new StringWriter();

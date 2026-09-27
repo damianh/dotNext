@@ -7,7 +7,7 @@ using Diagnostics;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncResetEventTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ManualResetEvent()
     {
         using IAsyncResetEvent resetEvent = new AsyncManualResetEvent(false);
@@ -33,7 +33,7 @@ public sealed class AsyncResetEventTests : Test
         True(resetEvent.IsSet);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SetResetForManualEvent()
     {
         using IAsyncResetEvent mre = new AsyncManualResetEvent(false);
@@ -47,7 +47,7 @@ public sealed class AsyncResetEventTests : Test
         False(await mre.WaitAsync(TimeSpan.Zero, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AutoresetForManualEvent()
     {
         using var resetEvent = new AsyncManualResetEvent(false) { ConcurrencyLevel = 3 };
@@ -71,7 +71,7 @@ public sealed class AsyncResetEventTests : Test
         False(resetEvent.IsSet);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SetResetForAutoEvent()
     {
         using IAsyncResetEvent are = new AsyncAutoResetEvent(false);
@@ -85,7 +85,7 @@ public sealed class AsyncResetEventTests : Test
         False(await are.WaitAsync(TimeSpan.FromMilliseconds(100), TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue82()
     {
         using var ev = new AsyncAutoResetEvent(false);
@@ -114,7 +114,7 @@ public sealed class AsyncResetEventTests : Test
         new AsyncManualResetEvent(false),
     };
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetResetEvents))]
     public static async Task ManualResetEventSynchronousCompletion(IAsyncResetEvent resetEvent)
     {
@@ -141,7 +141,7 @@ public sealed class AsyncResetEventTests : Test
         }
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AutoResetOnSyncWait()
     {
         using IAsyncEvent are = new AsyncAutoResetEvent(false);
@@ -152,7 +152,7 @@ public sealed class AsyncResetEventTests : Test
         False(are.IsSet);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ResumeSuspendedCallersSequentially()
     {
         using IAsyncEvent are = new AsyncAutoResetEvent(false);

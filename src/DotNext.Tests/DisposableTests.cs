@@ -28,7 +28,7 @@ public sealed class DisposableTests : Test
         True(obj2.IsDisposed);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposeManyAsync()
     {
         var obj1 = new DisposableObject();

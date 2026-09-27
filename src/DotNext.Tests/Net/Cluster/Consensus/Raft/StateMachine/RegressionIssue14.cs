@@ -15,7 +15,7 @@ public sealed partial class RegressionIssue14 : Test
     private const long SnapshotIndex = 1000L;
     private const long SnapshotTerm = 7L;
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExplicitFlushAfterSnapshotInstallIntoEmptyLog()
     {
         var options = CreateOptions(InfiniteTimeSpan);
@@ -48,7 +48,7 @@ public sealed partial class RegressionIssue14 : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true)]
     [InlineData(false)]
     public static async Task BackgroundFlushAfterSnapshotInstallIntoEmptyLog(bool flushOnCommit)
@@ -80,7 +80,7 @@ public sealed partial class RegressionIssue14 : Test
         False(FlusherTask(wal).IsCompleted);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0, WriteAheadLog.IntegrityHashAlgorithm.None)]
     [InlineData(1, WriteAheadLog.IntegrityHashAlgorithm.None)]
     [InlineData(63, WriteAheadLog.IntegrityHashAlgorithm.None)]
@@ -148,7 +148,7 @@ public sealed partial class RegressionIssue14 : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SquashedPagesAreReclaimedAndTheLogStillRecovers()
     {
         var options = CreateOptions(InfiniteTimeSpan);
@@ -192,7 +192,7 @@ public sealed partial class RegressionIssue14 : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InstallationRacingAFlushPassKeepsTheCheckpointConsistent()
     {
         var startup = new PausedFlusherContext();

@@ -11,7 +11,7 @@ using static IO.Pipelines.PipeExtensions;
 
 public sealed class SequenceReaderTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadMemory()
     {
         var sequence = ToReadOnlySequence<byte>(new byte[] { 1, 5, 8, 9 }, 2);
@@ -24,7 +24,7 @@ public sealed class SequenceReaderTests : Test
         Equal(8, result[2]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyToStream()
     {
         var content = new byte[] { 1, 5, 8, 9 };
@@ -35,7 +35,7 @@ public sealed class SequenceReaderTests : Test
         Equal(content, ms.ToArray());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyToPipe()
     {
         var expected = new byte[] { 1, 5, 8, 9 };
@@ -103,7 +103,7 @@ public sealed class SequenceReaderTests : Test
         Equal(value, result.ToString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(LengthFormat.Compressed)]
     [InlineData(LengthFormat.LittleEndian)]
     [InlineData(LengthFormat.BigEndian)]

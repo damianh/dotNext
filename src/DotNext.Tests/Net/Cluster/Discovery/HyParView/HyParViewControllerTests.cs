@@ -100,7 +100,7 @@ public sealed class HyParViewControllerTests : Test
         controller.PeerDiscovered -= handler;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ActiveViewOverflow()
     {
         var transport = new TransportLayer();

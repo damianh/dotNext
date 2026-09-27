@@ -7,7 +7,7 @@ using LogEntryList = IO.Log.LogEntryProducer<IRaftLogEntry>;
 
 public sealed class ConsensusOnlyStateTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RaftPersistentState()
     {
         IPersistentState auditTrail = new ConsensusOnlyState();
@@ -17,7 +17,7 @@ public sealed class ConsensusOnlyStateTests : Test
         Equal(11, auditTrail.Term);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyLogEntry()
     {
         IPersistentState auditTrail = new ConsensusOnlyState();
@@ -37,7 +37,7 @@ public sealed class ConsensusOnlyStateTests : Test
         await auditTrail.ReadAsync(new LogEntryConsumer(checker), 1L, auditTrail.LastEntryIndex, TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Appending()
     {
         IPersistentState auditTrail = new ConsensusOnlyState();
@@ -113,7 +113,7 @@ public sealed class ConsensusOnlyStateTests : Test
         return auditTrail;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task HigherTermShorterLogIsUpToDate()
     {
         var auditTrail = await CreateAuditTrailAsync(TestToken);
@@ -121,7 +121,7 @@ public sealed class ConsensusOnlyStateTests : Test
         True(await auditTrail.IsUpToDateAsync(2L, 3L, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StaleCandidateIsRejected()
     {
         var auditTrail = await CreateAuditTrailAsync(TestToken);
@@ -129,7 +129,7 @@ public sealed class ConsensusOnlyStateTests : Test
         False(await auditTrail.IsUpToDateAsync(8L, 1L, TestToken));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3L, 2L, true)]  // same term, same length
     [InlineData(4L, 2L, true)]  // same term, longer log
     [InlineData(2L, 2L, false)] // same term, shorter log
@@ -144,7 +144,7 @@ public sealed class ConsensusOnlyStateTests : Test
         Equal(expected, await auditTrail.IsUpToDateAsync(lastLogIndex, lastLogTerm, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyLocalLogIsUpToDate()
     {
         IPersistentState auditTrail = new ConsensusOnlyState();

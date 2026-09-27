@@ -6,7 +6,7 @@ using IO;
 
 public sealed class DiskSpacePoolTests : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task RentConcurrently(bool optimizedDiskAllocation)
@@ -56,7 +56,7 @@ public sealed class DiskSpacePoolTests : Test
         Equal(expected, actual);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadWriteAsync()
     {
         using var pool = new DiskSpacePool(maxSegmentSize: 1028 * 1024);
@@ -81,7 +81,7 @@ public sealed class DiskSpacePoolTests : Test
         Throws<ArgumentOutOfRangeException>(() => segment.Write(expected));
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task OverflowOnWriteAsync()
     {
         using var pool = new DiskSpacePool(maxSegmentSize: 1028 * 1024);
@@ -119,7 +119,7 @@ public sealed class DiskSpacePoolTests : Test
         Equal(0, stream.Read(stackalloc byte[1]));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadWriteStringAsync()
     {
         const string expected = "Hello, world!";
@@ -143,7 +143,7 @@ public sealed class DiskSpacePoolTests : Test
         Equal(0, await stream.ReadAsync(buffer, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DefaultSegment()
     {
         Throws<ObjectDisposedException>(new DiskSpacePool.Segment().CreateStream);

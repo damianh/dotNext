@@ -13,7 +13,7 @@ using EncodingContext = DotNext.Text.EncodingContext;
 
 public sealed class BufferWriterTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadBlittableTypes()
     {
         var writer = new ArrayBufferWriter<byte>();
@@ -36,7 +36,7 @@ public sealed class BufferWriterTests : Test
         Equal(value, buffer.ToString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(LengthFormat.Compressed)]
     [InlineData(LengthFormat.LittleEndian)]
     [InlineData(LengthFormat.BigEndian)]

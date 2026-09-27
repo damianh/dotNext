@@ -5,7 +5,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncSharedLockTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WeakLocks()
     {
         using var sharedLock = new AsyncSharedLock(3);
@@ -23,7 +23,7 @@ public sealed class AsyncSharedLockTests : Test
         True(await sharedLock.TryAcquireAsync(false, TimeSpan.Zero, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StrongLocks()
     {
         using var sharedLock = new AsyncSharedLock(3);
@@ -41,7 +41,7 @@ public sealed class AsyncSharedLockTests : Test
         sharedLock.Release();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WeakToStrongLockTransition()
     {
         using var acquireEvent = new AsyncCountdownEvent(3L);
@@ -60,7 +60,7 @@ public sealed class AsyncSharedLockTests : Test
         acquireEvent.Signal();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StrongToWeakLockTransition()
     {
         using var acquireEvent = new AsyncCountdownEvent(2L);
@@ -121,7 +121,7 @@ public sealed class AsyncSharedLockTests : Test
         True(@lock.DisposeAsync().IsCompletedSuccessfully);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown()
     {
         using var @lock = new AsyncSharedLock(3);
@@ -133,7 +133,7 @@ public sealed class AsyncSharedLockTests : Test
         Throws<ObjectDisposedException>(() => @lock.TryAcquire(true));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown2()
     {
         using var @lock = new AsyncSharedLock(3);
@@ -145,7 +145,7 @@ public sealed class AsyncSharedLockTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown3()
     {
         using var @lock = new AsyncSharedLock(3);
@@ -160,7 +160,7 @@ public sealed class AsyncSharedLockTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task QueueFairness()
     {
         using var @lock = new AsyncSharedLock(3);

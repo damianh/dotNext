@@ -21,7 +21,7 @@ public sealed class WriteAheadLogRecoveryBoundaryTests : Test
         OverflowingEnd,
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(BoundaryCorruption.CheckpointWritePosition)]
     [InlineData(BoundaryCorruption.MissingMetadata)]
     [InlineData(BoundaryCorruption.NegativeLength)]
@@ -65,7 +65,7 @@ public sealed class WriteAheadLogRecoveryBoundaryTests : Test
         });
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ValidSnapshotBoundaryAllowsAppendAndRestart(bool snapshotAhead)
@@ -98,7 +98,7 @@ public sealed class WriteAheadLogRecoveryBoundaryTests : Test
         Equal("after snapshot", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyStoreDoesNotRequireMetadataForIndexZero()
     {
         var options = CreateOptions();

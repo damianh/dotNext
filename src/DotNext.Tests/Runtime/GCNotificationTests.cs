@@ -2,7 +2,7 @@ namespace DotNext.Runtime;
 
 public sealed class GCNotificationTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GCHookAsync()
     {
         var task1 = GC.WhenTriggered().WaitAsync(TestToken);
@@ -12,7 +12,7 @@ public sealed class GCNotificationTests : Test
         await task2;
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task GCHook(bool continueOnCapturedContext)
@@ -23,7 +23,7 @@ public sealed class GCNotificationTests : Test
         await source.Task.WaitAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task HeapCompactionAsync()
     {
         var task = GC.WhenCompactionOccurred().WaitAsync(TestToken);
@@ -31,7 +31,7 @@ public sealed class GCNotificationTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task OrOperator()
     {
         var task = (GC.WhenHeapFragmented(0.8D) | GC.WhenTriggered()).WaitAsync(TestToken);
@@ -39,7 +39,7 @@ public sealed class GCNotificationTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task XorOperator()
     {
         var task = (GC.WhenHeapFragmented(0.8D) ^ GC.WhenTriggered()).WaitAsync(TestToken);
@@ -47,7 +47,7 @@ public sealed class GCNotificationTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AndOperator()
     {
         var task = (GC.WhenTriggered() & GC.WhenCompactionOccurred()).WaitAsync(TestToken);
@@ -55,7 +55,7 @@ public sealed class GCNotificationTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task NotOperator()
     {
         var task = (!GC.WhenTriggered().Negate()).WaitAsync(TestToken);

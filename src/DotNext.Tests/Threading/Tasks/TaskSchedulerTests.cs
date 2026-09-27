@@ -5,7 +5,7 @@ namespace DotNext.Threading.Tasks;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class TaskSchedulerTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelWithoutResult()
     {
         var task = System.Threading.Tasks.TaskScheduler.ScheduleAsync(static (_, _) => ValueTask.CompletedTask, 42, InfiniteTimeSpan, TestToken);
@@ -15,7 +15,7 @@ public sealed class TaskSchedulerTests : Test
         True(task.Task.IsCanceled);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelWithResult()
     {
         var task = System.Threading.Tasks.TaskScheduler.ScheduleAsync(static (args, _) => ValueTask.FromResult(args), 42, InfiniteTimeSpan, TestToken);
@@ -25,7 +25,7 @@ public sealed class TaskSchedulerTests : Test
         True(task.Task.IsCanceled);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     public static async Task CompleteWithoutResult(int delay)
@@ -33,7 +33,7 @@ public sealed class TaskSchedulerTests : Test
         await System.Threading.Tasks.TaskScheduler.ScheduleAsync(static (_, _) => ValueTask.CompletedTask, 42, TimeSpan.FromMilliseconds(delay), TestToken);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     public static async Task CompleteWithResult(int delay)

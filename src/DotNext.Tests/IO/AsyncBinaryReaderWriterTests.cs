@@ -228,7 +228,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         { new DefaultSource(), Encoding.Unicode }
     };
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetDataForPrimitives))]
     public static async Task WriteReadPrimitivesAsync(IAsyncBinaryReaderWriterSource source, Encoding encoding)
     {
@@ -331,7 +331,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         { new ReadOnlySequenceSource(), Encoding.UTF8, LengthFormat.LittleEndian },
     };
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetDataForStringEncoding))]
     public static async Task WriteReadStringAsync(IAsyncBinaryReaderWriterSource source, Encoding encoding, LengthFormat lengthFormat)
     {
@@ -350,7 +350,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetDataForStringEncoding))]
     public static async Task WriteReadString2Async(IAsyncBinaryReaderWriterSource source, Encoding encoding, LengthFormat lengthFormat)
     {
@@ -383,7 +383,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         new BufferedFileSource(128)
     ];
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetSources))]
     public static async Task CopyFromStreamToStream(IAsyncBinaryReaderWriterSource source)
     {
@@ -413,7 +413,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetSources))]
     public static async Task CopyFromStreamToStreamWithLength(IAsyncBinaryReaderWriterSource source)
     {
@@ -441,7 +441,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetSources))]
     public static async Task CopyFromStreamToConsumer(IAsyncBinaryReaderWriterSource source)
     {
@@ -471,7 +471,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetSources))]
     public static async Task CopyFromStreamToConsumerWithLength(IAsyncBinaryReaderWriterSource source)
     {
@@ -499,7 +499,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetSources))]
     public static async Task CopyFromStreamToBuffer(IAsyncBinaryReaderWriterSource source)
     {
@@ -529,7 +529,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetSources))]
     public static async Task CopyFromStreamToBufferWithLength(IAsyncBinaryReaderWriterSource source)
     {
@@ -557,7 +557,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(GetSources))]
     public static async Task SkipContent(IAsyncBinaryReaderWriterSource source)
     {
@@ -614,7 +614,7 @@ public sealed class AsyncBinaryReaderWriterTests : Test
         Throws<EndOfStreamException>(() => reader.ParseAsync<IFormatProvider, byte>(InvariantCulture, byte.Parse, default, LengthFormat.LittleEndian, token: TestToken).Result);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyReaderAsync()
     {
         await using var ms = new MemoryStream();

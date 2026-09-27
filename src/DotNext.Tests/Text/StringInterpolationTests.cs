@@ -26,7 +26,7 @@ public sealed class StringInterpolationTests : Test
         Equal($"{x,4:X} = {y,-3:X}", buffer.ToString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10, 10)]
     [InlineData(int.MaxValue, int.MinValue)]
     public static async Task WriteInterpolatedStringToBufferWriterAsync(int x, int y)

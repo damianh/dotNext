@@ -7,7 +7,7 @@ using static Metaprogramming.CodeGenerator;
 
 public sealed class RegressionIssue223 : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ThrowOnReturn()
     {
         var lambda = AsyncLambda<Func<Task<int>>>(_ =>

@@ -13,7 +13,7 @@ public sealed class AsyncLazyTests : Test
         Equal(2, lazy.Value);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task LazyComputation(bool resettable)
@@ -31,7 +31,7 @@ public sealed class AsyncLazyTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ExceptionDuringComputation(bool resettable)
@@ -48,7 +48,7 @@ public sealed class AsyncLazyTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CancellationDuringComputation(bool resettable)
@@ -65,7 +65,7 @@ public sealed class AsyncLazyTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CancellationDuringComputation2(bool resettable)

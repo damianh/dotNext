@@ -45,7 +45,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
     private static bool ValidateCert(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
         => true;
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true)]
     [InlineData(false)]
     public Task RequestResponse(bool useSsl)
@@ -71,7 +71,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return RequestResponseTest(CreateServer, CreateClient);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task StressTest()
     {
         static TcpServer CreateServer(ILocalMember member, EndPoint address, TimeSpan timeout) => new(address, 100, member, NullLoggerFactory.Instance)
@@ -93,7 +93,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return StressTestCore(CreateServer, CreateClient);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task RequestTimeout()
     {
         static TcpServer CreateServer(ILocalMember member, EndPoint address, TimeSpan timeout) => new(address, 2, member, NullLoggerFactory.Instance)
@@ -115,7 +115,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return RequestTimeoutTest(CreateServer, CreateClient);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true)]
     [InlineData(false)]
     public Task MetadataRequestResponse(bool smallAmountOfMetadata)
@@ -139,7 +139,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return MetadataRequestResponseTest(CreateServer, CreateClient, smallAmountOfMetadata);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(499)]
     [InlineData(500)]
     public Task MetadataRequestFollowedByVote(int valueLength)
@@ -163,7 +163,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return MetadataRequestFollowedByVoteTest(CreateServer, CreateClient, valueLength);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveAll, false)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveFirst, false)]
     [InlineData(0, ReceiveEntriesBehavior.DropAll, false)]
@@ -209,7 +209,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return SendingLogEntriesTest(CreateServer, CreateClient, payloadSize, behavior, useEmptyEntry);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveAll)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveFirst)]
     [InlineData(0, ReceiveEntriesBehavior.DropAll)]
@@ -241,7 +241,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return SendingSnapshotAndEntriesAndConfiguration(CreateServer, CreateClient, payloadSize, behavior);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(512)]
     [InlineData(50)]
     [InlineData(0)]
@@ -266,7 +266,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return SendingSnapshotTest(CreateServer, CreateClient, payloadSize);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task Leadership()
     {
         return LeadershipCore(CreateCluster);
@@ -287,7 +287,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task ClusterRecovery()
     {
         return ClusterRecoveryCore(CreateCluster);
@@ -306,7 +306,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task RequestSynchronization()
     {
         static TcpServer CreateServer(ILocalMember member, EndPoint address, TimeSpan timeout) => new(address, 100, member, NullLoggerFactory.Instance)
@@ -328,7 +328,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         return SendingSynchronizationRequestTest(CreateServer, CreateClient);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConcurrentElection()   // https://github.com/dotnet/dotNext/issues/168
     {
         await using var host1 = new RaftCluster(CreateConfiguration(Host1Port)) { AuditTrail = new ConsensusOnlyState() };
@@ -365,7 +365,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         await host3.StopAsync(TestToken);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReplicateLogEntry()
     {
         await using var wal1 = CreateWal();
@@ -394,7 +394,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         await host3.StopAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SingleNodeDeployment()
     {
         await using var wal1 = CreateWal();
@@ -410,7 +410,7 @@ public sealed partial class TcpTransportTests : TransportTestSuite
         await host1.StopAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WalVersioning()
     {
         await using var wal1 = CreateWal(version: 1);

@@ -66,14 +66,14 @@ public sealed class ClusterConfigurationStorageTests : Test
         Equal(1L, version);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InMemoryStorage()
     {
         using var storage = new InMemoryClusterConfigurationStorage();
         await StorageTest(storage);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PersistentStorage()
     {
         var path = GetTempPath();
@@ -81,7 +81,7 @@ public sealed class ClusterConfigurationStorageTests : Test
         await StorageTest(storage);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConfigurationRecovery()
     {
         var path = GetTempPath();

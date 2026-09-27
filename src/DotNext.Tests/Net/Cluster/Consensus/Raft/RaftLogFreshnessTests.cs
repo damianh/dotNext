@@ -27,7 +27,7 @@ public sealed class RaftLogFreshnessTests : RaftTest
         { 1L, 1L, 0L, 0L, false },
     };
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(FreshnessCases))]
     public static async Task CompareLogs(long localTerm, long localIndex, long candidateTerm, long candidateIndex, bool accepted)
     {
@@ -40,7 +40,7 @@ public sealed class RaftLogFreshnessTests : RaftTest
             await candidate.GetTermAsync(candidate.LastEntryIndex, TestToken), TestToken));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(FreshnessCases))]
     public static async Task PreVoteUsesLogFreshness(long localTerm, long localIndex, long candidateTerm, long candidateIndex, bool accepted)
     {
@@ -61,7 +61,7 @@ public sealed class RaftLogFreshnessTests : RaftTest
         True(voter.AuditTrail.IsVotedFor(default));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(FreshnessCases))]
     public static async Task VoteUsesLogFreshness(long localTerm, long localIndex, long candidateTerm, long candidateIndex, bool accepted)
     {
@@ -86,7 +86,7 @@ public sealed class RaftLogFreshnessTests : RaftTest
         Equal(!accepted, voter.AuditTrail.IsVotedFor(default));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ShorterNewerLogCanWinElection()
     {
         await using var fixture = new ElectionFixture();
@@ -118,7 +118,7 @@ public sealed class RaftLogFreshnessTests : RaftTest
         True(fixture.Voter.AuditTrail.IsVotedFor(fixture.Candidate.Id));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("term")]
     [InlineData("membership")]
     [InlineData("version")]

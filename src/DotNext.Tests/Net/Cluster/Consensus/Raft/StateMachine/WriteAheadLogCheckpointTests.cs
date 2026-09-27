@@ -15,7 +15,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
     private const int BlockSize = 64 * 1024;
     private const int FileSize = BlockSize * 3;
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(8)]
     [InlineData(12)]
@@ -53,7 +53,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(3L, recovered.Read<long>("SnapshotIndex"));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UpstreamVersion1UpgradePreservesIndependentBoundaries()
     {
         var location = CreateLocation();
@@ -105,7 +105,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UpstreamVersion1StoreRecoversFlushedTail()
     {
         var location = CreateLocation();
@@ -152,7 +152,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         return bytes;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GenerationsAlternateAndRecoverShorterUncommittedTail()
     {
         var location = CreateLocation();
@@ -176,7 +176,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(1L, recovered.Read<long>("SnapshotIndex"));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     public static async Task CorruptedCompletedSlotCannotSilentlyLoseAcknowledgedHistory(int slot)
@@ -191,7 +191,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     public static async Task ZeroedCompletedSlotIsNotAnUnusedGeneration(int slot)
@@ -206,7 +206,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(4)]
@@ -252,7 +252,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnsupportedVersionIsRetainedWithoutMutatingTheStore()
     {
         var location = CreateLocation();
@@ -268,7 +268,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(bytes, ReadBytes(Path.Combine(location.FullName, "checkpoint")));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -312,7 +312,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         False(File.Exists(Path.Combine(location.FullName, "checkpoint.pending")));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task IntentDoesNotExcuseCorruptionOfTheStableGeneration()
     {
         var location = CreateLocation();
@@ -326,7 +326,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(32, -1L)]
     [InlineData(40, 0L)]
     [InlineData(56, 3L)]
@@ -343,7 +343,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(1UL)]
     [InlineData(ulong.MaxValue)]
     public static async Task ChecksummedEmptyCheckpointRejectsNonzeroWritePosition(ulong position)
@@ -375,7 +375,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         });
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyVersion2CheckpointAllowsAppendAndRestart()
     {
         var location = CreateLocation();
@@ -408,7 +408,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal("first", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ChecksummedUnsupportedSlotVersionRetainsExceptionType()
     {
         var location = CreateLocation();
@@ -422,7 +422,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(37U, error.Version);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task HeaderIntegrityDoesNotDependOnEntryHashing()
     {
         var location = CreateLocation();
@@ -434,7 +434,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SidecarsFromAnotherStoreAreRejected()
     {
         var location = CreateLocation();
@@ -446,7 +446,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("checkpoint.format")]
     [InlineData("checkpoint.pending")]
     public static async Task InvalidSidecarIsRejected(string sidecar)
@@ -457,7 +457,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnpublishedSidecarsDoNotReplaceAValidGeneration()
     {
         var location = CreateLocation();
@@ -469,7 +469,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(2L, recovered.Generation);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UpgradeInterruptedBeforeFormatMarkerStillRecovers()
     {
         var location = CreateLocation();
@@ -498,7 +498,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         False(File.Exists(Path.Combine(location.FullName, "checkpoint")));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ValidationAndCancellationDoNotAdvanceGeneration()
     {
         var location = CreateLocation();

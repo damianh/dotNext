@@ -14,6 +14,7 @@
     <Description>Unit tests for AOT compatibility of .NEXT libraries</Description>
     <Copyright>Copyright © .NET Foundation and Contributors</Copyright>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <NoWarn>$(NoWarn);xUnit1069</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -29,6 +30,7 @@
   <ItemGroup>
     <!--Core Classes-->
     <Compile Include="..\DotNext.Tests\Test.cs" Link="Test.cs" />
+    <Compile Include="..\DotNext.Tests\TestTimeouts.cs" Link="TestTimeouts.cs" />
     <Compile Include="..\DotNext.Tests\Point.cs" Link="Point.cs" />
     <Compile Include="..\DotNext.Tests\TestCollections.cs" Link="TestCollections.cs" />
     <Compile Include="..\DotNext.Tests\DelegateHelpersTests.cs" Link="DelegateHelpersTests.cs" />

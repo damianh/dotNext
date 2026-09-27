@@ -30,7 +30,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(RecoveryModes))]
     public static async Task AppendsSurviveOrderlyRestart(WriteAheadLog.MemoryManagementStrategy strategy,
         bool direct, int flushMode, WriteAheadLog.IntegrityHashAlgorithm hash)
@@ -48,7 +48,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         await AssertRecoveredAsync(options);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(RecoveryModes))]
     public static async Task AppendsSurviveProcessTermination(WriteAheadLog.MemoryManagementStrategy strategy,
         bool direct, int flushMode, WriteAheadLog.IntegrityHashAlgorithm hash)
@@ -58,7 +58,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         await AssertRecoveredAsync(CreateOptions(location, strategy, direct, flushMode, hash));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ReplacedTailDoesNotReturnAfterRestart(bool failReplacement)
@@ -96,7 +96,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.PrivateMemory)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.SharedMemory)]
     public static async Task InterruptedReplacementSurvivesProcessTermination(WriteAheadLog.MemoryManagementStrategy strategy)
@@ -123,7 +123,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         await wal.AppendAsync(entries, 2L, token: TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RecoveredTailCanBeCommittedWithoutAnotherAppend()
     {
         var options = CreateOptions(GetTempPath(), WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
@@ -145,7 +145,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         Equal(2L, recovered.LastAppliedIndex);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StagedAppendIsNotPublishedToReplication()
     {
         var location = GetTempPath();
@@ -196,7 +196,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         Equal(2L, wal.LastEntryIndex);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ImportPreservesUncommittedTail()
     {
         var sourceOptions = CreateOptions(GetTempPath(), WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
@@ -214,7 +214,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         await AssertRecoveredAsync(destinationOptions);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InitializationDoesNotDeadlockBetweenAppends()
     {
         var options = CreateOptions(GetTempPath(), WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
@@ -236,7 +236,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         Equal(2L, wal.LastEntryIndex);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FailedReplacementRejectsQueuedReadersAndCommitters()
     {
         var options = CreateOptions(GetTempPath(), WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
@@ -271,7 +271,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         Equal(1L, wal.LastCommittedEntryIndex);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.SharedMemory)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.PrivateMemory)]
     public static async Task RecoveryAcrossDataAndMetadataPages(WriteAheadLog.MemoryManagementStrategy strategy)
@@ -358,7 +358,7 @@ public sealed class WriteAheadLogDurabilityTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.None)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.Crc64)]
     public static async Task ExplicitlyPersistedUncommittedPagesSurviveRecovery(WriteAheadLog.IntegrityHashAlgorithm hash)

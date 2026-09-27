@@ -56,7 +56,7 @@ public sealed class LoopTests : Test
         Equal(10L, sum(new[] { 1L, 5L, 4L }));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ForEachAsync(bool configureAwait)
@@ -72,7 +72,7 @@ public sealed class LoopTests : Test
         Equal(10L, await sum(new[] { 1L, 5L, 4L }.ToAsyncEnumerable()));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue46()
     {
         var result = AsyncLambda<Func<IAsyncEnumerable<char>, IAsyncEnumerable<char>, Task>>(fun =>

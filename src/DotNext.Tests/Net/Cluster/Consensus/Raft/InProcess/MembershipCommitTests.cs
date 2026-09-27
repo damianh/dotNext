@@ -2,7 +2,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
 public sealed class MembershipCommitTests : RaftTest
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3, false)]
     [InlineData(5, false)]
     [InlineData(7, false)]
@@ -72,7 +72,7 @@ public sealed class MembershipCommitTests : RaftTest
         Equal(2L, cluster.States[0].LastCommittedEntryIndex);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(5)]
     [InlineData(7)]

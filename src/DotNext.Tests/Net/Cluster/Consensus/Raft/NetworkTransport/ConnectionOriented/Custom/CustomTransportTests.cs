@@ -11,25 +11,25 @@ using Buffers;
 [Collection(TestCollections.Raft)]
 public sealed class CustomTransportTests : TransportTestSuite
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task RequestResponse() => RequestResponseTest(CreateServer, CreateClient);
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task StressTest() => StressTestCore(CreateServer, CreateClient);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true)]
     [InlineData(false)]
     public Task MetadataRequestResponse(bool smallAmountOfMetadata)
         => MetadataRequestResponseTest(CreateServer, CreateClient, smallAmountOfMetadata);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(4083)]
     [InlineData(4084)]
     public Task MetadataRequestFollowedByVote(int valueLength)
         => MetadataRequestFollowedByVoteTest(CreateServer, CreateClient, valueLength);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveAll, false)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveFirst, false)]
     [InlineData(0, ReceiveEntriesBehavior.DropAll, false)]
@@ -57,7 +57,7 @@ public sealed class CustomTransportTests : TransportTestSuite
     public Task SendingLogEntries(int payloadSize, ReceiveEntriesBehavior behavior, bool useEmptyEntry)
         => SendingLogEntriesTest(CreateServer, CreateClient, payloadSize, behavior, useEmptyEntry);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveAll)]
     [InlineData(0, ReceiveEntriesBehavior.ReceiveFirst)]
     [InlineData(0, ReceiveEntriesBehavior.DropAll)]
@@ -73,14 +73,14 @@ public sealed class CustomTransportTests : TransportTestSuite
     public Task SendingLogEntriesAndConfigurationAndSnapshot(int payloadSize, ReceiveEntriesBehavior behavior)
         => SendingSnapshotAndEntriesAndConfiguration(CreateServer, CreateClient, payloadSize, behavior);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(512)]
     [InlineData(50)]
     [InlineData(0)]
     public Task SendingSnapshot(int payloadSize)
         => SendingSnapshotTest(CreateServer, CreateClient, payloadSize);
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task RequestSynchronization()
         => SendingSynchronizationRequestTest(CreateServer, CreateClient);
 
@@ -114,7 +114,7 @@ public sealed class CustomTransportTests : TransportTestSuite
         return (IConnectionFactory)Activator.CreateInstance(factoryType, new OptionsWrapper<SocketTransportOptions>(options), NullLoggerFactory.Instance);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public Task Leadership()
     {
         return LeadershipCore(CreateCluster);

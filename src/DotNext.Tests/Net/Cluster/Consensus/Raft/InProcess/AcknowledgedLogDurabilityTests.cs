@@ -9,11 +9,11 @@ public sealed class AcknowledgedLogDurabilityTests : RaftTest
 {
     private const string Payload = "client acknowledged N";
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SurvivingMajorityRetainsClientAcknowledgedEntry()
         => await RunAsync(Enumerable.Range(0, 3).Select(_ => GetTempPath()).ToArray());
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SurvivingMajorityRetainsEntryAfterProcessTermination()
     {
         var location = GetTempPath();

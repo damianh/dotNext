@@ -169,7 +169,7 @@ public sealed class CommandInterpreterTests : Test
         internal int Value => interpreter.Value;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MethodsAsHandlers()
     {
         using var interpreter = new CustomInterpreter();
@@ -195,7 +195,7 @@ public sealed class CommandInterpreterTests : Test
         Equal(-42, interpreter.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DelegatesAsHandlers()
     {
         var state = new StrongBox<int>();
@@ -249,7 +249,7 @@ public sealed class CommandInterpreterTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InterpreterWithPersistentState()
     {
         var stateMachine = new SimpleStateMachine();

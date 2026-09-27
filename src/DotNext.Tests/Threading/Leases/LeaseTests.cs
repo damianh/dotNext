@@ -4,7 +4,7 @@ namespace DotNext.Threading.Leases;
 [Collection(TestCollections.AdvancedSynchronization)]
 public sealed class LeaseTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AcquireOrRenewInitialState()
     {
         using var provider = new TestLeaseProvider(DefaultTimeout);
@@ -17,7 +17,7 @@ public sealed class LeaseTests : Test
         True(result.State.Identity >> default(LeaseIdentity));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AcquireRelease()
     {
         using var provider = new TestLeaseProvider(DefaultTimeout);
@@ -29,7 +29,7 @@ public sealed class LeaseTests : Test
         NotNull(await provider.UnsafeTryReleaseAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RenewOrAcquire()
     {
         using var provider = new TestLeaseProvider(DefaultTimeout);
@@ -38,7 +38,7 @@ public sealed class LeaseTests : Test
         True(result.State.Identity << result2.State.Identity);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RenewAfterRelease()
     {
         using var provider = new TestLeaseProvider(DefaultTimeout);
@@ -55,7 +55,7 @@ public sealed class LeaseTests : Test
         False(default(LeaseIdentity) << new LeaseIdentity { Version = 2UL });
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FightForLease()
     {
         using var provider = new TestLeaseProvider(DefaultTimeout);
@@ -68,7 +68,7 @@ public sealed class LeaseTests : Test
         True(tasks is [null, not null] or [not null, null]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FightForLeaseUsingConsumer()
     {
         using var provider = new TestLeaseProvider(DefaultTimeout);
@@ -83,7 +83,7 @@ public sealed class LeaseTests : Test
         True(tasks is [false, true] or [true, false]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumerTokenState()
     {
         using var provider = new TestLeaseProvider(TimeSpan.FromMilliseconds(100));
@@ -102,7 +102,7 @@ public sealed class LeaseTests : Test
         False(await consumer.ReleaseAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumerRenew()
     {
         using var provider = new TestLeaseProvider(DefaultTimeout);
@@ -114,7 +114,7 @@ public sealed class LeaseTests : Test
         Equal(consumer.Token, expected);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AcquireUsingConsumer()
     {
         var pause = TimeSpan.FromMilliseconds(100);
@@ -124,7 +124,7 @@ public sealed class LeaseTests : Test
         await consumer.AcquireAsync(pause, Random.Shared, TestToken);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WorkerProtectedWithLease()
     {
         var pause = TimeSpan.FromMilliseconds(500);
@@ -142,7 +142,7 @@ public sealed class LeaseTests : Test
         }
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WorkerLeaseExpired()
     {
         using var provider = new TestLeaseProvider(TimeSpan.FromMilliseconds(100));
@@ -159,7 +159,7 @@ public sealed class LeaseTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposeConcurrently()
     {
         Task task;

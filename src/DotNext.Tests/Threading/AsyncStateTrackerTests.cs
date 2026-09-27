@@ -3,7 +3,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncStateTrackerTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task NewerTokenAvailableAfterCompletion()
     {
         var tracker = new AsyncStateTracker { IsNewerTokenAvailableAfterCompletion = false };
@@ -27,7 +27,7 @@ public sealed class AsyncStateTrackerTests : Test
         False(await tracker.WaitNextAsync(currentToken, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StaleToken()
     {
         var tracker = new AsyncStateTracker();
@@ -40,7 +40,7 @@ public sealed class AsyncStateTrackerTests : Test
         True(await tracker.WaitNextAsync(currentToken, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ResumeOnAdvance()
     {
         var tracker = new AsyncStateTracker();
@@ -53,7 +53,7 @@ public sealed class AsyncStateTrackerTests : Test
         True(await task);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ResumeOnCompletion()
     {
         var tracker = new AsyncStateTracker();
@@ -82,7 +82,7 @@ public sealed class AsyncStateTrackerTests : Test
         Equal(10, tracker.ConcurrencyLevel);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ProduceStream()
     {
         var tracker = new AsyncStateTracker();

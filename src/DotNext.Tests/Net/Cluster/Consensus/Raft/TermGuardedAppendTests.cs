@@ -14,7 +14,7 @@ public sealed class TermGuardedAppendTests : Test
         Unbuffered,
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(EntryKind.Memory)]
     [InlineData(EntryKind.OwnedBuffer)]
     [InlineData(EntryKind.Unbuffered)]
@@ -28,7 +28,7 @@ public sealed class TermGuardedAppendTests : Test
         await AssertGuardAsync(wal, kind);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(EntryKind.Memory)]
     [InlineData(EntryKind.OwnedBuffer)]
     [InlineData(EntryKind.Unbuffered)]

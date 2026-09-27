@@ -3,7 +3,7 @@ namespace DotNext.Threading.Tasks;
 [Collection(TestCollections.AdvancedSynchronization)]
 public class TaskCompletionPipeTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StressTest()
     {
         var pipe = new TaskCompletionPipe<Task<int>>();
@@ -28,7 +28,7 @@ public class TaskCompletionPipeTests : Test
         Equal(4200, result);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StressTest2()
     {
         var expectedUserData = new object();
@@ -59,7 +59,7 @@ public class TaskCompletionPipeTests : Test
         Equal(4200, result);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumerAfterAddingButBeforeCompletion()
     {
         var pipe = new TaskCompletionPipe<Task<int>>();
@@ -73,7 +73,7 @@ public class TaskCompletionPipeTests : Test
         False(await t);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task QueueGrowth()
     {
         var pipe = new TaskCompletionPipe<Task<int>>();
@@ -105,7 +105,7 @@ public class TaskCompletionPipeTests : Test
         False(pipe.TryRead(out task));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ResetWhenScheduled()
     {
         var pipe = new TaskCompletionPipe<Task>();
@@ -118,7 +118,7 @@ public class TaskCompletionPipeTests : Test
         False(await pipe.WaitToReadAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumePipe()
     {
         var pipe = new TaskCompletionPipe<Task<int>>();
@@ -133,7 +133,7 @@ public class TaskCompletionPipeTests : Test
         Contains(44, array);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TooManyConsumers()
     {
         var pipe = new TaskCompletionPipe<Task<int>>();
@@ -147,7 +147,7 @@ public class TaskCompletionPipeTests : Test
         True(await pipe.WaitToReadAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WrongIteratorVersion()
     {
         var pipe = new TaskCompletionPipe<Task<int>>();
@@ -158,7 +158,7 @@ public class TaskCompletionPipeTests : Test
         False(await enumerator.MoveNextAsync());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TaskGroupToCollection()
     {
         var source1 = new TaskCompletionSource<int>();
@@ -178,7 +178,7 @@ public class TaskCompletionPipeTests : Test
         False(await consumer.MoveNextAsync());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CompletionTask()
     {
         var pipe = new TaskCompletionPipe<Task> { IsCompletionTaskSupported = true };

@@ -5,7 +5,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncReaderWriterLockTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TrivialLock()
     {
         using var rwLock = new AsyncReaderWriterLock { ConcurrencyLevel = 3 };
@@ -32,7 +32,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         True(await rwLock.TryEnterReadLockAsync(InfiniteTimeSpan, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriterToWriterChain()
     {
         var are = new TaskCompletionSource();
@@ -51,7 +51,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         await task.WaitAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriterToReaderChain()
     {
         var are = new TaskCompletionSource();
@@ -102,7 +102,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         True(@lock.DisposeAsync().IsCompletedSuccessfully);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown()
     {
         using var @lock = new AsyncReaderWriterLock();
@@ -114,7 +114,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         Throws<ObjectDisposedException>(() => @lock.TryEnterReadLock());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown2()
     {
         using var @lock = new AsyncReaderWriterLock();
@@ -126,7 +126,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown3()
     {
         using var @lock = new AsyncReaderWriterLock();
@@ -146,7 +146,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task QueueFairness()
     {
         using var @lock = new AsyncReaderWriterLock();
@@ -164,7 +164,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         await readLock;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LockStealing()
     {
         const string reason = "Hello, world!";
@@ -182,7 +182,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         True(await task3);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LockStealing2()
     {
         const string reason = "Hello, world!";
@@ -200,7 +200,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         await task3;
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposedWhenSynchronousReadLockAcquired()
     {
         var l = new AsyncReaderWriterLock();
@@ -212,7 +212,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         await ThrowsAsync<ObjectDisposedException>(t);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposedWhenSynchronousWriteLockAcquired()
     {
         var l = new AsyncReaderWriterLock();
@@ -224,7 +224,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         await ThrowsAnyAsync<ObjectDisposedException>(t);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AcquireReadWriteLockSynchronously()
     {
         using var l = new AsyncReaderWriterLock();
@@ -242,7 +242,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         False(l.IsWriteLockHeld);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ResumeMultipleReadersSynchronously()
     {
         using var l = new AsyncReaderWriterLock();
@@ -271,7 +271,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         True(l.TryEnterReadLock(TimeSpan.Zero, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task NoDeadlockWhenUpgrade()
     {
         using var l = new AsyncReaderWriterLock();
@@ -314,7 +314,7 @@ public sealed class AsyncReaderWriterLockTests : Test
         Equal(1L, l.CurrentReadCount);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UpgradeToWriteLockAsync()
     {
         await using var l = new AsyncReaderWriterLock();

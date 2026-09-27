@@ -13,7 +13,7 @@ public sealed class WriteAheadLogRestoredSnapshotTests : Test
 {
     private const long SnapshotTerm = 7L;
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, WriteAheadLog.IntegrityHashAlgorithm.None)]
     [InlineData(true, WriteAheadLog.IntegrityHashAlgorithm.None)]
     [InlineData(false, WriteAheadLog.IntegrityHashAlgorithm.Crc64)]
@@ -58,7 +58,7 @@ public sealed class WriteAheadLogRestoredSnapshotTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task FailedBoundaryFlushDoesNotPublishSnapshot(bool append)
@@ -98,7 +98,7 @@ public sealed class WriteAheadLogRestoredSnapshotTests : Test
         Equal(1L, reopened.LastCommittedEntryIndex);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(1)]
     [InlineData(2)]
     public static async Task BackgroundFlushWaitsForRestoredSnapshotBoundary(int flushMode)

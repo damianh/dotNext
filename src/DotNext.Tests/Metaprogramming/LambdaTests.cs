@@ -37,7 +37,7 @@ public sealed class LambdaTests : Test
         Equal(42, lambda.Compile().Invoke(40, 2).GetResult(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ThrowInCatchBlock()
     {
         var result = new StrongBox<int>();
@@ -320,7 +320,7 @@ public sealed class LambdaTests : Test
         Equal(423, lambda().GetResult(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AsyncWithoutReturnTypeValueTask()
     {
         var lambda = AsyncLambda<Func<StringBuilder, ValueTask>>(static fun =>
@@ -333,7 +333,7 @@ public sealed class LambdaTests : Test
         Equal("Hello, world!", builder.ToString());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AsyncWithoutReturnType()
     {
         var lambda = AsyncLambda<Func<StringBuilder, Task>>(static fun =>
@@ -434,7 +434,7 @@ public sealed class LambdaTests : Test
         Equal(10, lambda(5, 10));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue70()
     {
         var exprThrowException = new Func<Task<string>>(ThrowException).Method;
@@ -470,7 +470,7 @@ public sealed class LambdaTests : Test
         static Task<string> Reprocess() => Task.FromResult("Hello, world!");
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue127()
     {
         var lambda = AsyncLambda<Func<Task<string>>>(_ =>
@@ -485,7 +485,7 @@ public sealed class LambdaTests : Test
         Equal("hello", await lambda.Compile().Invoke());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ParameterClosure()
     {
         var lambda = AsyncLambda<Func<string, Task<string>>>(ctx =>
@@ -500,7 +500,7 @@ public sealed class LambdaTests : Test
         Equal("hello, world", await lambda.Compile().Invoke(", world"));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue234()
     {
         var asyncMethod = new Func<Task>(DoAsync).Method;

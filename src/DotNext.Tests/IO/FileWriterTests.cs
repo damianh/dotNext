@@ -6,7 +6,7 @@ using Buffers.Binary;
 
 public sealed class FileWriterTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteWithoutOverflowAsync()
     {
         var path = GetTempPath();
@@ -32,7 +32,7 @@ public sealed class FileWriterTests : Test
         Equal(expected, actual);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteWithOverflowAsync()
     {
         var path = GetTempPath();
@@ -51,7 +51,7 @@ public sealed class FileWriterTests : Test
         Equal(expected, actual);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WritDirectAsync()
     {
         var path = GetTempPath();
@@ -112,7 +112,7 @@ public sealed class FileWriterTests : Test
         Equal(expected, actual);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FlushWithOffsetAsync()
     {
         var path = GetTempPath();
@@ -130,7 +130,7 @@ public sealed class FileWriterTests : Test
         Equal(1, actual[100]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteDirect()
     {
         var path = GetTempPath();
@@ -142,7 +142,7 @@ public sealed class FileWriterTests : Test
         Equal(writer.FilePosition, Unsafe.SizeOf<Buffer512>());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferOverflow()
     {
         var path = GetTempPath();

@@ -32,7 +32,7 @@ public sealed class StreamExtensionsTests : Test
         Equal(value, result.ToString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(LengthFormat.Compressed)]
     [InlineData(LengthFormat.LittleEndian)]
     [InlineData(LengthFormat.BigEndian)]
@@ -49,7 +49,7 @@ public sealed class StreamExtensionsTests : Test
         await ReadWriteStringUsingEncodingAsync(testString2, Encoding.UTF32, lengthEnc);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10, LengthFormat.Compressed)]
     [InlineData(15, LengthFormat.Compressed)]
     [InlineData(1024, LengthFormat.Compressed)]
@@ -72,7 +72,7 @@ public sealed class StreamExtensionsTests : Test
         await ReadWriteStringUsingEncodingAsync(testString2, Encoding.UTF32, bufferSize, lengthEnc);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadWriteMemoryUsingReader()
     {
         using var ms = new MemoryStream();
@@ -87,7 +87,7 @@ public sealed class StreamExtensionsTests : Test
         Equal(9, memory[3]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadWriteBlittableTypeAsync()
     {
         Memory<byte> buffer = new byte[16];
@@ -97,7 +97,7 @@ public sealed class StreamExtensionsTests : Test
         Equal(10M, (await ms.ReadAsync<Blittable<decimal>>(buffer, TestToken)).Value);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(7)]
     [InlineData(16)]
     [InlineData(0x7F)]
@@ -112,7 +112,7 @@ public sealed class StreamExtensionsTests : Test
         Equal(expected, reader.ReadString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(7)]
     [InlineData(16)]
     [InlineData(0x7F)]
@@ -147,7 +147,7 @@ public sealed class StreamExtensionsTests : Test
         Equal<byte>([1, 2, 3, 4, 5, 6], buffer);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CombineStreamsAsync()
     {
         await using var ms1 = new MemoryStream([1, 2, 3]);
@@ -172,7 +172,7 @@ public sealed class StreamExtensionsTests : Test
         Equal([1, 2, 3, 4, 5, 6], result.ToArray());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyCombinedStreamsAsync()
     {
         await using var ms1 = new MemoryStream([1, 2, 3]);
@@ -231,7 +231,7 @@ public sealed class StreamExtensionsTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnsupportedMethodsOfSparseStream()
     {
         await using var ms1 = new MemoryStream([1, 2, 3]);
@@ -247,13 +247,13 @@ public sealed class StreamExtensionsTests : Test
         await ThrowsAsync<NotSupportedException>(async () => await combined.WriteAsync(ReadOnlyMemory<byte>.Empty, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadEmptyStream()
     {
         Equal(0, await Stream.Null.ReadAllAsync(64, token: TestToken).CountAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadEntireStream()
     {
         var bytes = RandomBytes(1024);
@@ -268,7 +268,7 @@ public sealed class StreamExtensionsTests : Test
         Equal(bytes, destination.ToArray());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(8)]
     [InlineData(16)]
     [InlineData(32)]
@@ -285,7 +285,7 @@ public sealed class StreamExtensionsTests : Test
         Equal("Привет, \u263A!", writer.WrittenSpan.ToString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(8)]
     [InlineData(16)]
     [InlineData(32)]
@@ -374,7 +374,7 @@ public sealed class StreamExtensionsTests : Test
         Equal(string.Empty, writer.WrittenSpan.ToString());
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadBlockAsSequenceAsync()
     {
         var bytes = RandomBytes(1024);

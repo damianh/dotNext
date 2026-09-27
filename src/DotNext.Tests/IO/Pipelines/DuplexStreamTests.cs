@@ -4,7 +4,7 @@ namespace DotNext.IO.Pipelines;
 
 public sealed class DuplexStreamTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyToDuplexStreamAsync()
     {
         var expected = RandomBytes(256);

@@ -5,7 +5,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 
 public sealed partial class RegressionIssue14 : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotInsideUncommittedSuffixRecoversThatSuffixWithoutCommittingIt()
     {
         const long committedIndex = 2L;
@@ -89,7 +89,7 @@ public sealed partial class RegressionIssue14 : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotInsideSuffixKeepsLaterEntriesCommittedBeforeRestart()
     {
         const long committedIndex = 2L;
@@ -142,7 +142,7 @@ public sealed partial class RegressionIssue14 : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotIndexBelowCommitDoesNotMoveCommitBackwards()
     {
         const long committedIndex = 4L;

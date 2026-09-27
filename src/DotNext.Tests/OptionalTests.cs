@@ -139,7 +139,7 @@ public sealed class OptionalTest : Test
         Equal(20, opt.OrInvoke(() => 10));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TaskInterop()
     {
         var opt = new Optional<int>(10);
@@ -364,7 +364,7 @@ public sealed class OptionalTest : Test
         False(optional.HasValue);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FlattenTask()
     {
         await ThrowsAsync<InvalidOperationException>(static () => Task.FromResult(Optional.None<int>()).Flatten());

@@ -3,7 +3,7 @@ namespace DotNext.Threading.Tasks;
 [Collection(TestCollections.AdvancedSynchronization)]
 public class TaskQueueTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyQueue()
     {
         var queue = new TaskQueue<Task>(10);
@@ -13,7 +13,7 @@ public class TaskQueueTests : Test
         Null(await queue.TryDequeueAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task QueueOverflow()
     {
         var queue = new TaskQueue<Task>(3);
@@ -33,7 +33,7 @@ public class TaskQueueTests : Test
         queue.Clear();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EnumerateCompletedTasks()
     {
         var queue = new TaskQueue<Task>(3);
@@ -51,7 +51,7 @@ public class TaskQueueTests : Test
         Equal(3, count);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TryDequeueCompletedTasks()
     {
         var queue = new TaskQueue<Task>(3);
@@ -69,7 +69,7 @@ public class TaskQueueTests : Test
         Equal(3, count);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EnumerateTasks()
     {
         var queue = new TaskQueue<Task>(3);
@@ -87,7 +87,7 @@ public class TaskQueueTests : Test
         Equal(3, count);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DelayedDequeue()
     {
         var queue = new TaskQueue<Task>(3);
@@ -100,7 +100,7 @@ public class TaskQueueTests : Test
         Null(await queue.TryDequeueAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DequeueCancellation()
     {
         var source = new TaskCompletionSource();
@@ -110,7 +110,7 @@ public class TaskQueueTests : Test
         await ThrowsAnyAsync<OperationCanceledException>(queue.DequeueAsync(new(canceled: true)).AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FailedTask()
     {
         var source = new TaskCompletionSource();
@@ -124,7 +124,7 @@ public class TaskQueueTests : Test
         Same(source.Task, await dequeueTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EnsureFreeSpace()
     {
         var queue = new TaskQueue<Task>(3);

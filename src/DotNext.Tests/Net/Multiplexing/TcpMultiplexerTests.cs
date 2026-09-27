@@ -11,7 +11,7 @@ public sealed class TcpMultiplexerTests : Test
 {
     private static readonly IPEndPoint LocalEndPoint = new(IPAddress.Loopback, 3280);
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SuccessfulDataExchange()
     {
         await using var server = new TcpMultiplexedListener(LocalEndPoint, new() { Timeout = DefaultTimeout });
@@ -47,7 +47,7 @@ public sealed class TcpMultiplexerTests : Test
         Equal(expectedData2, actualData2);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LargeDataExchangeAsync()
     {
         await using var server = new TcpMultiplexedListener(LocalEndPoint, new()
@@ -90,7 +90,7 @@ public sealed class TcpMultiplexerTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task HeartbeatAsync()
     {
         var timeout = TimeSpan.FromSeconds(1);
@@ -130,7 +130,7 @@ public sealed class TcpMultiplexerTests : Test
         Equal(expectedData, actualData);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RequestResponseAsync()
     {
         await using var server = new TcpMultiplexedListener(LocalEndPoint, new() { Timeout = DefaultTimeout });
@@ -185,7 +185,7 @@ public sealed class TcpMultiplexerTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TerminateStream()
     {
         var streamCount = new StreamCountObserver();
@@ -238,7 +238,7 @@ public sealed class TcpMultiplexerTests : Test
         public Task WaitForZero(TimeSpan timeout, CancellationToken token) => zeroReached.Task.WaitAsync(timeout, token);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForConnectionAsync()
     {
         await using var client = new TcpMultiplexedClient(LocalEndPoint, new() { Timeout = DefaultTimeout });
@@ -254,7 +254,7 @@ public sealed class TcpMultiplexerTests : Test
         True(task.IsCompletedSuccessfully);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForDisposedConnectionAsync()
     {
         Task task;
@@ -266,7 +266,7 @@ public sealed class TcpMultiplexerTests : Test
         await ThrowsAsync<ObjectDisposedException>(task);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForCanceledConnectionAsync()
     {
         await using var client = new TcpMultiplexedClient(LocalEndPoint, new() { Timeout = DefaultTimeout });

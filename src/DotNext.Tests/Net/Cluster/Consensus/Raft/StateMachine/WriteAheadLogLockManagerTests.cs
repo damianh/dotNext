@@ -3,7 +3,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 [Collection(TestCollections.WriteAheadLog)]
 public sealed class WriteAheadLogLockManagerTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task OverwriteUpgradeDoesNotWaitBehindAppend()
     {
         var lockManager = new WriteAheadLog.LockManager();
@@ -50,7 +50,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task OverwriteUpgradeWaitsForReadersAndCommitters()
     {
         await using var lockManager = new WriteAheadLog.LockManager();
@@ -85,7 +85,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         lockManager.ReleaseReadLock();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CanceledOverwriteUpgradeDoesNotLeakLocks()
     {
         await using var lockManager = new WriteAheadLog.LockManager();
@@ -118,7 +118,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         lockManager.ReleaseAppendLock();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task OverwriteExcludesOtherLockTypes()
     {
         await using var lockManager = new WriteAheadLog.LockManager();
@@ -147,7 +147,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         lockManager.ReleaseReadLock();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposedLockManagerRejectsPendingUpgrade()
     {
         var lockManager = new WriteAheadLog.LockManager();
@@ -164,7 +164,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         await ThrowsAnyAsync<ObjectDisposedException>(lockManager.AcquireAppendLockAsync(TestToken).AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PreCanceledOverwriteUpgradePreservesAppendLock()
     {
         await using var lockManager = new WriteAheadLog.LockManager();

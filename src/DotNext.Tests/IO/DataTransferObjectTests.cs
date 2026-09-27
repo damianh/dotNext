@@ -16,7 +16,7 @@ public sealed class DataTransferObjectTests : Test
         long? IDataTransferObject.Length => withLength ? Content.Length : null;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StreamTransfer()
     {
         const string testString = "abcdef";
@@ -26,7 +26,7 @@ public sealed class DataTransferObjectTests : Test
         Equal(testString, await dto.ToStringAsync(Encoding.Unicode, token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MemoryDTO()
     {
         byte[] content = [1, 2, 3];
@@ -40,7 +40,7 @@ public sealed class DataTransferObjectTests : Test
         Equal(content, await dto.ToByteArrayAsync(token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MemoryDTO2()
     {
         byte[] content = [1, 2, 3];
@@ -53,7 +53,7 @@ public sealed class DataTransferObjectTests : Test
         Equal(content, writer.WrittenSpan);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferedDTO()
     {
         var expected = 42L;
@@ -69,7 +69,7 @@ public sealed class DataTransferObjectTests : Test
         Equal(expected, BitConverter.ToInt64(memory, 0));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DecodeAsAllocatedBuffer()
     {
         var expected = 42L;
@@ -79,7 +79,7 @@ public sealed class DataTransferObjectTests : Test
         Equal(expected, BitConverter.ToInt64(memory.Span));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ToBlittableType()
     {
         var expected = 42M;
@@ -89,14 +89,14 @@ public sealed class DataTransferObjectTests : Test
         Equal(expected, (await ISerializable<BlittableTransferObject<decimal>>.TransformAsync(dto, TestToken)).Content);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DecodeUsingDelegate()
     {
         var dto = new BlittableTransferObject<long> { Content = 42L };
         Equal(42L, (await dto.TransformAsync((reader, token) => reader.ReadAsync<Blittable<long>>(token), TestToken)).Value);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(128, false)]
     [InlineData(128, true)]
     [InlineData(ushort.MaxValue, true)]
@@ -110,7 +110,7 @@ public sealed class DataTransferObjectTests : Test
         Equal(data, await dto.ToByteArrayAsync(token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyObject()
     {
         var empty = IDataTransferObject.Empty;

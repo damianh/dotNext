@@ -21,7 +21,7 @@ public sealed class BoundedObjectPoolTests : Test
         False(pool.TryReturn("3"));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GetReturnConcurrently()
     {
         const int capacity = 2;
@@ -83,7 +83,7 @@ public sealed class BoundedObjectPoolTests : Test
         Null(pool.TryGet());
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GetReturnFreezeConcurrently()
     {
         const int capacity = 2;

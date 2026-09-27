@@ -14,7 +14,7 @@ using Security.Principal;
 
 public sealed class CommandLineMaintenanceInterfaceHostTests : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("probe readiness", "ok")]
     [InlineData("probe startup", "ok")]
     [InlineData("probe liveness", "fail")]
@@ -56,7 +56,7 @@ public sealed class CommandLineMaintenanceInterfaceHostTests : Test
         await host.StopAsync(TestToken);
     }
 
-    [PlatformSpecificFact("linux")]
+    [PlatformSpecificFact("linux", Timeout = TestTimeouts.Default)]
     public static async Task UdsEndpointAuthentication()
     {
         var unixDomainSocketPath = GetTempPath();
@@ -92,7 +92,7 @@ public sealed class CommandLineMaintenanceInterfaceHostTests : Test
         await host.StopAsync();
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("probe readiness 00:00:01 --login test --secret pwd", "ok")]
     [InlineData("probe startup 00:00:01 --login test --secret pwd", "ok")]
     [InlineData("probe liveness 00:00:01 --login test --secret pwd", "fail")]

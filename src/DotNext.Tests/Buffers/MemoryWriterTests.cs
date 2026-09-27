@@ -146,7 +146,7 @@ public sealed class MemoryWriterTests : Test
         Equal(60, result[5]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StressTest()
     {
         var dict = new Dictionary<string, string>

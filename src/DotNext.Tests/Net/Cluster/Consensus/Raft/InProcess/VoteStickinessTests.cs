@@ -4,7 +4,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
 public sealed class VoteStickinessTests : RaftTest
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, 0L)]
     [InlineData(true, 0L)]
     [InlineData(false, 1L)]
@@ -26,7 +26,7 @@ public sealed class VoteStickinessTests : RaftTest
         await AssertVoteAsync(candidate, voter, preVote, accepted: true);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, 0L)]
     [InlineData(true, 0L)]
     [InlineData(false, 1L)]

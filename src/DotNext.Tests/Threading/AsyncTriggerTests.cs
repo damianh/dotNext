@@ -6,7 +6,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncTriggerTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnicastSignal()
     {
         using var trigger = new AsyncTrigger();
@@ -26,7 +26,7 @@ public sealed class AsyncTriggerTests : Test
         await task2;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MulticastSignal()
     {
         using var trigger = new AsyncTrigger();
@@ -42,7 +42,7 @@ public sealed class AsyncTriggerTests : Test
         await task2;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SignalAndWait()
     {
         using var trigger = new AsyncTrigger();
@@ -58,7 +58,7 @@ public sealed class AsyncTriggerTests : Test
         await task2;
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SignalAndWaitWithTimeout()
     {
         using var trigger = new AsyncTrigger();
@@ -74,7 +74,7 @@ public sealed class AsyncTriggerTests : Test
         True(await task2);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SignalEmptyQueue()
     {
         using var trigger = new AsyncTrigger();
@@ -87,7 +87,7 @@ public sealed class AsyncTriggerTests : Test
         bool ISupplier<bool>.Invoke() => Value;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SpinWaitAsync()
     {
         using var trigger = new AsyncTrigger();
@@ -104,7 +104,7 @@ public sealed class AsyncTriggerTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SpinWaitAsync2()
     {
         using var trigger = new AsyncTrigger();

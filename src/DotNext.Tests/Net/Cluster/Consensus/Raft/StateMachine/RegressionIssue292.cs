@@ -5,7 +5,7 @@ using IO;
 [Collection(TestCollections.WriteAheadLog)]
 public sealed class RegressionIssue292 : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(500)]
     [InlineData(512)]
     public async Task EntriesAcrossChunkBoundary(int payloadSize)

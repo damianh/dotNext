@@ -21,7 +21,7 @@ public sealed class RegressionIssue10 : Test
         False(Directory.Exists(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RejectMismatchedExistingChunkSize()
     {
         var location = GetTempPath();
@@ -54,7 +54,7 @@ public sealed class RegressionIssue10 : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(SupportedConfigurations))]
     public async Task SupportedChunkSizeRoundtrip(
         int chunkSize,

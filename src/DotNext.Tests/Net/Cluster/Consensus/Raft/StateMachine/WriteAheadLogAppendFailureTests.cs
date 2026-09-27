@@ -36,7 +36,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(AppendKinds))]
     public static async Task CancellationWhileWaitingForPersistenceDoesNotPoisonLog(AppendKind kind)
     {
@@ -68,7 +68,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(AppendKinds))]
     public static async Task PreCanceledAppendDoesNotPoisonLog(AppendKind kind)
     {
@@ -81,7 +81,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancellationBeforeAppendLockReleasesOwnedBuffer()
     {
         var options = CreateOptions();
@@ -96,7 +96,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(-1L, false)]
     [InlineData(4L, false)]
     [InlineData(1L, false)]
@@ -114,7 +114,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(AppendKind.Unbuffered)]
     [InlineData(AppendKind.Indexed)]
     [InlineData(AppendKind.Overwrite)]
@@ -132,7 +132,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotWithoutIndexDoesNotPoisonLog()
     {
         var options = CreateOptions();
@@ -143,7 +143,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(1L, false, false)]
     [InlineData(2L, false, true)]
     [InlineData(1L, true, true)]
@@ -162,7 +162,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, 0)]
     [InlineData(true, 0)]
     [InlineData(false, 1)]
@@ -195,7 +195,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task MatchingPrefixThenInvalidEntryDoesNotPoisonLog(bool slow)
@@ -211,7 +211,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -230,7 +230,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(wal);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ValidationFailureAfterMutationPoisonsLogAndRecoversTail(bool appendAndCommit)
@@ -253,7 +253,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertUsableAsync(recovered);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(AppendKind.Unbuffered)]
     [InlineData(AppendKind.Indexed)]
     [InlineData(AppendKind.Overwrite)]
@@ -280,7 +280,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertPoisonedAsync(wal, failure);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotApplicationFailurePoisonsLog()
     {
         var options = CreateOptions();
@@ -295,7 +295,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertPoisonedAsync(wal, failure);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -344,7 +344,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         False(File.Exists(Path.Combine(options.Location, "overwrite")));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task FastAppendLockCancellationNotifiesCommittedPrefix(bool overwrite)

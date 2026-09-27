@@ -39,7 +39,7 @@ public sealed class UnmanagedMemoryTests : Test
         Equal(memory.Pointer.ToString(), memory.ToString());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ByRefParameter()
     {
         using var memory = new UnmanagedMemory<long>();

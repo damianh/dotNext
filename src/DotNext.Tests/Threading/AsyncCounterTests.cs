@@ -3,7 +3,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncCounterTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SignalAndWait()
     {
         using (var counter = new AsyncCounter())
@@ -59,7 +59,7 @@ public sealed class AsyncCounterTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DecrementTwice()
     {
         using var counter = new AsyncCounter(0);

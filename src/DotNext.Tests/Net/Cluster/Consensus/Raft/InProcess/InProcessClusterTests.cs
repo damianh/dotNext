@@ -7,7 +7,7 @@ using NetworkTransport;
 
 public sealed class InProcessClusterTests : RaftTest
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -44,7 +44,7 @@ public sealed class InProcessClusterTests : RaftTest
         Equal(index, nodeC.AuditTrail.LastCommittedEntryIndex);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ControlsDeliveryOrderAndLoss()
     {
         var timeProvider = new ManualTimeProvider();
@@ -73,7 +73,7 @@ public sealed class InProcessClusterTests : RaftTest
         Empty(network.PendingMessages);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SupportsPartitionsCancellationAndInjectedFailures()
     {
         var timeProvider = new ManualTimeProvider();
@@ -125,7 +125,7 @@ public sealed class InProcessClusterTests : RaftTest
         Empty(network.PendingMessages);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RestartRetainsExplicitDurableStateAndResetsVolatileState()
     {
         var timeProvider = new ManualTimeProvider();
@@ -195,7 +195,7 @@ public sealed class InProcessClusterTests : RaftTest
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task StoppingNodeCancelsAndDrainsActiveDispatches(bool stopSource)
@@ -251,7 +251,7 @@ public sealed class InProcessClusterTests : RaftTest
         await draining.WaitAsync(TestToken);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -301,7 +301,7 @@ public sealed class InProcessClusterTests : RaftTest
         False(nodeA.LeadershipToken.IsCancellationRequested);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelingDeliveredMessageWaitsForHandlerCleanup()
     {
         var timeProvider = new ManualTimeProvider();
@@ -348,7 +348,7 @@ public sealed class InProcessClusterTests : RaftTest
         Empty(network.PendingMessages);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotUsesProductionConfigurationAndSnapshotHandlers()
     {
         var timeProvider = new ManualTimeProvider();
@@ -370,7 +370,7 @@ public sealed class InProcessClusterTests : RaftTest
         Equal(1L, stateB.Term);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RaftTimeoutUsesManualTimeAndPreservesCancellation()
     {
         var timeProvider = new ManualTimeProvider();

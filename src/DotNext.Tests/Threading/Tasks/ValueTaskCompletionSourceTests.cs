@@ -7,7 +7,7 @@ namespace DotNext.Threading.Tasks;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class ValueTaskCompletionSourceTests : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task SuccessfulCompletion(bool runContinuationsAsynchronously)
@@ -19,7 +19,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await task;
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CompleteWithError(bool runContinuationsAsynchronously)
@@ -30,7 +30,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await ThrowsAsync<ArithmeticException>(task.AsTask);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task Cancellation(bool runContinuationsAsynchronously)
@@ -44,7 +44,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         False(source.TrySetResult());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelImmediately()
     {
         var source = new ValueTaskCompletionSource();
@@ -75,7 +75,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         Throws<InvalidOperationException>(() => source.Reset());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumePendingTask()
     {
         var source = new ValueTaskCompletionSource();
@@ -89,7 +89,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await task;
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ForceTimeout(bool runContinuationsAsynchronously)
@@ -100,7 +100,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         False(source.TrySetResult());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CompleteWithToken(bool runContinuationsAsynchronously)
@@ -114,7 +114,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await task;
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task Reuse(bool runContinuationsAsynchronously)
@@ -130,7 +130,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await task;
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task AsyncCompletion(bool runContinuationsAsynchronously)
@@ -143,7 +143,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await result;
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task AsyncLocalAccess(bool runContinuationsAsynchronously)
@@ -163,7 +163,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await result;
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task InteropWithTaskCompletionSourceTimeout(bool runContinuationsAsynchronously)
@@ -175,7 +175,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await ThrowsAsync<TimeoutException>(task);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumeTwice()
     {
         var source = new ValueTaskCompletionSource();
@@ -186,7 +186,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await ThrowsAsync<InvalidOperationException>(task.AsTask);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -207,7 +207,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await dest.Task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CanceledToken()
     {
         var source = new ValueTaskCompletionSource();
@@ -215,7 +215,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await ThrowsAsync<OperationCanceledException>(task);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LazyCompletion()
     {
         var source = new ValueTaskCompletionSource();
@@ -241,7 +241,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
             where TOptions : ManualResetCompletionSource.ICompletionOptions, allows ref struct;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AttachContinuationToCompletedSource()
     {
         var source = new ValueTaskCompletionSource();
@@ -265,7 +265,7 @@ public sealed class ValueTaskCompletionSourceTests : Test
         await task.Task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ImmediateTimeout()
     {
         var source = new ValueTaskCompletionSource();

@@ -8,7 +8,7 @@ using Text.Json;
 
 public sealed class MessageTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TextMessageUsingStream()
     {
         IMessage message = new TextMessage("Hello, world!", "msg");
@@ -19,7 +19,7 @@ public sealed class MessageTests : Test
         Equal("Hello, world!", await reader.ReadToEndAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TextMessageUsingPipeline()
     {
         var pipe = new Pipe();
@@ -36,7 +36,7 @@ public sealed class MessageTests : Test
         Equal("Hello, world!", await reader.ReadToEndAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task JsonMessageSerialization()
     {
         var pipe = new Pipe();

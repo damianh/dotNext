@@ -2,7 +2,7 @@ namespace DotNext.Threading;
 
 public sealed class QueuedSynchronizerTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ThrowOnAcquisitionAsync()
     {
         await using var synchronizer = new MySynchronizer();
@@ -23,7 +23,7 @@ public sealed class QueuedSynchronizerTests : Test
             => canAcquire ? null : ExceptionFactory.Of<ArithmeticException>();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ResumeReadLockAsync()
     {
         using var synchronizer = new CustomReaderWriterLock();
@@ -39,7 +39,7 @@ public sealed class QueuedSynchronizerTests : Test
         await readLockTask;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PriorityAcquisitionPrecedesQueuedCallers()
     {
         await using var synchronizer = new PriorityLock();

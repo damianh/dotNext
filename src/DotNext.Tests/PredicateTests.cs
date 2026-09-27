@@ -69,7 +69,7 @@ public sealed class PredicateTests : Test
         IsType<ArithmeticException>(pred.TryInvoke(9).Error);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ToAsync()
     {
         True(await Predicate<int>.Constant(true).ToAsync().Invoke(42, TestToken));

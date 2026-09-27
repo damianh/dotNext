@@ -5,7 +5,7 @@ namespace DotNext.Runtime.CompilerServices;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class SpawningAsyncTaskMethodBuilderTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ForkAsyncMethodWithResult()
     {
         var task = InvokeAsThread(static () => Sum(40, 2, Thread.CurrentThread.ManagedThreadId));
@@ -22,7 +22,7 @@ public sealed class SpawningAsyncTaskMethodBuilderTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static Task ForkAsyncMethodWithoutResult()
     {
         return InvokeAsThread(static () => CheckThreadId(Thread.CurrentThread.ManagedThreadId));
@@ -36,7 +36,7 @@ public sealed class SpawningAsyncTaskMethodBuilderTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancellationOfSpawnedMethod()
     {
         var task = InvokeAsThread(static () => CheckThreadId(Thread.CurrentThread.ManagedThreadId, new(true)));

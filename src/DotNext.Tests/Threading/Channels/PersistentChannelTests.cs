@@ -25,7 +25,7 @@ public sealed class PersistentChannelTests : Test
             => output.WriteLittleEndianAsync(input, writeBuffer, token);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, false, 0L)]
     [InlineData(false, true, 0L)]
     [InlineData(true, false, 0L)]
@@ -50,7 +50,7 @@ public sealed class PersistentChannelTests : Test
         Equal(1D, channel.Throughput);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Persistence()
     {
         Int128 g1 = Random.Shared.Next<Int128>(), g2 = Random.Shared.Next<Int128>(), g3 = Random.Shared.Next<Int128>();
@@ -70,7 +70,7 @@ public sealed class PersistentChannelTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PartitionOverflow()
     {
         var options = new PersistentChannelOptions
@@ -91,7 +91,7 @@ public sealed class PersistentChannelTests : Test
         Equal(g4, await channel.Reader.ReadAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PersistentPartitionOverflow()
     {
         var options = new PersistentChannelOptions
@@ -143,7 +143,7 @@ public sealed class PersistentChannelTests : Test
             True((await reader.ReadAsync()).IsBetween(lowerBound.Enclosed, upperBound.Disclosed));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0L)]
     [InlineData(102400L)]
     public static async Task ProduceConsumeConcurrently(long initialSize)
@@ -154,7 +154,7 @@ public sealed class PersistentChannelTests : Test
         await Task.WhenAll(consumer, producer);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0L, true)]
     [InlineData(102400L, true)]
     [InlineData(0L, false)]
@@ -168,7 +168,7 @@ public sealed class PersistentChannelTests : Test
         await Task.WhenAll(consumer, producer1, producer2);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, false, 0L)]
     [InlineData(false, true, 0L)]
     [InlineData(true, false, 0L)]
@@ -197,7 +197,7 @@ public sealed class PersistentChannelTests : Test
         await ThrowsAsync<ChannelClosedException>(channel.Reader.ReadAsync(TestToken).AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReliableEnumeration()
     {
         Int128 g1 = Random.Shared.Next<Int128>(), g2 = Random.Shared.Next<Int128>(), g3 = Random.Shared.Next<Int128>();
@@ -228,7 +228,7 @@ public sealed class PersistentChannelTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue136()
     {
         var path = GetTempPath();
@@ -269,7 +269,7 @@ public sealed class PersistentChannelTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReentrantConsumption()
     {
         var path = GetTempPath();

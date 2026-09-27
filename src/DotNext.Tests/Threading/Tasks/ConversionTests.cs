@@ -4,14 +4,14 @@ namespace DotNext.Threading.Tasks;
 
 public sealed class ConversionTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Nullable()
     {
         var t = Task.FromResult(10).ToNullable();
         Equal(10, await t);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TypeConversion()
     {
         var t = Task.FromResult("12").Convert(int.Parse);
@@ -21,7 +21,7 @@ public sealed class ConversionTests : Test
         Equal(12, await t);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DynamicTask()
     {
         object result = await Task.CompletedTask.AsDynamic();
@@ -37,14 +37,14 @@ public sealed class ConversionTests : Test
         await ThrowsAsync<InvalidOperationException>(async () => await Task.FromException(new InvalidOperationException()).AsDynamic());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DynamicTaskValueType()
     {
         int result = await Task.FromResult(42).AsDynamic();
         Equal(42, result);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SuspendException()
     {
         await Task.FromException(new Exception()).SuspendException(Predicate<Exception>.Constant(true)).ConfigureAwait(true);
@@ -59,7 +59,7 @@ public sealed class ConversionTests : Test
         IsType<ArithmeticException>(result.Error);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CatchException()
     {
         NotNull(await Task.FromException(new Exception()).CatchException());
@@ -69,7 +69,7 @@ public sealed class ConversionTests : Test
         Null(await ValueTask.CompletedTask.CatchException());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SuspendException2()
     {
         var t = Task.FromException(new Exception());
@@ -77,7 +77,7 @@ public sealed class ConversionTests : Test
         Same(result, Missing.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConvertExceptionToError()
     {
         var result = await Task.FromException<int>(new Exception()).CatchException(ToError).ConfigureAwait(true);
@@ -91,7 +91,7 @@ public sealed class ConversionTests : Test
         static EnvironmentVariableTarget ToError(Exception e) => EnvironmentVariableTarget.Machine;
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SuspendExceptionParametrized()
     {
         await Task.FromException(new Exception()).SuspendException(42, (_, i) => i is 42).ConfigureAwait(true);

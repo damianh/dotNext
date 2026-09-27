@@ -2,7 +2,7 @@ namespace DotNext.IO;
 
 public sealed class FileReaderTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SimpleReadAsync()
     {
         var path = GetTempPath();
@@ -30,7 +30,7 @@ public sealed class FileReaderTests : Test
         Equal(expected, reader.Buffer);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadBufferTwiceAsync()
     {
         var path = GetTempPath();
@@ -58,7 +58,7 @@ public sealed class FileReaderTests : Test
         reader.Reset();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadLargeDataAsync()
     {
         var path = GetTempPath();
@@ -148,7 +148,7 @@ public sealed class FileReaderTests : Test
         False(reader.Read());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadSequentially()
     {
         var path = GetTempPath();

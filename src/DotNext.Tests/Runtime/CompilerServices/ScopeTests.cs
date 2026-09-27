@@ -18,7 +18,7 @@ public sealed class ScopeTests : Test
         Equal(10, stack.Pop());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExecutionOrderAsync()
     {
         var stack = new Stack<int>();

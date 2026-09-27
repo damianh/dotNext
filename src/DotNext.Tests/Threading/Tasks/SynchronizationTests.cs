@@ -46,7 +46,7 @@ public sealed class SynchronizationTests : Test
         IsType<InvalidOperationException>(result.Error);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult2()
     {
         var source1 = new TaskCompletionSource<int>();
@@ -69,7 +69,7 @@ public sealed class SynchronizationTests : Test
         Equal(20, result2.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult3()
     {
         var source1 = new TaskCompletionSource<int>();
@@ -99,7 +99,7 @@ public sealed class SynchronizationTests : Test
         Equal(30, result3.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult4()
     {
         var source1 = new TaskCompletionSource<int>();
@@ -136,7 +136,7 @@ public sealed class SynchronizationTests : Test
         Equal(40, result4.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult5()
     {
         var source1 = new TaskCompletionSource<int>();

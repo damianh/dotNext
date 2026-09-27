@@ -72,7 +72,7 @@ public sealed class FileBufferingWriterTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(255)]
@@ -91,7 +91,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(bytes, manager.Memory);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -133,7 +133,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(bytes.AsMemory(0, 255), manager.Memory);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -176,7 +176,7 @@ public sealed class FileBufferingWriterTests : Test
             Equal(bytes, manager.Memory);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnsupportedMethods()
     {
         await using var writer = new FileBufferingWriter();
@@ -235,7 +235,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(bytes, ms.WrittenSpan);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -254,7 +254,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(bytes, ms.ToArray());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -292,7 +292,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(bytes[0..100], buffer);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -321,7 +321,7 @@ public sealed class FileBufferingWriterTests : Test
         Throws<ArgumentOutOfRangeException>(() => new FileBufferingWriter(initialCapacity: -1));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteDuringReadAsync()
     {
         await using var writer = new FileBufferingWriter();
@@ -343,7 +343,7 @@ public sealed class FileBufferingWriterTests : Test
         True(content.IsEmpty);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(100)]
     [InlineData(1000)]
     [InlineData(10000)]
@@ -363,7 +363,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(dict, await DictionarySerializer.DeserializeAsync(source, buffer));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(100)]
     [InlineData(1000)]
     [InlineData(10000)]
@@ -395,7 +395,7 @@ public sealed class FileBufferingWriterTests : Test
         True(buffer.AsSpan().SequenceEqual(content.Memory.Span));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -415,7 +415,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(dict, await DictionarySerializer.DeserializeAsync(source, buffer));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -506,7 +506,7 @@ public sealed class FileBufferingWriterTests : Test
         Equal(bytes, manager.Memory);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10, false)]
     [InlineData(100, false)]
     [InlineData(1000, false)]
@@ -555,7 +555,7 @@ public sealed class FileBufferingWriterTests : Test
         True(source.Sequence.SequenceEqual(bytes));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     [InlineData(1000)]
@@ -573,7 +573,7 @@ public sealed class FileBufferingWriterTests : Test
         True(source.Sequence.SequenceEqual(bytes));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ModifyWrittenContent()
     {
         const int dataSize = 1000;
@@ -614,7 +614,7 @@ public sealed class FileBufferingWriterTests : Test
         stream.Write(new byte[threshold]);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue296Async()
     {
         var bufferSize = 4096;

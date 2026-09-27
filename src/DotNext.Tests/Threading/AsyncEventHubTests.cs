@@ -25,7 +25,7 @@ public sealed class AsyncEventHubTests : Test
         False(hub.WaitOneAsync(1, TestToken).IsCompleted);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(512)]
     public static async Task WaitAny(int count)
@@ -44,7 +44,7 @@ public sealed class AsyncEventHubTests : Test
         Equal(0, Single(set));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(512)]
     public static async Task WaitAny2(int count)
@@ -58,7 +58,7 @@ public sealed class AsyncEventHubTests : Test
         await hub.WaitAnyAsync(TestToken);
     }
     
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(512)]
     public static async Task WaitAny3(int count)
@@ -74,7 +74,7 @@ public sealed class AsyncEventHubTests : Test
         Equal(0, Single(set));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(512)]
     public static async Task WaitAll(int count)
@@ -107,7 +107,7 @@ public sealed class AsyncEventHubTests : Test
         Equal(1, Single(flags));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(512)]
     public static async Task CancelPendingTasks(int count)
@@ -149,7 +149,7 @@ public sealed class AsyncEventHubTests : Test
         Empty(hub.Pulse(new AsyncEventHub.EventGroup([1])));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(512)]
     public static async Task IncorrectGroup(int count)
@@ -164,7 +164,7 @@ public sealed class AsyncEventHubTests : Test
         await ThrowsAsync<ArgumentOutOfRangeException>(hub.WaitAnyAsync(group, InfiniteTimeSpan, TestToken).AsTask);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(3)]
     [InlineData(512)]
     public static async Task OutOfOrderWaitQueueProcessing(int count)

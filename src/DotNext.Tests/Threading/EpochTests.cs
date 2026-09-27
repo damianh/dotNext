@@ -105,7 +105,7 @@ public sealed class EpochTests : Test
         True(state.WaitOne(DefaultTimeout));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AsyncReclamation2()
     {
         var state = new TaskCompletionSource();

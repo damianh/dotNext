@@ -2,7 +2,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils;
 
 public class ReplicationBarrierTests : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(2)]
     [InlineData(4)]
     public static async Task HalfUnavailableCompletesWithoutConsensus(int memberCount)
@@ -22,7 +22,7 @@ public class ReplicationBarrierTests : Test
         barrier.Reuse();
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("R", 1, true)]
     [InlineData("U", 1, false)]
     [InlineData("RR", 2, true)]
@@ -73,7 +73,7 @@ public class ReplicationBarrierTests : Test
         barrier.Reuse();
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CancellationAndHigherTermCompleteImmediately(bool canceled)
@@ -93,7 +93,7 @@ public class ReplicationBarrierTests : Test
         barrier.Reuse();
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task EarlyQuorumLossWaitsForLateRepliesBeforeReuse(bool consumeBeforeLateReplies)
@@ -136,7 +136,7 @@ public class ReplicationBarrierTests : Test
         Equal(2, barrier.ReuseCount);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CheckMixedResponses()
     {
         var barrier = new ReplicationBarrier();
@@ -156,7 +156,7 @@ public class ReplicationBarrierTests : Test
         Equal(new(7, true), await task.WaitAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CheckReplicatedMajority()
     {
         var barrier = new ReplicationBarrier();
@@ -173,7 +173,7 @@ public class ReplicationBarrierTests : Test
         Equal(new(4, true), await task.WaitAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CheckNoResponseMajority()
     {
         var barrier = new ReplicationBarrier();
@@ -189,7 +189,7 @@ public class ReplicationBarrierTests : Test
         Equal(new(4, false), await task.WaitAsync(TestToken));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
     public static async Task Overflow(int expectedCount)
@@ -207,7 +207,7 @@ public class ReplicationBarrierTests : Test
         True(hasConsensus);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsensusFor3()
     {
         var barrier = new ReplicationBarrier();
@@ -220,7 +220,7 @@ public class ReplicationBarrierTests : Test
         True(result.HasConsensus);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task NoConsensusFor3()
     {
         var barrier = new ReplicationBarrier();
@@ -233,7 +233,7 @@ public class ReplicationBarrierTests : Test
         False(result.HasConsensus);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsensusFor2()
     {
         var barrier = new ReplicationBarrier();

@@ -53,7 +53,7 @@ public sealed class RaftHttpClusterTests : RaftTest
             .Build();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CommunicationWithLeader()
     {
         var config1 = CreateConfiguration(3262, coldStart: true,
@@ -116,7 +116,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         await host1.StopAsync(TestToken);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("")]
     [InlineData("/protocol/path")]
     public static async Task MessageExchange(string protocolPath)
@@ -190,7 +190,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TypedMessageExchange()
     {
         var config1 = CreateConfiguration(3262, coldStart: true,
@@ -245,7 +245,7 @@ public sealed class RaftHttpClusterTests : RaftTest
     private static IRaftHttpCluster GetLocalClusterView(IHost host)
         => host.Services.GetRequiredService<IRaftHttpCluster>();
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true)]
     [InlineData(false)]
     public static async Task Leadership(bool optimizedLogEntryTransfer)
@@ -337,7 +337,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FailureDetection()
     {
         var config1 = CreateConfiguration(3262, coldStart: true);
@@ -386,7 +386,7 @@ public sealed class RaftHttpClusterTests : RaftTest
             => new PhiAccrualFailureDetector(estimate) { Threshold = 3D };
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StandbyMode()
     {
         var config1 = CreateConfiguration(3262, coldStart: true);
@@ -438,7 +438,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         await host1.StopAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue108()
     {
         var configRoot = GetTempPath();
@@ -507,7 +507,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public async Task ClusterRecovery()
     {
         var configRoot = GetTempPath();
@@ -565,7 +565,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         await host3.StopAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DependencyInjection()
     {
         var config = CreateConfiguration(3262, coldStart: true);
@@ -589,7 +589,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         await host.StopAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public async Task RegressionIssue153()
     {
         var config1 = CreateConfiguration(3262, coldStart: true);
@@ -656,7 +656,7 @@ public sealed class RaftHttpClusterTests : RaftTest
             => new PhiAccrualFailureDetector(estimate) { Threshold = 3D, TreatUnknownValueAsUnhealthy = true };
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsensusToken()
     {
         using var host1 = CreateHost<Startup>(3262, CreateConfiguration(3262, coldStart: true));
@@ -682,7 +682,7 @@ public sealed class RaftHttpClusterTests : RaftTest
         await host2.StopAsync(TestToken);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RemovedLiveMemberCanRejoin()
     {
         using var host1 = CreateHost<Startup>(3262,

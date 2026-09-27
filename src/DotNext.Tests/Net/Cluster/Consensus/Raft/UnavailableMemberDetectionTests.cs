@@ -45,6 +45,26 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
     }
 
     [Fact]
+    public static async Task CancellationAfterAcquisitionReleasesMembershipLock()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var cluster = new TestCluster(async (_, _, token) =>
+        {
+            callbackStarted.SetResult();
+            await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
+        });
+        var callerState = new CallerStateIdentity(valid: true);
+        var detection = DetectAsync(cluster, callerState, cancellation.Token);
+        await callbackStarted.Task.WaitAsync(DefaultTimeout, TestToken);
+        True(Accessors<TestMember>.MembershipLock(cluster).IsLockHeld);
+        await cancellation.CancelAsync();
+        await detection;
+        Equal(1, callerState.ClearCount);
+        AssertLockReleased(cluster);
+    }
+
+    [Fact]
     public static async Task DetectionCompletesAfterClusterDisposal()
     {
         var releaseCallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

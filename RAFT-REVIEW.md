@@ -83,6 +83,20 @@ write. Requesting a strong barrier on the follower does not close this gap.
 **Fix:** Require a leadership-bound quorum confirmation before returning the
 read index, then wait for that index to be applied on the reading follower.
 
+**Status:** Fixed for #19. The leader captures
+`max(LastCommittedEntryIndex, WriteBarrier)` as the read index, then awaits
+`ForceReplicationAsync()`. That call completes only after a majority
+acknowledges the leader's term in a replication round started after the
+request arrived. If leadership is lost or the quorum is unreachable, the leader
+returns `null` instead of an index, and the follower then waits to apply the
+confirmed index. The write-barrier floor covers entries committed in earlier
+terms that a new leader has not yet committed locally. The sender's commit index
+no longer lets the leader skip confirmation. `FollowerReadBarrierTests` covers:
+- an isolated former leader, with and without the new term observed;
+- inherited commits;
+- healthy, no-quorum and cancelled reads;
+- snapshot lag.
+
 ### 5. P1: A usable leader lease is exposed before it is established
 
 **Location:** `LeaderState.cs:38-40`; `LeaderState.Lease.cs:82-88`
@@ -404,9 +418,10 @@ confirmed core defects; overlapping consequences are not counted twice.
 
 - The assertion that the median commit calculation satisfies Raft is contradicted
   by finding 1: `[10, 10, 6]` can commit 10 with only two of five replicas.
-- Describing the strong read barrier as ReadIndex needs qualification: the
-  follower path returns a cached leader index without fresh quorum confirmation,
-  as described in finding 4.
+- Describing the strong read barrier as ReadIndex needed qualification: the
+  follower path returned a cached leader index without fresh quorum
+  confirmation, as described in finding 4. Since #19 the leader confirms its
+  quorum before it returns the read index.
 - Describing snapshot temp-file/fsync/rename as safe overlooks the incoming
   failure path in finding 7. Outgoing snapshot creation has different rollback
   handling; the two paths must not be conflated.

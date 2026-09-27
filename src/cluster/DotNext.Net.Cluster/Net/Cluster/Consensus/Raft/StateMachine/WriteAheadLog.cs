@@ -26,7 +26,7 @@ using Threading.Tasks;
 /// Cancellation or validation failure before an append starts modifying the log leaves the WAL usable.
 /// A failed append that may have partially modified the log requires reopening the WAL for recovery.
 /// </remarks>
-public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState
+public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState, ITermGuardedAuditTrail
 {
     private const int DictionaryConcurrencyLevel = 3; // append flow and cleaner and applier
 
@@ -260,7 +260,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         private set => Atomic.Write(ref field, value);
     }
 
-    private async ValueTask<long> AppendUnbufferedAsync<TEntry>(TEntry entry, CancellationToken token)
+    private async ValueTask<long> AppendUnbufferedAsync<TEntry>(TEntry entry, bool requireCurrentTerm, CancellationToken token)
         where TEntry : IRaftLogEntry
     {
         long currentIndex;
@@ -274,6 +274,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             try
             {
                 ThrowOnInternalError();
+                ThrowIfNotCurrentTerm(entry.Term, requireCurrentTerm);
                 token.ThrowIfCancellationRequested();
                 var length = entry.Length;
                 token.ThrowIfCancellationRequested();
@@ -301,7 +302,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         return currentIndex;
     }
     
-    private async ValueTask<long> AppendBufferedAsync<TEntry>(TEntry entry, CancellationToken token)
+    private async ValueTask<long> AppendBufferedAsync<TEntry>(TEntry entry, bool requireCurrentTerm, CancellationToken token)
         where TEntry : struct, IBufferedLogEntry
     {
         lockManager.SetCallerInformation("Append Single Buffered Entry");
@@ -315,6 +316,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 try
                 {
                     ThrowOnInternalError();
+                    ThrowIfNotCurrentTerm(entry.Term, requireCurrentTerm);
                     token.ThrowIfCancellationRequested();
                     mutationStarted = true;
                     await PrepareAppendAsync(LastEntryIndex + 1L, token).ConfigureAwait(false);
@@ -357,6 +359,23 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     /// <inheritdoc cref="IAuditTrail{TEntryImpl}.AppendAsync{TEntry}(TEntry, CancellationToken)"/>
     public ValueTask<long> AppendAsync<TEntry>(TEntry entry, CancellationToken token = default)
         where TEntry : IRaftLogEntry
+        => AppendAsync(entry, requireCurrentTerm: false, token);
+
+    /// <inheritdoc/>
+    ValueTask<long> ITermGuardedAuditTrail.AppendInCurrentTermAsync<TEntry>(TEntry entry, CancellationToken token)
+        => AppendAsync(entry, requireCurrentTerm: true, token);
+
+    private void ThrowIfNotCurrentTerm(long entryTerm, bool requireCurrentTerm)
+    {
+        // Must be called under the append lock. A term only grows, and it grows before any entry
+        // of the newer term is appended; so if the entry has the current term here, no newer-term
+        // entry can precede it in the log.
+        if (requireCurrentTerm && entryTerm != state.Term)
+            throw new NotLeaderException();
+    }
+
+    private ValueTask<long> AppendAsync<TEntry>(TEntry entry, bool requireCurrentTerm, CancellationToken token)
+        where TEntry : IRaftLogEntry
     {
         ValueTask<long> task;
         if (IsDisposingOrDisposed)
@@ -369,7 +388,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         }
         else if (typeof(TEntry) == typeof(BinaryLogEntry))
         {
-            task = AppendBufferedAsync(Unsafe.As<TEntry, BinaryLogEntry>(ref entry), token);
+            task = AppendBufferedAsync(Unsafe.As<TEntry, BinaryLogEntry>(ref entry), requireCurrentTerm, token);
         }
         else if (entry.IsSnapshot)
         {
@@ -386,7 +405,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 Context = entry is IInputLogEntry { Context: { } ctx } ? ctx : null,
             };
 
-            task = AppendBufferedAsync(entryCopy, token);
+            task = AppendBufferedAsync(entryCopy, requireCurrentTerm, token);
         }
         else if (entry is ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>)
         {
@@ -399,11 +418,11 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 Context = entry is IInputLogEntry { Context: { } ctx } ? ctx : null,
             };
 
-            task = AppendBufferedAsync(entryCopy, token);
+            task = AppendBufferedAsync(entryCopy, requireCurrentTerm, token);
         }
         else
         {
-            task = AppendUnbufferedAsync(entry, token);
+            task = AppendUnbufferedAsync(entry, requireCurrentTerm, token);
         }
 
         return task;

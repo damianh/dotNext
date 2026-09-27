@@ -16,7 +16,7 @@ using BoxedClusterMemberId = Runtime.BoxedValue<ClusterMemberId>;
 /// The actual state doesn't persist on disk and exists only in memory, cannot append non-empty log entries
 /// and skips any configuration log entries.
 /// </remarks>
-public sealed class ConsensusOnlyState : Disposable, IPersistentState
+public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuardedAuditTrail
 {
     [StructLayout(LayoutKind.Auto)]
     private readonly struct EntryList : IReadOnlyList<EmptyLogEntry>
@@ -213,6 +213,24 @@ public sealed class ConsensusOnlyState : Disposable, IPersistentState
         await syncRoot.EnterWriteLockAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
+            return await AppendAsync(LogEntryProducer<TEntry>.Of(entry), null, false, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            syncRoot.Release();
+        }
+    }
+
+    /// <inheritdoc/>
+    async ValueTask<long> ITermGuardedAuditTrail.AppendInCurrentTermAsync<TEntry>(TEntry entry, CancellationToken token)
+    {
+        await syncRoot.EnterWriteLockAsync(token).ConfigureAwait(false);
+        try
+        {
+            // see ITermGuardedAuditTrail: the term grows before any entry of the newer term is appended
+            if (entry.Term != Term)
+                throw new NotLeaderException();
+
             return await AppendAsync(LogEntryProducer<TEntry>.Of(entry), null, false, CancellationToken.None).ConfigureAwait(false);
         }
         finally

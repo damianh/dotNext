@@ -32,6 +32,9 @@ upstream sync is merged.
 * A store written by upstream 6.8.x can be opened by the fork. Its last index is trusted as durable, because upstream
   writes it only after the pages have been flushed. The first durable update upgrades the store to version 2, and
   upstream cannot read it after that.
+* Version 0 migration assumes the same metadata page size that upstream 6.8.1 uses when it opens legacy stores:
+  4 KiB. Version 0 stores written on hosts whose OS page size was larger than 4 KiB are not supported
+  migration inputs, matching upstream 6.8.1.
 * Upstream keeps no metadata record at a snapshot boundary (for example after snapshot catch-up), so for version 0 and
   1 stores whose last index is a snapshot index with no metadata, the fork rebuilds the boundary record. Version 2
   stores still require it and are rejected without it.

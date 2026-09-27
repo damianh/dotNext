@@ -318,7 +318,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
         if (readinessProbe.Task.IsCompletedSuccessfully)
         {
-            readinessProbe = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref readinessProbe, new(TaskCreationOptions.RunContinuationsAsynchronously));
         }
 
         // local member is removed, but can be added later, so the state is resumable

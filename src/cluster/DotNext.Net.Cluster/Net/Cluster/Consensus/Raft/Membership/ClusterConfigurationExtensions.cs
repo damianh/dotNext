@@ -32,6 +32,14 @@ public static class ClusterConfigurationExtensions
         => configuration is ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>
             ? state.AppendAsync(new OptimizedClusterConfigurationLogEntry<TAddress>(configuration) { Term = term }, token)
             : state.AppendAsync(new ClusterConfigurationLogEntry<TAddress>(configuration) { Term = term }, token);
+
+    // see ITermGuardedAuditTrail
+    internal static ValueTask<long> AppendInCurrentTermAsync<TAddress>(this IPersistentState state, IClusterConfiguration<TAddress> configuration,
+        long term, CancellationToken token)
+        where TAddress : notnull
+        => configuration is ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>
+            ? state.AppendInCurrentTermAsync(new OptimizedClusterConfigurationLogEntry<TAddress>(configuration) { Term = term }, token)
+            : state.AppendInCurrentTermAsync(new ClusterConfigurationLogEntry<TAddress>(configuration) { Term = term }, token);
 }
 
 [StructLayout(LayoutKind.Auto)]

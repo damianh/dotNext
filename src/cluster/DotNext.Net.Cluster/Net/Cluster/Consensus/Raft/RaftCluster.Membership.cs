@@ -185,6 +185,10 @@ public partial class RaftCluster<TMember>
     /// <summary>
     /// Announces a new member in the cluster.
     /// </summary>
+    /// <remarks>
+    /// The new configuration is built from the latest configuration in the log: the method first waits until the leader
+    /// has applied its whole log, so a configuration change that is still pending cannot be overwritten.
+    /// </remarks>
     /// <typeparam name="TAddress">The type of the member address.</typeparam>
     /// <param name="member">The cluster member client used to catch up its state.</param>
     /// <param name="rounds">The number of warmup rounds.</param>
@@ -219,7 +223,7 @@ public partial class RaftCluster<TMember>
             if (!lockTaken)
                 throw new ConcurrentMembershipModificationException();
 
-            var config = await configurationStorage.LoadConfigurationAsync(tokenSource.Token).ConfigureAwait(false);
+            var config = await LoadLatestConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
             if (!IClusterConfiguration<TAddress>.TryAdd(ref config, addressProvider(member)))
                 return false;
 
@@ -230,17 +234,7 @@ public partial class RaftCluster<TMember>
             if (!await process.CatchUpAsync(rounds, tokenSource.Token).ConfigureAwait(false))
                 return false;
 
-            // make sure that the previous configuration is committed
-            var commitIndex = await AuditTrail
-                .AppendAsync(new EmptyLogEntry { Term = leaderState.Term }, tokenSource.Token)
-                .ConfigureAwait(false);
-            leaderState.ForceReplication();
-            await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
-
-            // Append new config to the log (extra empty log entry is required to be sure that other cluster members committed
-            // the configuration
-            commitIndex = await AuditTrail.AppendAsync(config, leaderState.Term, tokenSource.Token).ConfigureAwait(false);
-            leaderState.ForceReplication();
+            var commitIndex = await AppendConfigurationAsync(leaderState, config, tokenSource.Token).ConfigureAwait(false);
 
             // ensure that the configuration is committed
             await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
@@ -268,6 +262,10 @@ public partial class RaftCluster<TMember>
     /// <summary>
     /// Removes the member from the cluster.
     /// </summary>
+    /// <remarks>
+    /// The new configuration is built from the latest configuration in the log: the method first waits until the leader
+    /// has applied its whole log, so a configuration change that is still pending cannot be overwritten.
+    /// </remarks>
     /// <typeparam name="TAddress">The type of the member address.</typeparam>
     /// <param name="id">The cluster member to remove.</param>
     /// <param name="configurationStorage">The configuration storage.</param>
@@ -295,19 +293,10 @@ public partial class RaftCluster<TMember>
 
             if (members.TryGetValue(id, out var member))
             {
-                var config = await configurationStorage.LoadConfigurationAsync(tokenSource.Token).ConfigureAwait(false);
+                var config = await LoadLatestConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
                 if (IClusterConfiguration<TAddress>.TryRemove(ref config, addressProvider(member)))
                 {
-                    // make sure that the previous configuration is committed
-                    var commitIndex = await AuditTrail
-                        .AppendAsync(new EmptyLogEntry { Term = leaderState.Term }, tokenSource.Token)
-                        .ConfigureAwait(false);
-                    leaderState.ForceReplication();
-                    await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
-
-                    // append new config to the log
-                    commitIndex = await AuditTrail.AppendAsync(config, leaderState.Term, tokenSource.Token).ConfigureAwait(false);
-                    leaderState.ForceReplication();
+                    var commitIndex = await AppendConfigurationAsync(leaderState, config, tokenSource.Token).ConfigureAwait(false);
                     await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
                     return true;
                 }
@@ -409,22 +398,77 @@ public partial class RaftCluster<TMember>
     /// <summary>
     /// Provides the helper for implementing <see cref="UnavailableMemberDetected(TMember, long, CancellationToken)"/> method.
     /// </summary>
+    /// <remarks>
+    /// The removal is built from the latest configuration in the log: the helper waits until the leader
+    /// has applied its log, then appends the new configuration without waiting for it to be applied.
+    /// Call it only from <see cref="UnavailableMemberDetected(TMember, long, CancellationToken)"/>, which runs
+    /// under the same membership lock as <see cref="AddMemberAsync{TAddress}(TMember, int, IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>
+    /// and <see cref="RemoveMemberAsync{TAddress}(ClusterMemberId, IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>.
+    /// </remarks>
     /// <param name="configurationStorage">The configuration storage.</param>
     /// <param name="address">The address of the cluster member.</param>
     /// <param name="term">The cluster term at the point in time when the member was detected as unavailable.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <typeparam name="TAddress">The type of the address.</typeparam>
+    /// <exception cref="NotLeaderException">The current node is not a leader, or it is no longer the leader of <paramref name="term"/>.</exception>
     protected async ValueTask UnavailableMemberDetected<TAddress>(IClusterConfigurationStorage<TAddress> configurationStorage,
         TAddress address,
         long term,
         CancellationToken token)
         where TAddress : notnull
     {
-        var config = await configurationStorage.LoadConfigurationAsync(token).ConfigureAwait(false);
-        if (IClusterConfiguration<TAddress>.TryRemove(ref config, address))
+        var leaderState = LeaderStateOrException;
+        if (leaderState.Term != term)
+            throw new NotLeaderException();
+
+        var tokenSource = CombineTokens(token, leaderState.Token);
+        try
         {
-            await AuditTrail.AppendAsync(config, term, token).ConfigureAwait(false);
+            var config = await LoadLatestConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
+            if (IClusterConfiguration<TAddress>.TryRemove(ref config, address))
+            {
+                await AppendConfigurationAsync(leaderState, config, tokenSource.Token).ConfigureAwait(false);
+            }
         }
+        catch (OperationCanceledException e) when (e.CausedBy(tokenSource, leaderState.Token))
+        {
+            throw new NotLeaderException(e);
+        }
+        catch (OperationCanceledException e) when (e.CancellationToken == tokenSource.Token)
+        {
+            throw new OperationCanceledException(e.Message, e, tokenSource.CancellationOrigin);
+        }
+        finally
+        {
+            await tokenSource.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    // Configuration takes effect on apply here (the storage holds the last applied configuration), so a change
+    // must not be built before every configuration entry in the log is applied: otherwise a pending change
+    // (e.g. an automatic removal, or an entry inherited from the previous leader) is overwritten. The leader's
+    // no-op of the current term is already in the log, so no extra barrier entry is required.
+    // The caller must hold membershipLock, so no other configuration can be appended concurrently.
+    private async ValueTask<IClusterConfiguration<TAddress>> LoadLatestConfigurationAsync<TAddress>(LeaderState<TMember> leaderState,
+        IClusterConfigurationStorage<TAddress> configurationStorage,
+        CancellationToken token)
+        where TAddress : notnull
+    {
+        leaderState.ForceReplication();
+        await AuditTrail.WaitForApplyAsync(AuditTrail.LastEntryIndex, token).ConfigureAwait(false);
+        return await configurationStorage.LoadConfigurationAsync(token).ConfigureAwait(false);
+    }
+
+    // Rejects terms already stale under the append lock. Term updates are not serialized here; if
+    // the term advances after the check, the entry is still ordered before any newer-term entry.
+    private async ValueTask<long> AppendConfigurationAsync<TAddress>(LeaderState<TMember> leaderState,
+        IClusterConfiguration<TAddress> configuration,
+        CancellationToken token)
+        where TAddress : notnull
+    {
+        var index = await AuditTrail.AppendInCurrentTermAsync(configuration, leaderState.Term, token).ConfigureAwait(false);
+        leaderState.ForceReplication();
+        return index;
     }
 
     /// <summary>

@@ -109,7 +109,14 @@ state is obsolete. Subsequent membership changes fail or wait indefinitely.
 acquired it, including when the initiating leader state is obsolete, and
 tolerates `ObjectDisposedException` only while the cluster is disposing.
 `UnavailableMemberDetectionTests` covers these paths without elections or
-timers. Repairing the leak exposes C3 below; that is tracked separately.
+timers. Repairing the leak exposed C3 below, fixed separately for #18.
+
+**Follow-up (#18):** With the lock released, a membership change built from the
+last *applied* configuration could overwrite a pending one and resurrect a
+removed member. Add, remove, and automatic removal now wait for the leader to
+apply its whole log before loading the configuration, and append the change
+only if the leader's term is still the log's current term. See
+[Membership change semantics](#membership-change-semantics).
 
 ## Persistence and recovery
 
@@ -373,7 +380,7 @@ confirmed core defects; overlapping consequences are not counted twice.
 |---|---|---|
 | C1: durable replication acknowledgments | Confirmed new finding 15 | Restart forgets the acknowledged uncommitted tail even when its pages were persisted. This was a material omission from the first review. |
 | C2: election log freshness | Confirmed duplicate of finding 2 | Compare terms first, then indices when terms match. |
-| C3: resurrecting a removed member | Conditional; stated interleaving blocked | Finding 6 leaves `membershipLock` held after failure detection, so the subsequent same-leader membership operation cannot acquire it. Loading configuration before the barrier remains suspect for inherited uncommitted configurations or after repairing that lock leak; the alternate scenario was not reproduced. |
+| C3: resurrecting a removed member | Confirmed after finding 6 was fixed; fixed for #18 | Finding 6 originally blocked the stated interleaving. Once the lock leak was repaired, `MembershipConfigurationTests` reproduced the resurrection: a change built from the last applied configuration overwrote an unapplied automatic removal, a removal inherited by a new leader, or an earlier detection. Changes are now built only after the leader has applied its whole log, and are appended only in the leader's current term. See [Membership change semantics](#membership-change-semantics). |
 | C4: snapshot-aware comparison | Not an independent finding | The second review itself folds this into C2 and states that snapshot-term lookup works. |
 | C5: snapshot/configuration length validation | Validation omission; proposed fix too strict | Require a nonnegative configuration length and compare it against total length only when known. Unknown `Content-Length` is valid streaming behavior. Do not duplicate finding 7. |
 | C6: unbounded append count | Conditional availability risk; explanation incomplete | One stalled entry is enough to block a read; a huge count is unnecessary. Completed truncation differs from an open stalled request. Bounds alone do not resolve missing effective cancellation/deadlines; preserve streaming and use overflow-safe length checks. |
@@ -403,6 +410,50 @@ confirmed core defects; overlapping consequences are not counted twice.
 - Describing snapshot temp-file/fsync/rename as safe overlooks the incoming
   failure path in finding 7. Outgoing snapshot creation has different rollback
   handling; the two paths must not be conflated.
+
+## Membership change semantics
+
+Recorded for #18. Rules are the single-server change rules from Ongaro's
+thesis, chapter 4.
+
+| Rule | Status |
+|---|---|
+| R1: one change at a time | Deviation. Enforced only by the leader's in-memory `membershipLock`, which does not survive a leader change. Since #18 each change first waits until the leader has applied its whole log, so an uncommitted change inherited from a previous leader, or appended by the failure detector, is applied before the next change is built. |
+| R2: a server uses the latest configuration in its log | Deviation. A configuration takes effect when it is **applied**, not when it is appended: the WAL applier saves it to `IClusterConfigurationStorage`, and `ConfigurationPollingLoop` swaps `members`, from which `LeaderState` computes the quorum. |
+| R3: a new leader commits an entry of its term before changing configuration | Holds. `CandidateState` appends the election no-op; since #18 membership changes wait for the whole log, including that no-op, to be applied. This replaces the per-change `EmptyLogEntry` barrier, which ran only after the stale configuration had been loaded. |
+| R4: catch up new servers first | Holds (`ReplicationProcess.CatchUpAsync`). |
+| R5: snapshots carry the configuration | Holds. |
+| R6: contain disruptive removed servers | Holds (PreVote). |
+| R7: a removed leader steps down | Holds. |
+
+**Term guard.** The WAL and `ConsensusOnlyState` implement the internal
+`ITermGuardedAuditTrail`: under the append lock, an entry whose term is not
+the log's current term is rejected with `NotLeaderException`, without
+modifying or poisoning the log. The check is atomic with other appends and
+overwrites, not with `UpdateTermAsync` or `IncrementTermAsync`. A configuration
+entry can still land after the local term advances, but never after an entry
+of a newer term. That is equivalent to append-then-step-down: the old leader
+state is stopped before this node votes or accepts newer-term entries, so a
+late entry that was not already replicated cannot be committed and is
+truncated by the next leader. Other `IPersistentState` implementations get a
+best-effort pre-check. The guard covers membership appends only;
+`ClusterConfigurationExtensions.AppendAsync` and replication still accept a
+caller-supplied term.
+
+**Known deviation.** Adopting a configuration on apply rather than on append
+is kept deliberately (option A for #18). Until a change is applied, the leader
+computes its quorum from the previous configuration. Waiting for the whole log
+to be applied before building the next change keeps at most one change pending
+on the current leader, but not across leader changes.
+
+**OPEN QUESTION:** Does apply-time adoption preserve quorum overlap across
+leader changes? Suppose C, C', and C'' are in flight and appliers lag on
+different servers. Can two leaders then use non-overlapping majorities, for
+example one counting votes under C while another replicates under C''? This
+is a candidate for a small TLA+ model covering append-time vs apply-time
+adoption, lagging appliers, and leader changes between the C' and C''
+appends. Until it is answered, do not treat apply-time adoption as equivalent
+to R2.
 
 ## Scope and limitations
 

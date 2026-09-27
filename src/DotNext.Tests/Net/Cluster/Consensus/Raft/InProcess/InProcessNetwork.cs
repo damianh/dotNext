@@ -123,19 +123,25 @@ internal sealed class InProcessNetwork
         => WaitForMessageAsync(source, target,
             static type => type is RaftMessageType.AppendEntries or RaftMessageType.InstallSnapshot, token);
 
-    private async Task<PendingMessage> WaitForMessageAsync(
+    private Task<PendingMessage> WaitForMessageAsync(
         EndPoint source, EndPoint target, Predicate<RaftMessageType> messageFilter, CancellationToken token)
     {
         var sourceId = ClusterMemberId.FromEndPoint(source);
         var targetId = ClusterMemberId.FromEndPoint(target);
+        return WaitForMessageAsync(
+            message => message.SourceId == sourceId && message.TargetId == targetId && messageFilter(message.MessageType),
+            token);
+    }
+
+    // The filter runs under the network lock; it must not call back into the network.
+    internal async Task<PendingMessage> WaitForMessageAsync(Predicate<PendingMessage> filter, CancellationToken token)
+    {
         for (;;)
         {
             Task changed;
             lock (syncRoot)
             {
-                var message = pendingMessages.FirstOrDefault(message =>
-                    !message.IsCompleted && message.SourceId == sourceId
-                    && message.TargetId == targetId && messageFilter(message.MessageType));
+                var message = pendingMessages.FirstOrDefault(message => !message.IsCompleted && filter(message));
                 if (message is not null)
                     return message;
 
@@ -229,6 +235,35 @@ internal sealed class InProcessNetwork
         }
 
         await message.DeliverAsync().ConfigureAwait(false);
+    }
+
+    // Returns false if the message was canceled or completed concurrently.
+    internal async Task<bool> TryDeliverAsync(PendingMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        lock (syncRoot)
+        {
+            if (!pendingMessages.Remove(message))
+                return false;
+        }
+
+        await message.DeliverAsync().ConfigureAwait(false);
+        return true;
+    }
+
+    internal bool TryDrop(PendingMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        lock (syncRoot)
+        {
+            if (!pendingMessages.Remove(message))
+                return false;
+        }
+
+        message.Fail(new MemberUnavailableException(message.Member));
+        return true;
     }
 
     internal void Drop(PendingMessage message)

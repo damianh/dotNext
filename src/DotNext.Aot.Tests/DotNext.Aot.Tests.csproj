@@ -53,7 +53,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\cluster\DotNext.Net.Cluster\DotNext.Net.Cluster.csproj" />
+    <ProjectReference Include="..\cluster\DotNext.Net.Cluster\DotNext.Net.Cluster.csproj" AdditionalProperties="PublishAot=true" />
   </ItemGroup>
 
   <ItemGroup>

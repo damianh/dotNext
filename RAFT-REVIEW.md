@@ -105,6 +105,12 @@ state is obsolete. Subsequent membership changes fail or wait indefinitely.
 
 **Fix:** Release the lock in `finally` whenever acquisition succeeded.
 
+**Status:** Fixed for #17. The callback releases the lock if and only if it
+acquired it, including when the initiating leader state is obsolete, and
+tolerates `ObjectDisposedException` only while the cluster is disposing.
+`UnavailableMemberDetectionTests` covers these paths without elections or
+timers. Repairing the leak exposes C3 below; that is tracked separately.
+
 ## Persistence and recovery
 
 Paths in this section are additionally relative to `StateMachine\`.

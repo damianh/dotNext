@@ -8,7 +8,7 @@ using IO;
 using IO.Log;
 using NetworkTransport;
 
-internal sealed class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMember
+internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMember
 {
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
         ImmutableDictionary<string, string>.Empty;

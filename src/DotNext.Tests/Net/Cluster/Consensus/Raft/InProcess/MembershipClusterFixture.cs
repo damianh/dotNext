@@ -1,0 +1,336 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Net;
+using System.Runtime.CompilerServices;
+
+namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
+
+using Membership;
+using StateMachine;
+using Threading;
+
+/// <summary>
+/// Five WAL-backed voters and one joiner on a fully held in-process network.
+/// </summary>
+/// <remarks>
+/// Nothing progresses on its own: elections need <see cref="ElectAsync"/>, RPCs need
+/// <see cref="PumpAsync"/>, and applied configuration only reaches a node's member list
+/// through <see cref="MembershipNode.PropagateConfigurationAsync"/>.
+/// </remarks>
+internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
+{
+    internal const int VoterCount = 5;
+
+    internal enum MessageAction
+    {
+        Deliver,
+        Drop,
+        Hold,
+    }
+
+    internal readonly ManualTimeProvider TimeProvider = new();
+    internal readonly InProcessNetwork Network = new();
+    internal readonly EndPoint[] Voters;
+    internal readonly MembershipNode[] Nodes;
+
+    internal MembershipClusterFixture()
+    {
+        Voters = Enumerable.Range(0, VoterCount)
+            .Select(EndPoint (i) => new DnsEndPoint($"member-{i}", 0))
+            .ToArray();
+        Nodes = Enumerable.Range(0, VoterCount + 1)
+            .Select(i => new MembershipNode(Network, $"member-{i}", Voters, GetTempPath(), TimeProvider))
+            .ToArray();
+    }
+
+    internal MembershipNode Joiner => Nodes[^1];
+
+    internal async Task StartAsync()
+    {
+        foreach (var source in Nodes)
+        {
+            foreach (var target in Nodes)
+            {
+                if (!object.ReferenceEquals(source, target))
+                    Network.Hold(source.EndPoint, target.EndPoint);
+            }
+        }
+
+        foreach (var node in Nodes)
+            await node.StartAsync(TestToken);
+    }
+
+    /// <summary>
+    /// Elects the candidate by delivering only its pre-votes and votes.
+    /// </summary>
+    /// <param name="candidate">The node to elect.</param>
+    /// <param name="passWriteBarrier">
+    /// <see langword="true"/> to replicate until the new leader's no-op is applied;
+    /// <see langword="false"/> to leave the inherited tail uncommitted.
+    /// </param>
+    internal async Task ElectAsync(MembershipNode candidate, bool passWriteBarrier = true)
+    {
+        var elected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        candidate.LeaderChanged += OnLeaderChanged;
+        try
+        {
+            candidate.StartElectionTimer();
+            TimeProvider.Advance(TimeSpan.FromMilliseconds(100));
+            await PumpAsync(candidate, elected.Task, static message => message.MessageType is RaftMessageType.PreVote or RaftMessageType.Vote
+                ? MessageAction.Deliver
+                : MessageAction.Hold, forceRounds: false);
+        }
+        finally
+        {
+            candidate.LeaderChanged -= OnLeaderChanged;
+        }
+
+        if (passWriteBarrier)
+            await PumpAsync(candidate, candidate.WaitForLeadershipAsync(TestToken));
+
+        void OnLeaderChanged(RaftCluster<InProcessClusterMember> sender, InProcessClusterMember leader)
+        {
+            if (leader is not null && leader.Id == candidate.Id)
+                elected.TrySetResult();
+        }
+    }
+
+    /// <summary>
+    /// Replicates until the node has applied the specified index.
+    /// </summary>
+    internal Task ReplicateUntilAppliedAsync(MembershipNode leader, long index, Func<PendingMessage, MessageAction> filter = null)
+        => PumpAsync(leader, leader.Log.WaitForApplyAsync(index, TestToken).AsTask(), filter);
+
+    /// <summary>
+    /// Replicates the leader's log to one follower only; the rest of its outgoing RPCs are dropped.
+    /// </summary>
+    /// <remarks>
+    /// The leader loses quorum on the first such round and steps down, which is the point: the entries
+    /// reach exactly one follower and stay uncommitted.
+    /// </remarks>
+    internal async Task ReplicateOnlyToAsync(MembershipNode leader, MembershipNode follower, long index)
+    {
+        var target = follower.Id;
+        for (var attempt = 0; follower.Log.LastEntryIndex < index; attempt++)
+        {
+            True(attempt < 10, $"{follower.EndPoint} did not receive index {index}");
+
+            // Others are held until the follower has the entries: dropping them first makes the leader
+            // step down and cancel the in-flight append to the follower.
+            await PumpAsync(
+                leader,
+                ForceRoundAsync(leader),
+                message => message.TargetId == target && message.MessageType is RaftMessageType.AppendEntries
+                    ? MessageAction.Deliver
+                    : follower.Log.LastEntryIndex < index
+                        ? MessageAction.Hold
+                        : MessageAction.Drop,
+                forceRounds: false);
+        }
+    }
+
+    /// <summary>
+    /// Handles RPCs sent by <paramref name="source"/> until <paramref name="operation"/> completes.
+    /// </summary>
+    /// <remarks>
+    /// Timers never fire here. When <paramref name="forceRounds"/> is set and the source is the leader,
+    /// the pump keeps one forced replication round in flight, so a rejected append is retried in the
+    /// next round rather than waiting for a heartbeat deadline. The last round is completed before
+    /// returning, so no stale round leaks into the next step. Messages classified as
+    /// <see cref="MessageAction.Hold"/> stay queued for a later step.
+    /// </remarks>
+    internal async Task PumpAsync(MembershipNode source, Task operation, Func<PendingMessage, MessageAction> filter = null,
+        bool forceRounds = true)
+    {
+        filter ??= static _ => MessageAction.Deliver;
+        var sourceId = source.Id;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+        timeout.CancelAfter(DefaultTimeout); // deadlock guard, not a schedule
+        var round = Task.CompletedTask;
+        try
+        {
+            while (!operation.IsCompleted || !round.IsCompleted)
+            {
+                if (round.IsCompleted && !operation.IsCompleted && forceRounds)
+                    round = ForceRoundAsync(source);
+
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                var next = Network.WaitForMessageAsync(
+                    message => message.SourceId == sourceId && filter(message) is not MessageAction.Hold,
+                    wait.Token);
+                var wake = (operation.IsCompleted, round.IsCompleted) switch
+                {
+                    (true, _) => round,
+                    (_, true) => operation,
+                    _ => Task.WhenAny(operation, round),
+                };
+                if (!object.ReferenceEquals(await Task.WhenAny(next, wake), next))
+                {
+                    await wait.CancelAsync();
+                    await ((Task)next).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    timeout.Token.ThrowIfCancellationRequested();
+                    continue;
+                }
+
+                var message = await next;
+                if (filter(message) is MessageAction.Deliver)
+                    await Network.TryDeliverAsync(message);
+                else
+                    Network.TryDrop(message);
+            }
+        }
+        catch (OperationCanceledException e) when (e.CancellationToken == timeout.Token && !TestToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"{source.EndPoint} did not complete the pumped operation.", e);
+        }
+
+        await operation;
+    }
+
+    private static async Task ForceRoundAsync(MembershipNode source)
+    {
+        try
+        {
+            await source.ForceReplicationAsync(TestToken);
+        }
+        catch (NotLeaderException)
+        {
+            // the operation under test observes leadership loss itself
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            // A lifecycle regression must not hang the rest of the test process.
+            await Task.WhenAll(Nodes.Select(static node => node.DisposeAsync().AsTask()))
+                .WaitAsync(DefaultTimeout, TestToken);
+        }
+        finally
+        {
+            foreach (var node in Nodes)
+                await node.Log.DisposeAsync();
+        }
+    }
+
+    internal sealed class MembershipNode : InProcessCluster
+    {
+        private readonly InProcessNetwork network;
+
+        [SetsRequiredMembers]
+        internal MembershipNode(InProcessNetwork network, string name, EndPoint[] voters, string location, TimeProvider timeProvider)
+            : base(network, name, voters, CreateLog(voters, location), timeProvider, TimeSpan.FromMilliseconds(100), startFollower: false)
+        {
+            this.network = network;
+            Storage = (InMemoryClusterConfigurationStorage)Log.ConfigurationStorage;
+        }
+
+        private static WriteAheadLog CreateLog(EndPoint[] voters, string location)
+        {
+            var storage = new InMemoryClusterConfigurationStorage(EqualityComparer<EndPoint>.Default);
+            var builder = storage.CreateInitialConfigurationBuilder();
+            builder.UnionWith(voters);
+            builder.Build();
+            return new(new()
+            {
+                Location = location,
+                MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
+                FlushInterval = System.Threading.Timeout.InfiniteTimeSpan,
+            }, IStateMachine.CreateNoOp())
+            {
+                ConfigurationStorage = storage,
+            };
+        }
+
+        internal InMemoryClusterConfigurationStorage Storage { get; }
+
+        internal WriteAheadLog Log => (WriteAheadLog)AuditTrail;
+
+        internal bool IsMembershipLockHeld => Accessors<InProcessClusterMember>.MembershipLock(this).IsLockHeld;
+
+        internal ValueTask<IClusterConfiguration<EndPoint>> LoadConfigurationAsync()
+            => ((IClusterConfigurationStorage<EndPoint>)Storage).LoadConfigurationAsync(TestToken);
+
+        internal async ValueTask<long> LoadConfigurationVersionAsync()
+            => (await ((IClusterConfigurationStorage)Storage).LoadConfigurationAsync(TestToken)).Version;
+
+        /// <summary>
+        /// Adopts the applied configuration, as the production configuration polling loop does.
+        /// </summary>
+        internal async Task PropagateConfigurationAsync()
+        {
+            var config = await LoadConfigurationAsync();
+            await using var scope = await ChangeConfigurationAsync(TestToken);
+            foreach (var member in scope.Members.Values)
+            {
+                if (!config.Members.Contains(member.EndPoint))
+                    scope.MarkAsRemoved(member);
+            }
+
+            foreach (var address in config.Members)
+            {
+                if (!scope.Members.Values.Any(member => object.Equals(member.EndPoint, address)))
+                    scope.MarkAsAdded(new(this, network, address));
+            }
+        }
+
+        internal async Task<bool> AddAsync(EndPoint address, CancellationToken token)
+        {
+            using var member = new InProcessClusterMember(this, network, address);
+            return await AddMemberAsync(member, rounds: 10, Storage, static member => member.EndPoint, token);
+        }
+
+        internal Task<bool> RemoveAsync(EndPoint address, CancellationToken token)
+            => RemoveMemberAsync(ClusterMemberId.FromEndPoint(address), Storage, static member => member.EndPoint, token);
+
+        /// <summary>
+        /// Enters the production failure-detection callback on behalf of the current state.
+        /// </summary>
+        internal Task DetectAsync(EndPoint address)
+            => ((IRaftStateMachine<InProcessClusterMember>)this).UnavailableMemberDetected(
+                new CallerIdentity(Accessors<InProcessClusterMember>.State(this)),
+                GetMember(address),
+                AuditTrail.Term,
+                ConsensusToken);
+
+        /// <summary>
+        /// Calls the protected automatic-removal helper with a caller-supplied term.
+        /// </summary>
+        internal ValueTask RemoveUnavailableAsync(EndPoint address, long term, CancellationToken token)
+            => UnavailableMemberDetected(Storage, address, term, token);
+
+        /// <summary>
+        /// Appends a removal of <paramref name="address"/> to the local log without replicating it.
+        /// </summary>
+        internal async Task<long> AppendRemovalAsync(EndPoint address)
+        {
+            var config = await LoadConfigurationAsync();
+            True(IClusterConfiguration<EndPoint>.TryRemove(ref config, address));
+            return await Log.AppendAsync(config, TestToken);
+        }
+
+        // mirrors RaftCluster.DefaultImpl and RaftHttpCluster
+        protected override ValueTask UnavailableMemberDetected(InProcessClusterMember member, long term, CancellationToken token)
+            => UnavailableMemberDetected(Storage, member.EndPoint, term, token);
+    }
+
+    private static class Accessors<TMember>
+        where TMember : class, IRaftClusterMember, IDisposable
+    {
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "state")]
+        internal static extern ref RaftState<TMember> State(RaftCluster<TMember> cluster);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "membershipLock")]
+        internal static extern ref AsyncExclusiveLock MembershipLock(RaftCluster<TMember> cluster);
+    }
+
+    private sealed class CallerIdentity(object state) : IRaftStateMachine.IWeakCallerStateIdentity
+    {
+        private readonly WeakReference<object> target = new(state);
+
+        public bool IsValid([NotNullWhen(true)] object state)
+            => target.TryGetTarget(out var expected) && object.ReferenceEquals(expected, state);
+
+        public void Clear() => target.SetTarget(null);
+    }
+}

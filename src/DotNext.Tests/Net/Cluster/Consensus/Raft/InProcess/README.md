@@ -81,6 +81,7 @@ task completes, so borrowed log-entry payloads remain alive.
 The harness uses fixed membership. Configuration and snapshot installation
 invoke the production handlers with the caller's configuration storage;
 it does not emulate dynamic membership discovery or socket serialization.
+`MembershipClusterFixture` (below) adopts applied configurations explicitly.
 
 `RestartAsync` always requires a callback that explicitly chooses the durable
 state for the replacement:
@@ -158,4 +159,40 @@ outcomes, the overflow buffer, and reuse after late replies. Run both layers wit
 
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils.*' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.QuorumLossTests' --progress off --timeout 90s
+```
+
+## Membership changes
+
+`MembershipClusterFixture` runs five WAL-backed voters and one joiner, each with
+`InMemoryClusterConfigurationStorage`, on a network where every link is held.
+Nothing progresses on its own:
+
+- `ElectAsync(candidate, passWriteBarrier)` delivers only pre-votes and votes,
+  then optionally replicates until the new leader's no-op is applied. Pass
+  `false` to leave an inherited tail unapplied.
+- `PumpAsync(source, operation, filter)` handles the source's RPCs until the
+  operation completes. The filter returns `Deliver`, `Drop`, or `Hold`. For a
+  leader it keeps one forced round in flight, so rejected appends are retried
+  without heartbeat deadlines.
+- `ReplicateOnlyToAsync(leader, follower, index)` gives the entries to one
+  follower and then drops the rest, so the leader steps down with the entries
+  uncommitted. It holds the other RPCs until the follower has the entries,
+  because dropping them first makes the leader step down and cancel the
+  follower's in-flight append.
+- The applied configuration reaches a node's member list only through
+  `MembershipNode.PropagateConfigurationAsync`, the same path the production
+  polling loop takes. This keeps "applied" and "adopted" as separate,
+  controllable steps.
+- `DetectAsync` invokes the production unavailable-member callback (under
+  `membershipLock`). `AppendRemovalAsync` appends an unreplicated removal
+  directly, to model a change that reached only part of the cluster.
+
+`MembershipConfigurationTests` covers issue #18: a manual add/remove, a second
+detection, and a change by a new leader must each preserve an unapplied removal.
+It also covers the stale-term detection and single-entry appends.
+`TermGuardedAppendTests` covers the log-level term guard for the WAL and
+`ConsensusOnlyState`.
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipHarnessTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 180s
 ```

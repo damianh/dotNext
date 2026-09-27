@@ -37,7 +37,7 @@ internal static class WalCheckpointAssertions
                 return BinaryPrimitives.ReadInt64LittleEndian(content.Slice(sizeof(uint)));
         }
 
-        Equal(1U, BinaryPrimitives.ReadUInt32LittleEndian(content));
+        Equal(2U, BinaryPrimitives.ReadUInt32LittleEndian(content));
         var blockSize = BinaryPrimitives.ReadInt32LittleEndian(content.Slice(12));
         Equal(blockSize * 3, content.Length);
         var first = ReadSlot(content.Slice(blockSize, blockSize));
@@ -46,7 +46,7 @@ internal static class WalCheckpointAssertions
 
         static (long Generation, long CommittedIndex) ReadSlot(ReadOnlySpan<byte> slot)
         {
-            Equal(1U, BinaryPrimitives.ReadUInt32LittleEndian(slot));
+            Equal(2U, BinaryPrimitives.ReadUInt32LittleEndian(slot));
             Equal(Crc64.HashToUInt64(slot[..^sizeof(ulong)]),
                 BinaryPrimitives.ReadUInt64LittleEndian(slot[^sizeof(ulong)..]));
             return (BinaryPrimitives.ReadInt64LittleEndian(slot.Slice(64)),

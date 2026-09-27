@@ -98,6 +98,11 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 durableState = new(cp.Checkpoint, cp.Checkpoint, 0UL, 0L, 0L);
                 break;
             case CheckpointVersion1 cp:
+                // upstream dotNext 6.8 layout: entries up to LastIndex were flushed before the checkpoint was written
+                lastReliablyWrittenEntryIndex = cp.Checkpoint;
+                durableState = new(cp.Checkpoint, long.Max(cp.Checkpoint, cp.LastIndex), 0UL, 0L, 0L);
+                break;
+            case CheckpointVersion2 cp:
                 durableState = cp;
                 lastReliablyWrittenEntryIndex = cp.Checkpoint;
                 break;
@@ -117,31 +122,36 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
 
             dataLocation.CreateIfNeeded();
 
+            // Metadata pages always have a fixed size for portability across hosts with different OS page sizes
             PageManager m, d;
             switch (configuration.MemoryManagement)
             {
-                case MemoryManagementStrategy.PrivateMemory when OperatingSystem.IsWindows() && configuration.NoBuffering:
-                    m = new WindowsDirectPageManager(metadataLocation, int.Max(Page.MinSize, Environment.SystemPageSize));
+                case MemoryManagementStrategy.PrivateMemory when OperatingSystem.IsWindows()
+                                                                 && configuration.NoBuffering
+                                                                 && WindowsDirectPageManager.IsAllowed(metadataLocation, Page.MinSize):
+                    m = new WindowsDirectPageManager(metadataLocation, Page.MinSize);
                     d = new WindowsDirectPageManager(dataLocation, configuration.ChunkSize);
                     break;
-                case MemoryManagementStrategy.PrivateMemory when OperatingSystem.IsLinux() && configuration.NoBuffering:
-                    m = new LinuxDirectPageManager(metadataLocation, int.Max(Page.MinSize, Environment.SystemPageSize));
+                case MemoryManagementStrategy.PrivateMemory when OperatingSystem.IsLinux()
+                                                                 && configuration.NoBuffering
+                                                                 && LinuxDirectPageManager.IsAllowed(metadataLocation, Page.MinSize):
+                    m = new LinuxDirectPageManager(metadataLocation, Page.MinSize);
                     d = new LinuxDirectPageManager(dataLocation, configuration.ChunkSize);
                     break;
                 case MemoryManagementStrategy.PrivateMemory:
-                    m = new AnonymousPageManager(metadataLocation, int.Max(Page.MinSize, Environment.SystemPageSize));
+                    m = new AnonymousPageManager(metadataLocation, Page.MinSize);
                     d = new AnonymousPageManager(dataLocation, configuration.ChunkSize);
                     break;
                 case MemoryManagementStrategy.SharedMemory:
                 default:
-                    m = new MemoryMappedPageManager(metadataLocation, int.Max(Page.MinSize, Environment.SystemPageSize));
+                    m = new MemoryMappedPageManager(metadataLocation, Page.MinSize);
                     d = new MemoryMappedPageManager(dataLocation, configuration.ChunkSize);
                     break;
             }
             
             metadataPages = new(m, hash?.HashLengthInBytes ?? 0);
             overwriteJournal.Recover(durableState, metadataPages);
-            var writePosition = version is CheckpointVersion1
+            var writePosition = version is CheckpointVersion2
                 ? durableState.WritePosition
                 : metadataPages.TryGetMetadata(durableState.LastIndex, out var metadata) ? metadata.End : 0UL;
             dataPages = new(d)

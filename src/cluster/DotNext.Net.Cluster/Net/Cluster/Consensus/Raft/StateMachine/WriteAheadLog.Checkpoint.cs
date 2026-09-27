@@ -77,7 +77,7 @@ partial class WriteAheadLog
 
                 var length = RandomAccess.GetLength(handle);
                 if (format is not null && length != FileSize)
-                    throw new IntegrityException("The version-1 WAL checkpoint is truncated.");
+                    throw new IntegrityException("The version-2 WAL checkpoint is truncated.");
 
                 switch (length)
                 {
@@ -106,13 +106,20 @@ partial class WriteAheadLog
                                 break;
                             case CheckpointVersion0.Version:
                                 throw new IntegrityException("Invalid version-0 WAL checkpoint length or upgrade state.");
-                            case CheckpointVersion1.Version when length == FileSize:
-                                var current = ReadVersion1(format, pending);
+                            case CheckpointVersion1.Version when length == VersionLength + CheckpointVersion1.Size
+                                                                 && format is null && pending is null:
+                                ReadExactly(handle, buffer.AsSpan(0, CheckpointVersion1.Size), VersionLength);
+                                checkpoint = ValidateLegacy(CheckpointVersion1.Parse(buffer));
+                                break;
+                            case CheckpointVersion1.Version:
+                                throw new IntegrityException("Invalid upstream version-1 WAL checkpoint length or upgrade state.");
+                            case CheckpointVersion2.Version when length == FileSize:
+                                var current = ReadVersion2(format, pending);
                                 Generation = current.Generation;
                                 checkpoint = current;
                                 break;
-                            case CheckpointVersion1.Version:
-                                throw new IntegrityException("Invalid version-1 WAL checkpoint length.");
+                            case CheckpointVersion2.Version:
+                                throw new IntegrityException("Invalid version-2 WAL checkpoint length.");
                             default:
                                 checkpoint = null;
                                 break;
@@ -143,7 +150,12 @@ partial class WriteAheadLog
                 ? new(checkpoint)
                 : throw new IntegrityException("The legacy WAL checkpoint index is negative.");
 
-        private CheckpointVersion1 ReadVersion1(byte[]? format, byte[]? pending)
+        private static CheckpointVersion1 ValidateLegacy(CheckpointVersion1 checkpoint)
+            => checkpoint is { Checkpoint: >= 0L, LastIndex: >= 0L }
+                ? checkpoint
+                : throw new IntegrityException("The legacy WAL checkpoint index is negative.");
+
+        private CheckpointVersion2 ReadVersion2(byte[]? format, byte[]? pending)
         {
             ReadExactly(handle!, buffer, 0L);
             if (!ValidateRecord(buffer, HeaderMagic)
@@ -212,7 +224,7 @@ partial class WriteAheadLog
             return a.Generation > b.Generation ? a : b;
         }
 
-        private CheckpointVersion1? ReadSlot(int slot)
+        private CheckpointVersion2? ReadSlot(int slot)
         {
             ReadExactly(handle!, buffer, SlotOffset(slot));
             if (!buffer.AsSpan().ContainsAnyExcept((byte)0) || !HasValidChecksum(buffer))
@@ -226,7 +238,7 @@ partial class WriteAheadLog
                 throw new IntegrityException("Invalid WAL checkpoint generation record.");
             }
 
-            var checkpoint = new CheckpointVersion1(
+            var checkpoint = new CheckpointVersion2(
                 BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(32)),
                 BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(40)),
                 BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(48)),
@@ -236,7 +248,7 @@ partial class WriteAheadLog
             return checkpoint;
         }
 
-        private static void Validate(CheckpointVersion1 checkpoint)
+        private static void Validate(CheckpointVersion2 checkpoint)
         {
             if (checkpoint.Checkpoint < 0L || checkpoint.LastIndex < checkpoint.Checkpoint
                 || checkpoint.SnapshotIndex < 0L || checkpoint.SnapshotIndex > checkpoint.Checkpoint
@@ -255,7 +267,7 @@ partial class WriteAheadLog
 
         private static long SlotOffset(int slot) => (slot + 1L) * BlockSize;
 
-        public async ValueTask UpdateAsync(CheckpointVersion1 checkpoint, CancellationToken token)
+        public async ValueTask UpdateAsync(CheckpointVersion2 checkpoint, CancellationToken token)
         {
             ObjectDisposedException.ThrowIf(handle is null || handle.IsClosed, this);
             Validate(checkpoint);
@@ -263,11 +275,11 @@ partial class WriteAheadLog
                 throw new ArgumentOutOfRangeException(nameof(checkpoint), "Checkpoint generations must be consecutive.");
 
             token.ThrowIfCancellationRequested();
-            if (Version == CheckpointVersion0.Version)
+            if (Version is CheckpointVersion0.Version or CheckpointVersion1.Version)
             {
                 await UpgradeAsync(checkpoint, token).ConfigureAwait(false);
             }
-            else if (Version == CheckpointVersion1.Version)
+            else if (Version == CheckpointVersion2.Version)
             {
                 // A recovered upgrade may have stopped between primary
                 // publication and its permanent format marker.
@@ -299,7 +311,7 @@ partial class WriteAheadLog
             Generation = checkpoint.Generation;
         }
 
-        private async ValueTask UpgradeAsync(CheckpointVersion1 checkpoint, CancellationToken token)
+        private async ValueTask UpgradeAsync(CheckpointVersion2 checkpoint, CancellationToken token)
         {
             identity = Guid.NewGuid();
             var preparedPath = Path.Combine(location.FullName, PreparedFileName);
@@ -316,7 +328,7 @@ partial class WriteAheadLog
             }
 
             // The legacy primary is untouched until a complete replacement is
-            // durable. The published primary starts with version 1, so old
+            // durable. The published primary starts with version 2, so old
             // binaries reject it instead of opening a legacy-looking sidecar.
             handle!.Dispose();
             try
@@ -327,7 +339,7 @@ partial class WriteAheadLog
             {
                 handle = Open();
             }
-            Version = CheckpointVersion1.Version;
+            Version = CheckpointVersion2.Version;
             PublishFormat();
         }
 
@@ -352,13 +364,13 @@ partial class WriteAheadLog
         private void InitializeRecord(Span<byte> record, uint magic)
         {
             record.Clear();
-            BinaryPrimitives.WriteUInt32LittleEndian(record, CheckpointVersion1.Version);
+            BinaryPrimitives.WriteUInt32LittleEndian(record, CheckpointVersion2.Version);
             BinaryPrimitives.WriteUInt32LittleEndian(record.Slice(4), magic);
             BinaryPrimitives.WriteInt32LittleEndian(record.Slice(8), record.Length);
             identity.TryWriteBytes(record.Slice(16, 16));
         }
 
-        private void FormatSlot(CheckpointVersion1 checkpoint)
+        private void FormatSlot(CheckpointVersion2 checkpoint)
         {
             InitializeRecord(buffer, SlotMagic);
             BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(32), checkpoint.Checkpoint);
@@ -427,7 +439,7 @@ partial class WriteAheadLog
                 return false;
 
             var version = BinaryPrimitives.ReadUInt32LittleEndian(record);
-            if (version != CheckpointVersion1.Version)
+            if (version != CheckpointVersion2.Version)
                 throw new UnsupportedCheckpointVersionException(version);
 
             return BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(4)) == magic
@@ -463,10 +475,41 @@ partial class WriteAheadLog
         static abstract uint Version { get; }
     }
 
-    private readonly record struct CheckpointVersion1(long Checkpoint, long LastIndex, ulong WritePosition, long SnapshotIndex, long Generation)
+    private readonly record struct CheckpointVersion2(long Checkpoint, long LastIndex, ulong WritePosition, long SnapshotIndex, long Generation)
         : IVersionedCheckpoint
     {
+        // Version 1 is reserved for the upstream dotNext 6.8 checkpoint layout
+        public const uint Version = 2;
+
+        static uint IVersionedCheckpoint.Version => Version;
+    }
+
+    // Upstream dotNext 6.8 checkpoint layout: version prefix followed by the commit index and the last flushed index.
+    // Accepted only as a legacy input that is upgraded to version 2 on the first durable update.
+    [StructLayout(LayoutKind.Auto)]
+    private readonly struct CheckpointVersion1(long commitIndex, long lastIndex) : IBinaryFormattable<CheckpointVersion1>, IVersionedCheckpoint
+    {
         public const uint Version = 1;
+        public const int Size = sizeof(long) + sizeof(long);
+
+        static int IBinaryFormattable<CheckpointVersion1>.Size => Size;
+
+        public void Format(scoped Span<byte> destination)
+        {
+            var writer = new SpanWriter<byte>(destination);
+            writer.WriteLittleEndian(commitIndex);
+            writer.WriteLittleEndian(lastIndex);
+        }
+
+        public static CheckpointVersion1 Parse(scoped ReadOnlySpan<byte> source)
+        {
+            var reader = new SpanReader<byte>(source);
+            return new(reader.ReadLittleEndian<long>(), reader.ReadLittleEndian<long>());
+        }
+
+        public long Checkpoint => commitIndex;
+
+        public long LastIndex => lastIndex;
 
         static uint IVersionedCheckpoint.Version => Version;
     }

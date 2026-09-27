@@ -45,14 +45,12 @@ partial class WriteAheadLog
         public uint GetPageIndex(ulong address, out int offset)
             => WriteAheadLog.GetPageIndex(address, PageSize, out offset);
 
-        protected static IEnumerable<uint> GetPages(DirectoryInfo location)
-        {
-            return location.EnumerateFiles()
+        protected static ReadOnlySpan<uint> GetPages(DirectoryInfo location)
+            => location.EnumerateFiles()
                 .Select(static info => uint.TryParse(info.Name, provider: null, out var pageIndex) ? new uint?(pageIndex) : null)
                 .Where(static pageIndex => pageIndex.HasValue)
                 .Select(static pageIndex => pageIndex.GetValueOrDefault())
                 .ToArray();
-        }
 
         public static void ValidatePageSize(DirectoryInfo location, int pageSize)
         {
@@ -72,7 +70,7 @@ partial class WriteAheadLog
         protected static int GetPages(DirectoryInfo location, out ReadOnlySpan<uint> pages)
         {
             const int minimumDictionaryCapacity = 11;
-            pages = GetPages(location).ToArray();
+            pages = GetPages(location);
             return Math.Min(pages.Length, minimumDictionaryCapacity);
         }
 

@@ -40,14 +40,18 @@ should account for the additional append latency and prefer batch appends
 where appropriate. Recovered uncommitted entries are neither committed nor
 applied until Raft subsequently commits them.
 
-The first durable update upgrades legacy raw-index/version-0 checkpoints to
-version 1. This is a **one-way store upgrade**: older binaries reject the new
+The first durable update upgrades legacy raw-index/version-0 checkpoints and
+upstream dotNext 6.8 version-1 checkpoints to version 2. This is a
+**one-way store upgrade**: older binaries, including upstream dotNext, reject the new
 checkpoint version. Preserve a backup before upgrading if a binary rollback
 is required; do not downgrade an active cluster by restoring stale node stores.
-Legacy stores recover only their known committed/snapshot history. The upgrade
+Legacy version-0 stores recover only their known committed/snapshot history;
+upstream version-1 stores also recover their recorded flushed tail. The upgrade
 cannot certify old uncommitted page bytes or recover previously lost writes.
 Back up a stopped WAL directory as a whole, including its checkpoint format
 marker, publication intent, and overwrite journal when present.
+See [FORK-DIVERGENCE.md](../../FORK-DIVERGENCE.md) for all fork behaviour that differs
+from upstream dotNext.
 
 The new checkpoint records appended and committed boundaries separately and
 uses checksummed generations. Metadata replacement is protected by a durable

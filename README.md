@@ -7,6 +7,8 @@
 [![CodeQL](https://github.com/dotnet/dotNext/workflows/CodeQL/badge.svg)](https://github.com/dotnet/dotNext/actions?query=workflow%3ACodeQL)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dotnet/dotNext)
 
+> This is a fork of [dotnet/dotNext](https://github.com/dotnet/dotNext). See [FORK-DIVERGENCE.md](FORK-DIVERGENCE.md) for behaviour that differs from upstream and the upstream sync log, and [RAFT-REVIEW.md](RAFT-REVIEW.md) for the Raft review.
+
 .NEXT (dotNext) is a set of powerful libraries designed for high-performance scenarios when your application expects near zero memory allocation and high flexibility. It is aimed to high-load microservices, database engines, actors, and various types of distributed applications. The feature list includes a rich set of efficient tools with low overhead:
 * [Buffer manipulations](https://dotnet.github.io/dotNext/features/io/buffers.html)
 * [String building](https://dotnet.github.io/dotNext/features/core/stringb.html)
@@ -32,34 +34,13 @@ All these things are implemented in 100% managed code on top of existing .NET AP
 * [NuGet Packages](https://www.nuget.org/profiles/rvsakno)
 
 # What's new
-Release Date: 09-05-2026
+Release Date: 09-22-2026
 
-<a href="https://www.nuget.org/packages/dotnext/6.7.1">DotNext 6.7.1</a>
-* `FromPointer` migrated from handwritten IL code to fast reflection using [UnsafeAccessor](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.unsafeaccessorattribute), which is more portable across .NET versions
+<a href="https://www.nuget.org/packages/dotnext.net.cluster/6.8.1">DotNext.Net.Cluster 6.8.1</a>
+* Fixed [299](https://github.com/dotnet/dotNext/issues/299)
 
-<a href="https://www.nuget.org/packages/dotnext.metaprogramming/6.7.1">DotNext.Metaprogramming 6.7.1</a>
-* Updated dependencies
-
-<a href="https://www.nuget.org/packages/dotnext.unsafe/6.7.1">DotNext.Unsafe 6.7.1</a>
-* Updated dependencies
-
-<a href="https://www.nuget.org/packages/dotnext.threading/6.7.1">DotNext.Threading 6.7.1</a>
-* Updated dependencies
-
-<a href="https://www.nuget.org/packages/dotnext.io/6.7.1">DotNext.IO 6.7.1</a>
-* Updated dependencies
-
-<a href="https://www.nuget.org/packages/dotnext.net.cluster/6.7.1">DotNext.Net.Cluster 6.7.1</a>
-* Optimized catch up of the temporary unavailable node when it becomes available again for the leader. Outdated leader now can report last WAL index, so the leader can adjust replication position for the node much faster than just decrementing it speculatively in every replication round
-* Added stricter control for the order of state machine recovery and WAL initialization
-
-<a href="https://www.nuget.org/packages/dotnext.aspnetcore.cluster/6.7.1">DotNext.AspNetCore.Cluster 6.7.1</a>
-* Optimized catch up of the temporary unavailable node when it becomes available again for the leader. Outdated leader now can report last WAL index, so the leader can adjust replication position for the node much faster than just decrementing it speculatively in every replication round
-* Added stricter control for the order of state machine recovery and WAL initialization
-* Added appropriate XML remarks to the DI configuration methods
-
-<a href="https://www.nuget.org/packages/dotnext.maintenanceservices/1.7.1">DotNext.MaintenanceServices 1.7.1</a>
-* Updated dependencies
+<a href="https://www.nuget.org/packages/dotnext.aspnetcore.cluster/6.8.1">DotNext.AspNetCore.Cluster 6.8.1</a>
+* Fixed [299](https://github.com/dotnet/dotNext/issues/299)
 
 # Release & Support Policy
 The libraries are versioned according to [Semantic Versioning 2.0](https://semver.org/).

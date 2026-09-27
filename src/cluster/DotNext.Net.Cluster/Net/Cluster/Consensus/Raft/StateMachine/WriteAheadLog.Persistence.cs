@@ -7,7 +7,7 @@ partial class WriteAheadLog
     private readonly AsyncExclusiveLock persistenceLock = new();
     private readonly OverwriteJournal overwriteJournal;
     private readonly DirectoryInfo dataLocation, metadataLocation;
-    private CheckpointVersion1 durableState;
+    private CheckpointVersion2 durableState;
     private long stagedLastIndex;
 
     // Call under Append (and, for replacements, Overwrite) and persistenceLock after pre-mutation checks.
@@ -47,7 +47,7 @@ partial class WriteAheadLog
     private async ValueTask PersistCheckpointAsync(long lastIndex, long committedIndex,
         long snapshotIndex, ulong writePosition, CancellationToken token)
     {
-        var next = new CheckpointVersion1(
+        var next = new CheckpointVersion2(
             long.Max(durableState.Checkpoint, committedIndex),
             lastIndex,
             writePosition,

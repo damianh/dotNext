@@ -84,6 +84,8 @@ Merge base `d46d29859` (Release 6.7.1).
 * IO: `UnbufferedFileStream` flush via function pointers. `ILogCompactionSupport` was removed.
 * HTTP transport (dotnet/dotNext#299): tolerant parsing of the state version, last index and command ID headers,
   for rolling upgrades.
+  `X-Raft-State-Version` and `X-Raft-Last-Index` fall back only when absent; malformed present values are protocol
+  errors.
 * `RaftClusterMember.ResignAsync` and `GetMetadataAsync` became public, and `TryGetMetadata()` was added.
 * A removed member can rejoin the cluster (`FreezeAsync`, resumable standby, readiness probe reset). It is merged
   with the fork's membership lock (#46).

@@ -119,6 +119,13 @@ internal abstract class HttpMessage
             : throw new RaftProtocolException(ExceptionMessages.MissingHeader(headerName));
     }
 
+    private protected static T ParseOptionalHeader<T>(IDictionary<string, StringValues>? headers, string headerName, ValueParser<T> parser,
+        T defaultValue)
+        where T : notnull
+        => headers is null || !headers.ContainsKey(headerName)
+            ? defaultValue
+            : ParseHeader(headers, headerName, parser);
+
     private protected static string ParseHeader(IDictionary<string, StringValues>? headers, string headerName)
         => ParseHeader(headers, headerName, StringParser);
 
@@ -145,6 +152,12 @@ internal abstract class HttpMessage
             ? result.ValueOrDefault
             : throw new RaftProtocolException(ExceptionMessages.MissingHeader(headerName));
     }
+
+    private protected static T ParseOptionalHeader<T>(HttpHeaders? headers, string headerName, ValueParser<T> parser, T defaultValue)
+        where T : notnull
+        => headers is null || !headers.Contains(headerName)
+            ? defaultValue
+            : ParseHeader(headers, headerName, parser);
 
     private protected static string ParseHeader(HttpHeaders? headers, string headerName)
         => ParseHeader(headers, headerName, StringParser);

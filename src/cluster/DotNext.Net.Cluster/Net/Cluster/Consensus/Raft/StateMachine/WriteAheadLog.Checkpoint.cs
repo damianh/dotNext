@@ -151,9 +151,14 @@ partial class WriteAheadLog
                 : throw new IntegrityException("The legacy WAL checkpoint index is negative.");
 
         private static CheckpointVersion1 ValidateLegacy(CheckpointVersion1 checkpoint)
-            => checkpoint is { Checkpoint: >= 0L, LastIndex: >= 0L }
+        {
+            if (checkpoint is not { Checkpoint: >= 0L, LastIndex: >= 0L })
+                throw new IntegrityException("The legacy WAL checkpoint index is negative.");
+
+            return checkpoint.LastIndex >= checkpoint.Checkpoint
                 ? checkpoint
-                : throw new IntegrityException("The legacy WAL checkpoint index is negative.");
+                : throw new IntegrityException("Invalid legacy WAL checkpoint boundaries.");
+        }
 
         private CheckpointVersion2 ReadVersion2(byte[]? format, byte[]? pending)
         {

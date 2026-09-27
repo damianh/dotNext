@@ -318,7 +318,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
         if (readinessProbe.Task.IsCompletedSuccessfully)
         {
-            Volatile.Write(ref readinessProbe, new(TaskCreationOptions.RunContinuationsAsynchronously));
+            var newReadinessProbe = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // full fence: disposal sets its flag with a CAS and then reads the probe, so this store must precede the flag read
+            Interlocked.Exchange(ref readinessProbe, newReadinessProbe);
+
+            if (IsDisposingOrDisposed)
+                TrySetDisposedException(newReadinessProbe);
         }
 
         // local member is removed, but can be added later, so the state is resumable
@@ -1478,7 +1483,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             membershipLock.Dispose();
             transitionLock.Dispose();
             state.Dispose();
-            TrySetDisposedException(readinessProbe);
+            TrySetDisposedException(Volatile.Read(in readinessProbe));
 
             memberAddedHandlers = memberRemovedHandlers = default;
             leaderChangedHandlers = default;

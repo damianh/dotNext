@@ -83,13 +83,21 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(512UL, recovered.Read<ulong>("WritePosition"));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(-1L, 0L)]
     [InlineData(0L, -1L)]
     public static void NegativeUpstreamVersion1IndexIsRejected(long commitIndex, long lastIndex)
     {
         var location = CreateLocation();
         File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint"), CreateUpstreamVersion1(commitIndex, lastIndex));
+        Throws<IntegrityException>(() => new CheckpointFile(location));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static void UpstreamVersion1CommitAfterLastIndexIsRejected()
+    {
+        var location = CreateLocation();
+        File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint"), CreateUpstreamVersion1(commitIndex: 2L, lastIndex: 1L));
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 

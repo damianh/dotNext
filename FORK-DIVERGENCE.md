@@ -29,17 +29,17 @@ upstream sync is merged.
 
 * The fork's format was first numbered `1` and was renumbered to `2` during the 6.8.1 sync, because upstream's new
   format also claimed version `1`. The fork has no deployments, so no stores that used the old number exist.
-* A store written by upstream 6.8.x can be opened by the fork. Its last index is trusted as durable, because upstream
-  writes it only after the pages have been flushed. The first durable update upgrades the store to version 2, and
-  upstream cannot read it after that.
+* A store written by upstream 6.8.x can be opened by the fork when its last index is at least its commit index.
+  Its last index is trusted as durable, because upstream writes it only after the pages have been flushed. The first
+  durable update upgrades the store to version 2, and upstream cannot read it after that.
 * Version 0 migration assumes the same metadata page size that upstream 6.8.1 uses when it opens legacy stores:
   4 KiB. Version 0 stores written on hosts whose OS page size was larger than 4 KiB are not supported
   migration inputs, matching upstream 6.8.1.
 * Upstream keeps no metadata record at a snapshot boundary (for example after snapshot catch-up), so for version 0 and
-  1 stores whose last index is a snapshot index with no metadata, the fork rebuilds the boundary record. Version 2
-  stores still require it and are rejected without it.
-* Checkpoints with unknown versions, with a length that does not match their version, or with negative indices are
-  rejected with `IntegrityException`.
+  1 stores whose last index is covered by the restored snapshot, the fork rebuilds the boundary record even if the
+  metadata page already exists. Version 2 stores still require it and are rejected without it.
+* Checkpoints with unknown versions, with a length that does not match their version, with negative indices, or with
+  an upstream version-1 last index below its commit index are rejected with `IntegrityException`.
 
 ### WAL internals kept from the fork (upstream versions were rejected)
 * **Cleaner:** snapshot boundary metadata is kept valid by `WriteSnapshotBoundary` (fork #41). Upstream's
@@ -52,6 +52,11 @@ upstream sync is merged.
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
 * The metadata page size is a constant 4 KiB, as in upstream 6.8.1 (portable to ARM64 hosts with 16 KiB pages).
+
+### Delegate function-pointer equality
+* In the non-JIT function-pointer delegate fallback, open and closed delegate targets are not equal unless
+  their runtime types match. Upstream 6.8.1 compares the base target to any derived target by pointer
+  alone, which is asymmetric with the closed-delegate target comparison.
 
 ## API differences
 | API | Upstream | Fork |

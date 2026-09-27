@@ -100,7 +100,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             case CheckpointVersion1 cp:
                 // upstream dotNext 6.8 layout: entries up to LastIndex were flushed before the checkpoint was written
                 lastReliablyWrittenEntryIndex = cp.Checkpoint;
-                durableState = new(cp.Checkpoint, long.Max(cp.Checkpoint, cp.LastIndex), 0UL, 0L, 0L);
+                durableState = new(cp.Checkpoint, cp.LastIndex, 0UL, 0L, 0L);
                 break;
             case CheckpointVersion2 cp:
                 durableState = cp;
@@ -155,12 +155,11 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 ? durableState.WritePosition
                 : metadataPages.TryGetMetadata(durableState.LastIndex, out var metadata) ? metadata.End : 0UL;
 
-            // Upstream stores keep no metadata record at a snapshot boundary, and their cleaner may have deleted its page.
-            // Such a tail is rebuilt as a fork snapshot boundary, starting at the same write position as upstream would.
+            // Upstream stores keep no metadata record at a snapshot boundary. Even if the page exists, the boundary
+            // slot may be unwritten or stale, so legacy tails covered by the restored snapshot are rematerialized.
             var legacySnapshotBoundary = version is not CheckpointVersion2
                                          && durableState.LastIndex > 0L
-                                         && durableState.LastIndex <= snapshotIndex
-                                         && !metadataPages.TryGetMetadata(durableState.LastIndex, out _);
+                                         && durableState.LastIndex <= snapshotIndex;
             dataPages = new(d)
             {
                 LastWrittenAddress = writePosition,

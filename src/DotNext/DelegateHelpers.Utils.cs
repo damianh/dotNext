@@ -78,7 +78,7 @@ public static partial class DelegateHelpers
         public sealed override string ToString() => pointer.ToString("X");
 
         public override bool Equals([NotNullWhen(true)] object? other)
-            => other is MethodPointer methodPtr && methodPtr.pointer == pointer;
+            => other is MethodPointer methodPtr && methodPtr.GetType() == GetType() && methodPtr.pointer == pointer;
 
         public override int GetHashCode() => pointer.GetHashCode();
     }

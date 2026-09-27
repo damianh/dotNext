@@ -140,6 +140,50 @@ public sealed class WriteAheadLogRecoveryBoundaryTests : Test
         Equal("after upgrade", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(0U)]
+    [InlineData(1U)]
+    public static async Task LegacyCheckpointAtSnapshotBoundaryWithEmptyMetadataSlotRebuildsBoundary(uint version)
+    {
+        const long boundary = SnapshotIndex;
+        const int metadataPageSize = 4096;
+        var options = CreateOptions();
+        Directory.CreateDirectory(options.Location);
+        Directory.CreateDirectory(Path.Combine(options.Location, "metadata"));
+        File.WriteAllBytes(Path.Combine(options.Location, "metadata", "0"), new byte[metadataPageSize]);
+
+        byte[] checkpoint;
+        if (version is 0U)
+        {
+            checkpoint = new byte[sizeof(long)];
+            BinaryPrimitives.WriteInt64LittleEndian(checkpoint, boundary);
+        }
+        else
+        {
+            checkpoint = new byte[sizeof(uint) + sizeof(long) + sizeof(long)];
+            BinaryPrimitives.WriteUInt32LittleEndian(checkpoint, version);
+            BinaryPrimitives.WriteInt64LittleEndian(checkpoint.AsSpan(sizeof(uint)), boundary);
+            BinaryPrimitives.WriteInt64LittleEndian(checkpoint.AsSpan(sizeof(uint) + sizeof(long)), boundary);
+        }
+
+        File.WriteAllBytes(Path.Combine(options.Location, "checkpoint"), checkpoint);
+
+        await using (var wal = new WriteAheadLog(options, new SnapshotStateMachine(boundary)))
+        {
+            await wal.InitializeAsync(TestToken);
+            await wal.FlushAsync(TestToken);
+        }
+
+        var metadataBytes = File.ReadAllBytes(Path.Combine(options.Location, "metadata", "0"));
+        var recordSize = checked((int)BitOperations.RoundUpToPowerOf2((uint)LogEntryMetadata.Size));
+        Equal(1L, BinaryPrimitives.ReadInt64LittleEndian(metadataBytes.AsSpan(checked((int)boundary) * recordSize)));
+
+        await using var reopened = new WriteAheadLog(options, new SnapshotStateMachine(boundary));
+        await reopened.InitializeAsync(TestToken);
+        Equal(boundary, reopened.LastEntryIndex);
+        Equal(boundary, reopened.LastCommittedEntryIndex);
+    }
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyStoreDoesNotRequireMetadataForIndexZero()
     {

@@ -994,39 +994,38 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// Processes <see cref="IRaftClusterMember.SynchronizeAsync(long, CancellationToken)"/>
     /// request.
     /// </summary>
+    /// <remarks>
+    /// The leader returns a read index only after a majority of the cluster has acknowledged
+    /// its term in a replication round that started after the request was received.
+    /// The read index is not less than the leader's current-term write barrier, so it covers
+    /// every entry committed before the request, including entries inherited from previous terms.
+    /// </remarks>
     /// <param name="commitIndex">The index of the last committed log entry on the sender side.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
-    /// <returns>The index of the last committed log entry known by the leader.</returns>
-    protected ValueTask<long?> SynchronizeAsync(long commitIndex, CancellationToken token)
+    /// <returns>
+    /// The read index confirmed by the leader;
+    /// or <see langword="null"/> if the local node is not a leader or lost its leadership before the confirmation.
+    /// </returns>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    protected async ValueTask<long?> SynchronizeAsync(long commitIndex, CancellationToken token)
     {
-        long? result = null;
+        if (Volatile.Read(in state) is not LeaderState<TMember> leaderState)
+            return null;
 
-        // do not execute the next round of heartbeats if the sender is already in sync with the leader
-        if (Volatile.Read(in state) is LeaderState<TMember> leaderState)
+        // The sender's commit index cannot be used to skip the confirmation: a deposed leader
+        // must not authorize a read even if its cached commit index matches the sender's one.
+        var readIndex = long.Max(AuditTrail.LastCommittedEntryIndex, leaderState.WriteBarrier);
+        try
         {
-            var lastCommittedEntryIndex = AuditTrail.LastCommittedEntryIndex;
-            if (commitIndex < lastCommittedEntryIndex)
-            {
-                try
-                {
-                    leaderState.ForceReplication();
-                }
-                catch (NotLeaderException)
-                {
-                    // local node is not a leader
-                    goto exit;
-                }
-                catch (Exception e)
-                {
-                    return ValueTask.FromException<long?>(e);
-                }
-            }
-
-            result = lastCommittedEntryIndex;
+            await leaderState.ForceReplicationAsync(token).ConfigureAwait(false);
+        }
+        catch (NotLeaderException)
+        {
+            // the local node lost its leadership, or the quorum is unreachable
+            return null;
         }
 
-        exit:
-        return new(result);
+        return readIndex;
     }
 
     /// <inheritdoc cref="IRaftCluster.ApplyReadBarrierAsync"/>

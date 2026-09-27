@@ -80,12 +80,16 @@ public interface IRaftClusterMember : IClusterMember
         IDataTransferObject configuration, long configurationVersion, CancellationToken token);
 
     /// <summary>
-    /// Starts a new round of heartbeats.
+    /// Requests a read index from the leader.
     /// </summary>
+    /// <remarks>
+    /// The leader returns the read index only after a majority of the cluster has confirmed
+    /// its leadership in a round of heartbeats started after the request was received.
+    /// </remarks>
     /// <param name="commitIndex">The index of the last committed log entry.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
-    /// <returns>The index of the last committed log entry;
-    /// or <see langword="null"/> if the member is not a leader.
+    /// <returns>The quorum-confirmed read index;
+    /// or <see langword="null"/> if the member is not a leader or cannot confirm its leadership.
     /// </returns>
     /// <exception cref="MemberUnavailableException">The member is unreachable through the network.</exception>
     Task<long?> SynchronizeAsync(long commitIndex, CancellationToken token);

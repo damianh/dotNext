@@ -67,16 +67,21 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
     /// <see langword="true"/> to replicate until the new leader's no-op is applied;
     /// <see langword="false"/> to leave the inherited tail uncommitted.
     /// </param>
-    internal async Task ElectAsync(MembershipNode candidate, bool passWriteBarrier = true)
+    /// <param name="filter">
+    /// Classifies the candidate's votes and write-barrier replication, for example to keep a partition.
+    /// Defaults to delivering everything.
+    /// </param>
+    internal async Task ElectAsync(MembershipNode candidate, bool passWriteBarrier = true, Func<PendingMessage, MessageAction> filter = null)
     {
+        filter ??= static _ => MessageAction.Deliver;
         var elected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         candidate.LeaderChanged += OnLeaderChanged;
         try
         {
             candidate.StartElectionTimer();
             TimeProvider.Advance(TimeSpan.FromMilliseconds(100));
-            await PumpAsync(candidate, elected.Task, static message => message.MessageType is RaftMessageType.PreVote or RaftMessageType.Vote
-                ? MessageAction.Deliver
+            await PumpAsync(candidate, elected.Task, message => message.MessageType is RaftMessageType.PreVote or RaftMessageType.Vote
+                ? filter(message)
                 : MessageAction.Hold, forceRounds: false);
         }
         finally
@@ -85,7 +90,7 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
         }
 
         if (passWriteBarrier)
-            await PumpAsync(candidate, candidate.WaitForLeadershipAsync(TestToken));
+            await PumpAsync(candidate, candidate.WaitForLeadershipAsync(TestToken), filter);
 
         void OnLeaderChanged(RaftCluster<InProcessClusterMember> sender, InProcessClusterMember leader)
         {
@@ -181,6 +186,54 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
         catch (OperationCanceledException e) when (e.CancellationToken == timeout.Token && !TestToken.IsCancellationRequested)
         {
             throw new TimeoutException($"{source.EndPoint} did not complete the pumped operation.", e);
+        }
+
+        await operation;
+    }
+
+    /// <summary>
+    /// Handles RPCs sent by any node until <paramref name="operation"/> completes.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="PumpAsync"/>, a delivery is not awaited before the next one: a leader answering
+    /// a follower's read barrier waits for its own replication round, which needs further deliveries.
+    /// When <paramref name="leader"/> is set, the pump keeps one forced replication round of that node in flight.
+    /// Messages classified as <see cref="MessageAction.Hold"/> stay queued for a later step.
+    /// </remarks>
+    internal async Task PumpAllAsync(Task operation, Func<PendingMessage, MessageAction> filter = null, MembershipNode leader = null)
+    {
+        filter ??= static _ => MessageAction.Deliver;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+        timeout.CancelAfter(DefaultTimeout); // deadlock guard, not a schedule
+        var round = Task.CompletedTask;
+        try
+        {
+            while (!operation.IsCompleted)
+            {
+                if (leader is not null && round.IsCompleted)
+                    round = ForceRoundAsync(leader);
+
+                using var wait = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                var next = Network.WaitForMessageAsync(message => filter(message) is not MessageAction.Hold, wait.Token);
+                var wake = leader is null ? operation : Task.WhenAny(operation, round);
+                if (!object.ReferenceEquals(await Task.WhenAny(next, wake), next))
+                {
+                    await wait.CancelAsync();
+                    await ((Task)next).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    timeout.Token.ThrowIfCancellationRequested();
+                    continue;
+                }
+
+                var message = await next;
+                if (filter(message) is MessageAction.Deliver)
+                    _ = Network.TryDeliverAsync(message);
+                else
+                    Network.TryDrop(message);
+            }
+        }
+        catch (OperationCanceledException e) when (timeout.IsCancellationRequested && !TestToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("The pumped operation did not complete.", e);
         }
 
         await operation;

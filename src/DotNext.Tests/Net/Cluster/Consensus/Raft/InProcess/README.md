@@ -167,13 +167,19 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --fi
 `InMemoryClusterConfigurationStorage`, on a network where every link is held.
 Nothing progresses on its own:
 
-- `ElectAsync(candidate, passWriteBarrier)` delivers only pre-votes and votes,
+- `ElectAsync(candidate, passWriteBarrier, filter)` delivers only pre-votes and votes,
   then optionally replicates until the new leader's no-op is applied. Pass
-  `false` to leave an inherited tail unapplied.
+  `false` to leave an inherited tail unapplied. The optional filter applies to
+  both phases, for example to elect a leader inside one side of a partition.
 - `PumpAsync(source, operation, filter)` handles the source's RPCs until the
   operation completes. The filter returns `Deliver`, `Drop`, or `Hold`. For a
   leader it keeps one forced round in flight, so rejected appends are retried
   without heartbeat deadlines.
+- `PumpAllAsync(operation, filter, leader)` handles RPCs from every node
+  without awaiting each delivery. A leader answering a follower's read
+  barrier waits for its own replication round, so a sequential pump would
+  deadlock. When `leader` is set it keeps one of that node's forced rounds in
+  flight.
 - `ReplicateOnlyToAsync(leader, follower, index)` gives the entries to one
   follower and then drops the rest, so the leader steps down with the entries
   uncommitted. It holds the other RPCs until the follower has the entries,
@@ -195,4 +201,25 @@ It also covers the stale-term detection and single-entry appends.
 
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipHarnessTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 180s
+```
+
+## Follower read barriers
+
+`FollowerReadBarrierTests` covers issue #19: a follower's strong read barrier
+must obtain a read index that the leader has confirmed with a quorum.
+
+- A five-voter cluster is partitioned into {0, 1} and {2, 3, 4}. The majority
+  elects node 2 and commits a newer write. The read on node 1 then goes to the
+  former leader, node 0. That leader must not authorize its stale commit
+  index, whether or not it has observed the new term.
+- A new leader whose commit index predates an entry committed in an earlier
+  term must return a read index that covers the entry, because the index is
+  floored at the current-term write barrier.
+- A healthy read waits for a quorum round. A leader without a quorum returns
+  `null` and steps down. A cancelled read does not strand the leader.
+- A follower lagging behind a snapshot waits until it applies the snapshot
+  up to the confirmed read index.
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.FollowerReadBarrierTests' --progress off --timeout 180s
 ```

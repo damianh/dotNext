@@ -78,6 +78,19 @@ partial class WriteAheadLog
 
         public abstract MemoryManager<byte> GetOrAddPage(uint pageIndex);
 
+        public ulong GetEndOfLastPage()
+        {
+            var pages = GetPages(Location);
+            uint lastPage = 0U;
+            foreach (var page in pages)
+            {
+                if (page > lastPage)
+                    lastPage = page;
+            }
+
+            return pages.IsEmpty ? 0UL : ((ulong)lastPage + 1UL) * (uint)PageSize;
+        }
+
         public MemoryManager<byte> this[uint pageIndex]
             => TryGetPage(pageIndex) ?? throw new MissingPageException(pageIndex);
 

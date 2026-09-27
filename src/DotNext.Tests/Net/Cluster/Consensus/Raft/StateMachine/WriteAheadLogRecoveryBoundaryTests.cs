@@ -184,6 +184,59 @@ public sealed class WriteAheadLogRecoveryBoundaryTests : Test
         Equal(boundary, reopened.LastCommittedEntryIndex);
     }
 
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(0U)]
+    [InlineData(1U)]
+    public static async Task LegacyCheckpointAtSnapshotBoundaryIgnoresStaleMetadataSlot(uint version)
+    {
+        // The retained boundary slot holds an obsolete record pointing far beyond any existing data page.
+        const long boundary = SnapshotIndex;
+        const int metadataPageSize = 4096;
+        const ulong staleOffset = 1UL << 40;
+        var options = CreateOptions();
+        Directory.CreateDirectory(options.Location);
+        Directory.CreateDirectory(Path.Combine(options.Location, "metadata"));
+        var metadataBytes = new byte[metadataPageSize];
+        var recordSize = checked((int)BitOperations.RoundUpToPowerOf2((uint)LogEntryMetadata.Size));
+        LogEntryMetadata.Create(new TestLogEntry("") { Term = 1L }, staleOffset, 16L)
+            .Format(metadataBytes.AsSpan(checked((int)boundary) * recordSize));
+        File.WriteAllBytes(Path.Combine(options.Location, "metadata", "0"), metadataBytes);
+
+        byte[] checkpoint;
+        if (version is 0U)
+        {
+            checkpoint = new byte[sizeof(long)];
+            BinaryPrimitives.WriteInt64LittleEndian(checkpoint, boundary);
+        }
+        else
+        {
+            checkpoint = new byte[sizeof(uint) + sizeof(long) + sizeof(long)];
+            BinaryPrimitives.WriteUInt32LittleEndian(checkpoint, version);
+            BinaryPrimitives.WriteInt64LittleEndian(checkpoint.AsSpan(sizeof(uint)), boundary);
+            BinaryPrimitives.WriteInt64LittleEndian(checkpoint.AsSpan(sizeof(uint) + sizeof(long)), boundary);
+        }
+
+        File.WriteAllBytes(Path.Combine(options.Location, "checkpoint"), checkpoint);
+
+        await using (var wal = new WriteAheadLog(options, new SnapshotStateMachine(boundary)))
+        {
+            await wal.InitializeAsync(TestToken);
+            Equal(boundary + 1L,
+                await wal.AppendAsync(new TestLogEntry("after upgrade") { Term = 1L }, TestToken));
+            await wal.CommitAsync(boundary + 1L, TestToken);
+            await wal.FlushAsync(TestToken);
+        }
+
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(options.Location, "data")))
+            True(uint.Parse(Path.GetFileName(file)) < 16U);
+
+        await using var reopened = new WriteAheadLog(options, new SnapshotStateMachine(boundary));
+        await reopened.InitializeAsync(TestToken);
+        Equal(boundary + 1L, reopened.LastEntryIndex);
+        using var entries = await reopened.ReadAsync(boundary + 1L, boundary + 1L, TestToken);
+        Equal("after upgrade", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyStoreDoesNotRequireMetadataForIndexZero()
     {

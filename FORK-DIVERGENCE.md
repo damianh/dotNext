@@ -37,7 +37,9 @@ upstream sync is merged.
   migration inputs, matching upstream 6.8.1.
 * Upstream keeps no metadata record at a snapshot boundary (for example after snapshot catch-up), so for version 0 and
   1 stores whose last index is covered by the restored snapshot, the fork rebuilds the boundary record even if the
-  metadata page already exists. Version 2 stores still require it and are rejected without it.
+  metadata page already exists. Stale legacy boundary slots are ignored; the rebuilt boundary is placed after the
+  highest existing data page so obsolete data is not overwritten during migration. Version 2 stores still require it
+  and are rejected without it.
 * Checkpoints with unknown versions, with a length that does not match their version, with negative indices, or with
   an upstream version-1 last index below its commit index are rejected with `IntegrityException`.
 

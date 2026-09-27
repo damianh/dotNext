@@ -151,15 +151,17 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             
             metadataPages = new(m, hash?.HashLengthInBytes ?? 0);
             overwriteJournal.Recover(durableState, metadataPages);
-            var writePosition = version is CheckpointVersion2
-                ? durableState.WritePosition
-                : metadataPages.TryGetMetadata(durableState.LastIndex, out var metadata) ? metadata.End : 0UL;
-
             // Upstream stores keep no metadata record at a snapshot boundary. Even if the page exists, the boundary
             // slot may be unwritten or stale, so legacy tails covered by the restored snapshot are rematerialized.
             var legacySnapshotBoundary = version is not CheckpointVersion2
                                          && durableState.LastIndex > 0L
                                          && durableState.LastIndex <= snapshotIndex;
+            var writePosition = version switch
+            {
+                CheckpointVersion2 => durableState.WritePosition,
+                _ when legacySnapshotBoundary => d.GetEndOfLastPage(),
+                _ => metadataPages.TryGetMetadata(durableState.LastIndex, out var metadata) ? metadata.End : 0UL,
+            };
             dataPages = new(d)
             {
                 LastWrittenAddress = writePosition,

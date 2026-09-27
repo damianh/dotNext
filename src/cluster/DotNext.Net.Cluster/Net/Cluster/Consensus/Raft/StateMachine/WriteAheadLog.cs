@@ -154,19 +154,26 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             var writePosition = version is CheckpointVersion2
                 ? durableState.WritePosition
                 : metadataPages.TryGetMetadata(durableState.LastIndex, out var metadata) ? metadata.End : 0UL;
+
+            // Upstream stores keep no metadata record at a snapshot boundary, and their cleaner may have deleted its page.
+            // Such a tail is rebuilt as a fork snapshot boundary, starting at the same write position as upstream would.
+            var legacySnapshotBoundary = version is not CheckpointVersion2
+                                         && durableState.LastIndex > 0L
+                                         && durableState.LastIndex <= snapshotIndex
+                                         && !metadataPages.TryGetMetadata(durableState.LastIndex, out _);
             dataPages = new(d)
             {
                 LastWrittenAddress = writePosition,
             };
             durableState = durableState with { WritePosition = writePosition };
             // Index zero has no metadata record, but a nonempty snapshot boundary must retain one.
-            if (durableState.LastIndex > 0L && durableState.LastIndex >= snapshotIndex)
+            if (!legacySnapshotBoundary && durableState.LastIndex > 0L && durableState.LastIndex >= snapshotIndex)
             {
                 if (!metadataPages.TryGetMetadata(durableState.LastIndex, out var tail)
                     || tail.Length < 0L || tail.End < tail.Offset || tail.End != writePosition)
                     throw new InvalidDataException("The durable WAL tail does not match its checkpoint.");
             }
-            if (snapshotIndex > durableState.LastIndex)
+            if (legacySnapshotBoundary || snapshotIndex > durableState.LastIndex)
                 WriteSnapshotBoundary(snapshotIndex, stateMachine.Snapshot!.Term);
         }
         

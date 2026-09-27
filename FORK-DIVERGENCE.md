@@ -32,6 +32,9 @@ upstream sync is merged.
 * A store written by upstream 6.8.x can be opened by the fork. Its last index is trusted as durable, because upstream
   writes it only after the pages have been flushed. The first durable update upgrades the store to version 2, and
   upstream cannot read it after that.
+* Upstream keeps no metadata record at a snapshot boundary (for example after snapshot catch-up), so for version 0 and
+  1 stores whose last index is a snapshot index with no metadata, the fork rebuilds the boundary record. Version 2
+  stores still require it and are rejected without it.
 * Checkpoints with unknown versions, with a length that does not match their version, or with negative indices are
   rejected with `IntegrityException`.
 

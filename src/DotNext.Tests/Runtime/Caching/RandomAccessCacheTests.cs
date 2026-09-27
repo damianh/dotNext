@@ -7,7 +7,7 @@ using CompilerServices;
 
 public sealed class RandomAccessCacheTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CacheOverflow()
     {
         var evictedItem = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -27,7 +27,7 @@ public sealed class RandomAccessCacheTests : Test
         Equal("0", await evictedItem.Task.WaitAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CacheOverflow2()
     {
         var evictedItem = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -65,7 +65,7 @@ public sealed class RandomAccessCacheTests : Test
         await evictedItem.Task;
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StressTest()
     {
         await using var cache = new RandomAccessCache<long, string>(15);
@@ -107,7 +107,7 @@ public sealed class RandomAccessCacheTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AddRemoveAsync()
     {
         await using var cache = new RandomAccessCache<long, string>(15);
@@ -154,7 +154,7 @@ public sealed class RandomAccessCacheTests : Test
         False(cache.Contains(10L));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AddInvalidateAsync()
     {
         await using var cache = new RandomAccessCache<long, string>(15);
@@ -184,7 +184,7 @@ public sealed class RandomAccessCacheTests : Test
         True(cache.Invalidate(10L, DefaultTimeout, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AddTwice()
     {
         await using var cache = new RandomAccessCache<long, string>(15);
@@ -196,7 +196,7 @@ public sealed class RandomAccessCacheTests : Test
         Throws<InvalidOperationException>(() => session.SetValue("20"));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposedCacheAccess()
     {
         var cache = new RandomAccessCache<long, string>(18);
@@ -208,7 +208,7 @@ public sealed class RandomAccessCacheTests : Test
         await ThrowsAsync<ObjectDisposedException>(cache.InvalidateAsync(10L, TestToken).AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposedCacheAccess2()
     {
         using var cts = new CancellationTokenSource();
@@ -221,7 +221,7 @@ public sealed class RandomAccessCacheTests : Test
         await ThrowsAsync<ObjectDisposedException>(cache.InvalidateAsync(10L, cts.Token).AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Invalidation()
     {
         await using var cache = new RandomAccessCache<long, string>(15);
@@ -237,7 +237,7 @@ public sealed class RandomAccessCacheTests : Test
         await cache.InvalidateAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReplaceWhileReadingAsync()
     {
         await using var cache = new RandomAccessCache<long, string>(15);
@@ -320,7 +320,7 @@ public sealed class RandomAccessCacheTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EvictLargeItemImmediately()
     {
         const long value = 101L;
@@ -339,7 +339,7 @@ public sealed class RandomAccessCacheTests : Test
         Equal(value, await source.Task.WaitAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EvictRedundantItems()
     {
         var channel = Channel.CreateBounded<long>(2);
@@ -387,19 +387,19 @@ public sealed class RandomAccessCacheTests : Test
         assertion(cache);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ResizeCache()
     {
         await CheckCapacity(2, 1, static cache => True(cache.Capacity > 6));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InfiniteThreshold()
     {
         await CheckCapacity(2, int.MaxValue, static cache => Equal(3, cache.Capacity));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TryReadUsingAlternateKey()
     {
         await using var cache = new RandomAccessCache<string, long>(15);
@@ -416,7 +416,7 @@ public sealed class RandomAccessCacheTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TryRemoveUsingAlternateKey()
     {
         await using var cache = new RandomAccessCache<Guid, long>(15)
@@ -448,7 +448,7 @@ public sealed class RandomAccessCacheTests : Test
         False(lookup.TryRead(key.ToByteArray(), out readSession));
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InvalidateUsingAlternateKey()
     {
         await using var cache = new RandomAccessCache<Guid, long>(15)
@@ -474,7 +474,7 @@ public sealed class RandomAccessCacheTests : Test
         False(lookup.TryRead(key.ToByteArray(), out readSession));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ImportPairs()
     {
         await using var cache = new RandomAccessCache<Guid, long>(15)

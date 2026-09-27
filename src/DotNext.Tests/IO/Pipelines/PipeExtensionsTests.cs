@@ -9,7 +9,7 @@ using Buffers.Binary;
 
 public sealed class PipeExtensionsTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EncodeDecodeIntegers()
     {
         static async void WriteValuesAsync(PipeWriter writer)
@@ -34,7 +34,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(47, await pipe.Reader.ReadBigEndianAsync<ushort>(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EncodeDecodeMemory()
     {
         static async void WriteValueAsync(Memory<byte> memory, PipeWriter writer)
@@ -56,7 +56,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(10, portion2[1]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EndOfMemory()
     {
         static async void WriteValueAsync(Memory<byte> memory, PipeWriter writer)
@@ -71,7 +71,7 @@ public sealed class PipeExtensionsTests : Test
         await ThrowsAsync<EndOfStreamException>(() => pipe.Reader.ReadExactlyAsync(result, TestToken).AsTask());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EncodeDecodeMemory2()
     {
         static async void WriteValueAsync(Memory<byte> memory, PipeWriter writer)
@@ -93,7 +93,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(10, portion2[1]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EndOfMemory2()
     {
         static async void WriteValueAsync(Memory<byte> memory, PipeWriter writer)
@@ -108,7 +108,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(5, await pipe.Reader.ReadAsync(result, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EncodeDecodeValue2()
     {
         static async void WriteValueAsync(PipeWriter writer)
@@ -124,7 +124,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(20, await pipe.Reader.ReadLittleEndianAsync<Int128>(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EndOfStream()
     {
         static async void WriteValueAsync(PipeWriter writer)
@@ -149,7 +149,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(value, result.ToString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(LengthFormat.Compressed)]
     [InlineData(LengthFormat.LittleEndian)]
     [InlineData(LengthFormat.BigEndian)]
@@ -162,7 +162,7 @@ public sealed class PipeExtensionsTests : Test
         await EncodeDecodeStringAsync(Encoding.ASCII, testString, lengthEnc);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyToBuffer()
     {
         var pipe = new Pipe();
@@ -173,7 +173,7 @@ public sealed class PipeExtensionsTests : Test
         Equal<byte>([10, 20, 30], buffer.WrittenSpan);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadBlockUsingCallback()
     {
         static async void WriteValuesAsync(PipeWriter writer)
@@ -202,7 +202,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(47, reader.ReadLittleEndian<ushort>());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadToEndUsingAsyncCallback()
     {
         static async void WriteValuesAsync(PipeWriter writer)
@@ -231,7 +231,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(47, reader.ReadLittleEndian<ushort>());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadToEndUsingCallback()
     {
         static async void WriteValuesAsync(PipeWriter writer)
@@ -280,7 +280,7 @@ public sealed class PipeExtensionsTests : Test
         Equal(30, result.Buffer.FirstSpan[2]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadPortionAsync()
     {
         var portion1 = RandomBytes(64);
@@ -303,7 +303,7 @@ public sealed class PipeExtensionsTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadBlockExactlyAsync()
     {
         var bytes = RandomBytes(128);
@@ -327,7 +327,7 @@ public sealed class PipeExtensionsTests : Test
         Empty(reader.ReadExactlyAsync(0L, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadInvalidSizedBlockAsync()
     {
         var reader = PipeReader.Create(ReadOnlySequence<byte>.Empty);
@@ -336,7 +336,7 @@ public sealed class PipeExtensionsTests : Test
         await ThrowsAsync<ArgumentOutOfRangeException>(enumerator.MoveNextAsync().AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DecodeNullTerminatedStringAsync()
     {
         var pipe = new Pipe();
@@ -349,7 +349,7 @@ public sealed class PipeExtensionsTests : Test
         Equal("Привет, мир!", writer.WrittenSpan.ToString());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteLargeData()
     {
         var pipe = new Pipe();

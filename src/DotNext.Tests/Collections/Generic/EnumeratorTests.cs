@@ -116,7 +116,7 @@ public sealed class EnumeratorTests : Test
         False(enumerator.MoveNext());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SkipAsync()
     {
         await using var enumerator = System.Linq.AsyncEnumerable.Range(0, 10).GetAsyncEnumerator(TestToken);

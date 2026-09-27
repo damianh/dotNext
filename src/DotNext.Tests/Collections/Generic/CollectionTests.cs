@@ -81,7 +81,7 @@ public sealed class CollectionTests : Test
         Equal(5, counter.value);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ForEachTestAsync()
     {
         IList<int> list = new List<int> { 1, 10, 20 };
@@ -140,7 +140,7 @@ public sealed class CollectionTests : Test
         Equal("Four", items.Last());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task IterationAsync()
     {
         var collection = Array.Empty<int>().ToAsyncEnumerable();
@@ -153,7 +153,7 @@ public sealed class CollectionTests : Test
         Equal(42, await collection.FirstOrNoneAsync(Predicate<int>.Constant(true), TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Iteration2Async()
     {
         var collection = Array.Empty<int>().ToAsyncEnumerable();
@@ -164,7 +164,7 @@ public sealed class CollectionTests : Test
         Equal(42, await collection.LastOrNoneAsync(TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConversionToAsyncEnumerable()
     {
         int index = 0;

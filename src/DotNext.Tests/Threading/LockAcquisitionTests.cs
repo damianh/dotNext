@@ -3,7 +3,7 @@
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class LockAcquisitionTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AsyncReaderWriterLock()
     {
         var obj = new object();
@@ -26,7 +26,7 @@ public sealed class LockAcquisitionTests : Test
         holder1.Dispose();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AsyncExclusiveLock()
     {
         var obj = new object();
@@ -38,7 +38,7 @@ public sealed class LockAcquisitionTests : Test
         holder1.Dispose();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InvalidLock()
     {
         var obj = string.Intern("Interned string");

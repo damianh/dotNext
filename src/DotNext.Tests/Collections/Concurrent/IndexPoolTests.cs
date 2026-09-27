@@ -25,7 +25,7 @@ public sealed class IndexPoolTests : Test
         True(pool.IsEmpty);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StressTest()
     {
         const int capacity = 2;

@@ -27,7 +27,7 @@ public sealed class ReaderWriterSpinLockTests : Test
         False(rwLock.IsReadLockHeld);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriterToWriterChain()
     {
         var are = new TaskCompletionSource();
@@ -47,7 +47,7 @@ public sealed class ReaderWriterSpinLockTests : Test
         await task.WaitAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriterToReaderChain()
     {
         var are = new TaskCompletionSource();

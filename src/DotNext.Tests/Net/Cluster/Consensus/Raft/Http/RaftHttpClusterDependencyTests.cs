@@ -6,7 +6,7 @@ using InProcess;
 
 public sealed class RaftHttpClusterDependencyTests : RaftTest
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ResolvesTimeProviderFromServices(bool registerProvider)

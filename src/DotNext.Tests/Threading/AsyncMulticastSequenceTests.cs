@@ -5,7 +5,7 @@ using Collections.Generic;
 [Collection(TestCollections.AsyncPrimitives)]
 public class AsyncMulticastSequenceTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CompleteSequence()
     {
         var sequence = new AsyncMulticastSequence<int>();
@@ -24,7 +24,7 @@ public class AsyncMulticastSequenceTests : Test
         Equal(0, await sequence.WriteAsync(42, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DestroyedEnumeratorDoesntConsume()
     {
         var sequence = new AsyncMulticastSequence<int>();
@@ -44,7 +44,7 @@ public class AsyncMulticastSequenceTests : Test
         False(await consumerTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ListenAsync()
     {
         var bag1 = new List<int>();
@@ -70,7 +70,7 @@ public class AsyncMulticastSequenceTests : Test
         Equal<int>([42, 43], bag1);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true)]
     [InlineData(false)]
     public static async Task ProduceAndComplete(bool isSequential)
@@ -92,14 +92,14 @@ public class AsyncMulticastSequenceTests : Test
         Equal<int>([42], bag);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task NoListeners()
     {
         var sequence = new AsyncMulticastSequence<long>();
         Equal(0, await sequence.WriteAsync(42, TestToken));
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Unsubscribe()
     {
         var sequence = new AsyncMulticastSequence<long>();

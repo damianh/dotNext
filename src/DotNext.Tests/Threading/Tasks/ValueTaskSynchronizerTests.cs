@@ -12,7 +12,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         internal long Value => value;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAll2()
     {
         var counter = new SharedCounter();
@@ -36,7 +36,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         Equal(2, counter.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult2()
     {
         var source1 = new TaskCompletionSource<int>();
@@ -59,7 +59,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         Equal(20, result2.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAll3()
     {
         var counter = new SharedCounter();
@@ -90,7 +90,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         Equal(3, counter.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult3()
     {
         var source1 = new TaskCompletionSource<int>();
@@ -120,7 +120,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         Equal(30, result3.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAll4()
     {
         var counter = new SharedCounter();
@@ -159,7 +159,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         Equal(4, counter.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult4()
     {
         var source1 = new TaskCompletionSource<int>();
@@ -196,7 +196,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         Equal(40, result4.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAll5()
     {
         var counter = new SharedCounter();
@@ -243,7 +243,7 @@ public sealed class ValueTaskSynchronizerTests : Test
         Equal(5, counter.Value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WhenAllWithResult5()
     {
         var source1 = new TaskCompletionSource<int>();

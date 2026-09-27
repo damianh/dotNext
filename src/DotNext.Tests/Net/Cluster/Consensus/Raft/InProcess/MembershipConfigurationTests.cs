@@ -17,7 +17,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         Detect,
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(Change.Add, false)]
     [InlineData(Change.Remove, false)]
     [InlineData(Change.Add, true)]
@@ -53,7 +53,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         False(leader.IsMembershipLockHeld);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsecutiveDetectionsPreserveBothRemovals()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -71,7 +71,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         await AssertConfigurationAsync(leader, Endpoints(cluster, 0, 1, 2));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(Change.Add)]
     [InlineData(Change.Remove)]
     [InlineData(Change.Detect)]
@@ -116,7 +116,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StaleTermDetectionDoesNotAppend()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -131,7 +131,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         Equal(lastIndex, leader.Log.LastEntryIndex);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ChangeAppendsSingleEntry()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -148,7 +148,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         await AssertConfigurationAsync(leader, Endpoints(cluster, 0, 1, 2, 3));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task NoOpChangesAppendNothing()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -169,7 +169,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         False(leader.IsMembershipLockHeld);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExplicitReaddAfterAppliedRemoval()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -192,7 +192,7 @@ public sealed class MembershipConfigurationTests : RaftTest
         await AssertConfigurationAsync(leader, Endpoints(cluster, 0, 1, 2, 3, 4));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CanceledChangeReleasesLock()
     {
         await using var cluster = new MembershipClusterFixture();

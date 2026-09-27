@@ -36,7 +36,7 @@ public sealed class UnbufferedFileStreamTests : Test
         Equal(42, stream.ReadByte());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadWriteAsynchronously()
     {
         var fileName = GetTempPath();

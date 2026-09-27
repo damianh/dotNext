@@ -367,7 +367,7 @@ public sealed class ResultTests : Test
         where TResult : struct, IResultMonad<int, TError, TResult>
         => TResult.FromError(error);
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConvertToTask()
     {
         Result<int> result = 42;

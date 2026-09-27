@@ -14,7 +14,7 @@ public sealed class MemorySegmentStreamTests : Test
         Equal(value, result.ToString());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(LengthFormat.Compressed)]
     [InlineData(LengthFormat.LittleEndian)]
     [InlineData(LengthFormat.BigEndian)]
@@ -72,7 +72,7 @@ public sealed class MemorySegmentStreamTests : Test
         Equal(dataToWrite, readBuffer);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadWriteAsync()
     {
         const int bufferSize = 128;

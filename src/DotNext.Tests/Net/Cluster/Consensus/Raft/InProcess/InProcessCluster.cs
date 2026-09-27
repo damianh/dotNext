@@ -281,7 +281,7 @@ internal sealed class InProcessClusterMember(
             },
             token);
 
-    private protected override Task<bool> ResignAsync(CancellationToken token)
+    public override Task<bool> ResignAsync(CancellationToken token)
         => network.SendAsync(
             this,
             RaftMessageType.Resign,

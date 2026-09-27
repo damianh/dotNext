@@ -85,7 +85,7 @@ public sealed class StreamSourceTests : Test
         Equal(0L, dest.Length);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(TestBuffers))]
     public static async Task CopyToStreamAsync(ReadOnlySequence<byte> sequence)
     {
@@ -97,7 +97,7 @@ public sealed class StreamSourceTests : Test
         Equal(Data, dest.ToArray());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(TestBuffers))]
     public static async Task CopySparseMemoryAsync(ReadOnlySequence<byte> sequence)
     {
@@ -202,7 +202,7 @@ public sealed class StreamSourceTests : Test
         Equal(Data[^1], dest[0]);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(TestBuffers))]
     public static async Task ReadMemory(ReadOnlySequence<byte> sequence)
     {
@@ -216,7 +216,7 @@ public sealed class StreamSourceTests : Test
         Equal(Data[^1], dest.Span[0]);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(TestBuffers))]
     public static async Task ReadBlockFromSparseMemoryAsync(ReadOnlySequence<byte> sequence)
     {
@@ -231,7 +231,7 @@ public sealed class StreamSourceTests : Test
         Equal(Data, dest);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(TestBuffers))]
     public static async Task ReadArrayAsync(ReadOnlySequence<byte> sequence)
     {
@@ -300,7 +300,7 @@ public sealed class StreamSourceTests : Test
         Equal(0, buffer[2]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadApm2()
     {
         using var src = Stream.Create(ToReadOnlySequence<byte>(Data, 5));
@@ -336,7 +336,7 @@ public sealed class StreamSourceTests : Test
         Equal(0, src.Read(buffer));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteNotSupported()
     {
         await using var src = Stream.Create(new ReadOnlyMemory<byte>(Data));
@@ -353,7 +353,7 @@ public sealed class StreamSourceTests : Test
         await ThrowsAsync<NotSupportedException>(() => src.WriteAsync(new byte[2], 0, 2, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WriteNotSupported2()
     {
         using var src = Stream.Create(ToReadOnlySequence<byte>(Data, 5));
@@ -370,7 +370,7 @@ public sealed class StreamSourceTests : Test
         await ThrowsAsync<NotSupportedException>(() => src.WriteAsync(new byte[2], 0, 2, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StressTest()
     {
         ReadOnlySequence<byte> sequence;
@@ -436,7 +436,7 @@ public sealed class StreamSourceTests : Test
         Equal(50, writer.WrittenSpan[3]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferWriterToWritableStreamAsync()
     {
         var writer = new ArrayBufferWriter<byte>();
@@ -473,7 +473,7 @@ public sealed class StreamSourceTests : Test
         Equal(40, writer.WrittenSpan[0]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferWriterToWritableStreamApm2()
     {
         var writer = new ArrayBufferWriter<byte>();
@@ -490,7 +490,7 @@ public sealed class StreamSourceTests : Test
         Equal(40, writer.WrittenSpan[0]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferWriterStreamUnsupportedMethods()
     {
         var writer = new ArrayBufferWriter<byte>();
@@ -529,7 +529,7 @@ public sealed class StreamSourceTests : Test
         Equal(content, writer.WrittenMemory);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SpanActionToStreamAsync()
     {
         static void WriteToBuffer(ReadOnlySpan<byte> block, ArrayBufferWriter<byte> writer)
@@ -564,7 +564,7 @@ public sealed class StreamSourceTests : Test
         Equal(content, writer.WrittenMemory);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MemoryFuncToStreamAsync()
     {
         static ValueTask WriteToBuffer(ReadOnlyMemory<byte> block, ArrayBufferWriter<byte> writer, CancellationToken token)
@@ -583,7 +583,7 @@ public sealed class StreamSourceTests : Test
         Equal(content, writer.WrittenMemory);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MemoryFuncToStreamApm()
     {
         static ValueTask WriteToBuffer(ReadOnlyMemory<byte> block, ArrayBufferWriter<byte> writer, CancellationToken token)
@@ -605,7 +605,7 @@ public sealed class StreamSourceTests : Test
         Equal(content, writer.WrittenMemory);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SharedStreamConcurrentReadAsync()
     {
         var expected = RandomBytes(512);

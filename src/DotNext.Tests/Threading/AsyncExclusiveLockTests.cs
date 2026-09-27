@@ -7,7 +7,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncExclusiveLockTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TrivialLock()
     {
         using var @lock = new AsyncExclusiveLock { ConcurrencyLevel = 3 };
@@ -18,7 +18,7 @@ public sealed class AsyncExclusiveLockTests : Test
         True(await @lock.TryAcquireAsync(TimeSpan.FromMilliseconds(100), TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConcurrentLock()
     {
         var are = new TaskCompletionSource();
@@ -48,7 +48,7 @@ public sealed class AsyncExclusiveLockTests : Test
         @lock.Release();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelSuspendedCallers()
     {
         using var @lock = new AsyncExclusiveLock();
@@ -75,7 +75,7 @@ public sealed class AsyncExclusiveLockTests : Test
         True(@lock.DisposeAsync().IsCompletedSuccessfully);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown()
     {
         using var @lock = new AsyncExclusiveLock();
@@ -87,7 +87,7 @@ public sealed class AsyncExclusiveLockTests : Test
         Throws<ObjectDisposedException>(() => @lock.TryAcquire());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GracefulShutdown2()
     {
         using var @lock = new AsyncExclusiveLock();
@@ -97,7 +97,7 @@ public sealed class AsyncExclusiveLockTests : Test
         await ThrowsAnyAsync<ObjectDisposedException>(@lock.AcquireAsync(CancellationToken.None).AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposedState()
     {
         var l = new AsyncExclusiveLock();
@@ -106,7 +106,7 @@ public sealed class AsyncExclusiveLockTests : Test
         await ThrowsAnyAsync<ObjectDisposedException>(result.AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CaptureCallerInfo()
     {
         using var l = new AsyncExclusiveLock();
@@ -126,7 +126,7 @@ public sealed class AsyncExclusiveLockTests : Test
         await suspendedTask;
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CaptureCallerInfo2()
     {
         using var l = new AsyncExclusiveLock();
@@ -147,7 +147,7 @@ public sealed class AsyncExclusiveLockTests : Test
         await suspendedTask;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LockStealing()
     {
         const string reason = "Hello, world!";
@@ -165,7 +165,7 @@ public sealed class AsyncExclusiveLockTests : Test
         True(await task3);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LockStealing2()
     {
         const string reason = "Hello, world!";
@@ -192,7 +192,7 @@ public sealed class AsyncExclusiveLockTests : Test
         False(l.TryAcquire());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task MixedLock()
     {
         await using var l = new AsyncExclusiveLock();
@@ -206,7 +206,7 @@ public sealed class AsyncExclusiveLockTests : Test
         l.Release();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposedWhenSynchronousLockAcquired()
     {
         var l = new AsyncExclusiveLock();
@@ -218,7 +218,7 @@ public sealed class AsyncExclusiveLockTests : Test
         await ThrowsAnyAsync<ObjectDisposedException>(t);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelSynchronousLock()
     {
         using var l = new AsyncExclusiveLock();
@@ -244,7 +244,7 @@ public sealed class AsyncExclusiveLockTests : Test
         True(l.TryAcquire(TimeSpan.Zero, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task HardConcurrencyLimit()
     {
         using var l = new AsyncExclusiveLock()

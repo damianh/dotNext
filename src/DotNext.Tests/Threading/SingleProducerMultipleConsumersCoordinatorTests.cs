@@ -3,7 +3,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class SingleProducerMultipleConsumersCoordinatorTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ValveSwitch()
     {
         using var coordinator = new SingleProducerMultipleConsumersCoordinator();

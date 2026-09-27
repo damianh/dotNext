@@ -24,6 +24,8 @@ Contributions must not contain breaking changes such as backward incompatible mo
 ## Unit Tests
 If your PR contains bug fix or new feature then it should have unit tests.
 
+Every asynchronous test (one that returns `Task` or `ValueTask`) must declare a per-test timeout, for example `[Fact(Timeout = TestTimeouts.Default)]` or `[Theory(Timeout = TestTimeouts.Default)]`. A test that hangs then fails on its own after that timeout, instead of stalling the whole run until the session `--timeout`. Pass `TestToken` (`TestContext.Current.CancellationToken`) to awaited calls, so that a timed-out test also stops its work. `TestTimeoutConventionTests` enforces this rule. xUnit does not support timeouts on synchronous tests, so bound any blocking waits in them explicitly (for example `thread.Join(DefaultTimeout)`).
+
 ## Continuous Integration
 
 The [CI workflow](https://github.com/damianh/dotNext/actions/workflows/ci.yml) runs on all pull requests, pushes to `fork`, `master`, and `develop`, and manual dispatch. Both jobs use Ubuntu x64 and the .NET SDK selected by `global.json`:

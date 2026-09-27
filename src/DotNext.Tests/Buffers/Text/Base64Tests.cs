@@ -254,7 +254,7 @@ public sealed class Base64Tests : Test
         Equal(expected, actual.Span);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(17)]
     [InlineData(32)]
     [InlineData(63)]
@@ -294,7 +294,7 @@ public sealed class Base64Tests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(17)]
     [InlineData(32)]
     [InlineData(63)]

@@ -12,7 +12,7 @@ public class CancellationTokenMultiplexerTests : Test
         Equal(new(true), scope.Token);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CanceledImmediatelyAsync()
     {
         var multiplexer = new CancellationTokenMultiplexer();
@@ -41,7 +41,7 @@ public class CancellationTokenMultiplexerTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public async Task CheckPoolingNonInterference()
     {
         var multiplexer = new CancellationTokenMultiplexer();
@@ -73,7 +73,7 @@ public class CancellationTokenMultiplexerTests : Test
         True(scope.Token.IsCancellationRequested);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     public static async Task TimeOut(int timeout)
@@ -89,7 +89,7 @@ public class CancellationTokenMultiplexerTests : Test
         NotEqual(scope.Token, cts.Token);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LazyTimeout()
     {
         var multiplexer = new CancellationTokenMultiplexer();
@@ -111,7 +111,7 @@ public class CancellationTokenMultiplexerTests : Test
         CheckDefaultScope(scope);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DefaultScopeAsync()
     {
         await using var scope = default(CancellationTokenMultiplexer.Scope);
@@ -125,7 +125,7 @@ public class CancellationTokenMultiplexerTests : Test
         CheckDefaultScope(scope);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DefaultScopeWithTimeoutAsync()
     {
         await using var scope = default(CancellationTokenMultiplexer.ScopeWithTimeout);
@@ -139,7 +139,7 @@ public class CancellationTokenMultiplexerTests : Test
         Equal(scope.Token, scope.CancellationOrigin);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CompleteAndCheckConcurrently()
     {
         var multiplexer = new CancellationTokenMultiplexer();
@@ -171,7 +171,7 @@ public class CancellationTokenMultiplexerTests : Test
         }
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForCancellationSingleToken()
     {
         var multiplexer = new CancellationTokenMultiplexer();
@@ -183,7 +183,7 @@ public class CancellationTokenMultiplexerTests : Test
         Equal(cts.Token, await task);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForCancellationTwoTokens()
     {
         var multiplexer = new CancellationTokenMultiplexer();
@@ -197,7 +197,7 @@ public class CancellationTokenMultiplexerTests : Test
         Equal(cts2.Token, await task);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WaitForCancellationMultipleTokens()
     {
         var multiplexer = new CancellationTokenMultiplexer();

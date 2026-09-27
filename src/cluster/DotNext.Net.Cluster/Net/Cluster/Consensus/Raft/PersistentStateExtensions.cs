@@ -17,6 +17,8 @@ public static class PersistentStateExtensions
     {
         var localIndex = auditTrail.LastEntryIndex;
         var localTerm = await auditTrail.GetTermAsync(localIndex, token).ConfigureAwait(false);
+
+        // Raft §5.4.1: higher last-log term wins; on equal terms the longer log wins.
         return term > localTerm || (term == localTerm && index >= localIndex);
     }
 

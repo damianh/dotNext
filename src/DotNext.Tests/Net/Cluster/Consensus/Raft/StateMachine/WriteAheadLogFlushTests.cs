@@ -13,7 +13,7 @@ using static WalCheckpointAssertions;
 [Collection(TestCollections.WriteAheadLog)]
 public sealed class WriteAheadLogFlushTests : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -70,7 +70,7 @@ public sealed class WriteAheadLogFlushTests : Test
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "flusherTask")]
     private static extern ref Task FlusherTask(WriteAheadLog wal);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task FlusherFailureStopsIdleApplierWithoutAnotherCommit(bool flushOnCommit)
@@ -112,7 +112,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CleanerFailureStopsIdleApplierWithoutAnotherCommit()
     {
         var machine = new GatedFailureStateMachine(failApply: false);
@@ -171,7 +171,7 @@ public sealed class WriteAheadLogFlushTests : Test
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "state")]
     private static extern ref int TriggerState(AsyncAutoResetEventSlim trigger);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ApplierFailureStopsIdleFlusherWithoutAnotherCommit(bool flushOnCommit)
@@ -222,7 +222,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -267,7 +267,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CleanerFailureFailsPendingFlushRequests()
     {
         var machine = new GatedFailureStateMachine(failApply: false);
@@ -323,7 +323,7 @@ public sealed class WriteAheadLogFlushTests : Test
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "cleanupTask")]
     private static extern ref WeakReference<Task> CleanupTask(WriteAheadLog wal);
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task FirstWorkerFailureIsRetained(bool flusherFirst)
@@ -372,7 +372,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FailedManualRequestDoesNotWaitForActivePass()
     {
         var machine = new GatedFailureStateMachine(failApply: true);
@@ -418,7 +418,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ManualFailurePreservesCancellationAndDisposalOwnership(bool cancelFirst)
@@ -484,7 +484,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -497,7 +497,7 @@ public sealed class WriteAheadLogFlushTests : Test
         await ThrowsAsync<ObjectDisposedException>(() => wal.FlushAsync(TestToken));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task FailurePublicationRacesWithCallers(bool flushOnCommit)
@@ -543,7 +543,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false, 0)]
     [InlineData(false, 1)]
     [InlineData(false, 2)]
@@ -610,7 +610,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task FatalErrorRejectsAlreadyPersistedTarget(bool manual)
@@ -637,7 +637,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FailedLaterCommitPreservesDurableAppendedTail()
     {
         var options = CreateOptions(TimeSpan.Zero);
@@ -669,7 +669,7 @@ public sealed class WriteAheadLogFlushTests : Test
         Equal("durable uncommitted tail", await reader[1].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SingleCommittedEntryMustBeFlushed()
     {
         var options = CreateOptions(TimeSpan.FromDays(1));
@@ -702,7 +702,7 @@ public sealed class WriteAheadLogFlushTests : Test
         Equal(entry.Content, await reader[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task MultipleCallersWaitForSameTarget(bool flushOnCommit)
@@ -727,7 +727,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CallersKeepTheirCommittedTarget(bool manual)
@@ -780,7 +780,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UncommittedAppendDoesNotExpandFlushTarget()
     {
         var options = CreateOptions(TimeSpan.FromDays(1));
@@ -815,7 +815,7 @@ public sealed class WriteAheadLogFlushTests : Test
         Equal("uncommitted", await reader[1].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RepeatedSingleEntryBoundaries()
     {
         using var passes = new FlushPasses();
@@ -854,7 +854,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CancelingOneCallerDoesNotCompleteOthers(bool flushOnCommit)
@@ -883,7 +883,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task DisposalFailsPendingCallers(bool flushOnCommit)
@@ -911,7 +911,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConcurrentManualFlushesDoNotRegressCheckpoint()
     {
         using var passes = new FlushPasses();
@@ -969,7 +969,7 @@ public sealed class WriteAheadLogFlushTests : Test
         Equal("second", await reader[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task PendingManualFlushLifecycle(bool dispose)
@@ -1017,7 +1017,7 @@ public sealed class WriteAheadLogFlushTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CallersRacingWithPublicationDoNotMissCompletion()
     {
         using var passes = new FlushPasses();

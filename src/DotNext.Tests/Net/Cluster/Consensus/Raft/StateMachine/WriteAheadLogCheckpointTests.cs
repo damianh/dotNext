@@ -15,7 +15,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
     private const int BlockSize = 64 * 1024;
     private const int FileSize = BlockSize * 3;
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(8)]
     [InlineData(12)]
@@ -36,13 +36,13 @@ public sealed class WriteAheadLogCheckpointTests : Test
             Equal(original, ReadBytes(Path.Combine(location.FullName, "checkpoint")));
 
             await checkpoint.UpdateAsync(7L, 9L, 1024UL, 3L, 1L, TestToken);
-            Equal(1U, checkpoint.Version);
+            Equal(2U, checkpoint.Version);
             Equal(1L, checkpoint.Generation);
         }
 
         var bytes = File.ReadAllBytes(Path.Combine(location.FullName, "checkpoint"));
         Equal(FileSize, bytes.Length);
-        Equal(1U, BinaryPrimitives.ReadUInt32LittleEndian(bytes));
+        Equal(2U, BinaryPrimitives.ReadUInt32LittleEndian(bytes));
         True(File.Exists(Path.Combine(location.FullName, "checkpoint.format")));
         False(File.Exists(Path.Combine(location.FullName, "checkpoint.prepared")));
         using var recovered = new CheckpointFile(location);
@@ -53,7 +53,114 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(3L, recovered.Read<long>("SnapshotIndex"));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task UpstreamVersion1UpgradePreservesIndependentBoundaries()
+    {
+        var location = CreateLocation();
+        var original = CreateUpstreamVersion1(commitIndex: 5L, lastIndex: 8L);
+        File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint"), original);
+
+        using (var checkpoint = new CheckpointFile(location))
+        {
+            Equal(1U, checkpoint.Version);
+            Equal(0L, checkpoint.Generation);
+            Equal(5L, checkpoint.Read<long>("Checkpoint"));
+            Equal(8L, checkpoint.Read<long>("LastIndex"));
+            Equal(original, ReadBytes(Path.Combine(location.FullName, "checkpoint")));
+
+            await checkpoint.UpdateAsync(5L, 8L, 512UL, 0L, 1L, TestToken);
+            Equal(2U, checkpoint.Version);
+            Equal(1L, checkpoint.Generation);
+        }
+
+        var bytes = File.ReadAllBytes(Path.Combine(location.FullName, "checkpoint"));
+        Equal(FileSize, bytes.Length);
+        Equal(2U, BinaryPrimitives.ReadUInt32LittleEndian(bytes));
+        True(File.Exists(Path.Combine(location.FullName, "checkpoint.format")));
+        using var recovered = new CheckpointFile(location);
+        Equal(5L, recovered.Read<long>("Checkpoint"));
+        Equal(8L, recovered.Read<long>("LastIndex"));
+        Equal(512UL, recovered.Read<ulong>("WritePosition"));
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(-1L, 0L)]
+    [InlineData(0L, -1L)]
+    public static void NegativeUpstreamVersion1IndexIsRejected(long commitIndex, long lastIndex)
+    {
+        var location = CreateLocation();
+        File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint"), CreateUpstreamVersion1(commitIndex, lastIndex));
+        Throws<IntegrityException>(() => new CheckpointFile(location));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static void UpstreamVersion1CommitAfterLastIndexIsRejected()
+    {
+        var location = CreateLocation();
+        File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint"), CreateUpstreamVersion1(commitIndex: 2L, lastIndex: 1L));
+        Throws<IntegrityException>(() => new CheckpointFile(location));
+    }
+
+    [Theory]
+    [InlineData(16)]
+    [InlineData(24)]
+    public static void InvalidUpstreamVersion1LengthIsRejected(int size)
+    {
+        var location = CreateLocation();
+        var bytes = new byte[size];
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes, 1U);
+        File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint"), bytes);
+        Throws<IntegrityException>(() => new CheckpointFile(location));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task UpstreamVersion1StoreRecoversFlushedTail()
+    {
+        var location = CreateLocation();
+        var options = WriteAheadLogDurabilityTests.CreateOptions(location.FullName,
+            WriteAheadLog.MemoryManagementStrategy.PrivateMemory, false, 0,
+            WriteAheadLog.IntegrityHashAlgorithm.None);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            await wal.InitializeAsync(TestToken);
+            Equal(1L, await wal.AppendAsync(new TestLogEntry("first") { Term = 1L }, TestToken));
+            Equal(2L, await wal.AppendAsync(new TestLogEntry("second") { Term = 1L }, TestToken));
+            Equal(3L, await wal.AppendAsync(new TestLogEntry("third") { Term = 2L }, TestToken));
+        }
+
+        // Replace the checkpoint with the layout written by upstream dotNext 6.8 for the same pages
+        foreach (var sidecar in Directory.EnumerateFiles(location.FullName, "checkpoint*"))
+            File.Delete(sidecar);
+        File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint"), CreateUpstreamVersion1(commitIndex: 2L, lastIndex: 3L));
+
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            await wal.InitializeAsync(TestToken);
+            Equal(3L, wal.LastEntryIndex);
+            Equal(2L, wal.LastCommittedEntryIndex);
+            using var entries = await wal.ReadAsync(1L, 3L, TestToken);
+            Equal("third", await entries[2].ToStringAsync(Encoding.UTF8, token: TestToken));
+            Equal(4L, await wal.AppendAsync(new TestLogEntry("fourth") { Term = 2L }, TestToken));
+        }
+
+        using (var checkpoint = new CheckpointFile(location))
+        {
+            Equal(2U, checkpoint.Version);
+            Equal(4L, checkpoint.Read<long>("LastIndex"));
+            Equal(2L, checkpoint.Read<long>("Checkpoint"));
+        }
+    }
+
+    private static byte[] CreateUpstreamVersion1(long commitIndex, long lastIndex)
+    {
+        var bytes = new byte[sizeof(uint) + sizeof(long) + sizeof(long)];
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes, 1U);
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(sizeof(uint)), commitIndex);
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(sizeof(uint) + sizeof(long)), lastIndex);
+        return bytes;
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task GenerationsAlternateAndRecoverShorterUncommittedTail()
     {
         var location = CreateLocation();
@@ -77,13 +184,13 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(1L, recovered.Read<long>("SnapshotIndex"));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     public static async Task CorruptedCompletedSlotCannotSilentlyLoseAcknowledgedHistory(int slot)
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         var path = Path.Combine(location.FullName, "checkpoint");
         var bytes = File.ReadAllBytes(path);
         bytes[(slot + 1) * BlockSize + 40] ^= 0x80;
@@ -92,13 +199,13 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     public static async Task ZeroedCompletedSlotIsNotAnUnusedGeneration(int slot)
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         var path = Path.Combine(location.FullName, "checkpoint");
         var bytes = File.ReadAllBytes(path);
         bytes.AsSpan((slot + 1) * BlockSize, BlockSize).Clear();
@@ -107,19 +214,20 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(4)]
     [InlineData(8)]
     [InlineData(12)]
+    [InlineData(20)]
     [InlineData(BlockSize)]
     [InlineData(FileSize - 1)]
     [InlineData(FileSize + 1)]
-    public static async Task TruncatedOrExtendedVersion1CannotMasqueradeAsLegacy(int size)
+    public static async Task TruncatedOrExtendedVersion2CannotMasqueradeAsLegacy(int size)
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         using (var file = File.OpenWrite(Path.Combine(location.FullName, "checkpoint")))
             file.SetLength(size);
 
@@ -152,7 +260,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnsupportedVersionIsRetainedWithoutMutatingTheStore()
     {
         var location = CreateLocation();
@@ -168,7 +276,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(bytes, ReadBytes(Path.Combine(location.FullName, "checkpoint")));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
@@ -212,11 +320,11 @@ public sealed class WriteAheadLogCheckpointTests : Test
         False(File.Exists(Path.Combine(location.FullName, "checkpoint.pending")));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task IntentDoesNotExcuseCorruptionOfTheStableGeneration()
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         var path = Path.Combine(location.FullName, "checkpoint");
         var bytes = File.ReadAllBytes(path);
         WriteIntent(location, bytes, 2L);
@@ -226,7 +334,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(32, -1L)]
     [InlineData(40, 0L)]
     [InlineData(56, 3L)]
@@ -234,7 +342,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
     public static async Task ChecksummedInvalidBoundariesAreStillRejected(int fieldOffset, long value)
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         var path = Path.Combine(location.FullName, "checkpoint");
         var bytes = File.ReadAllBytes(path);
         BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(BlockSize + fieldOffset), value);
@@ -243,7 +351,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(1UL)]
     [InlineData(ulong.MaxValue)]
     public static async Task ChecksummedEmptyCheckpointRejectsNonzeroWritePosition(ulong position)
@@ -275,8 +383,8 @@ public sealed class WriteAheadLogCheckpointTests : Test
         });
     }
 
-    [Fact]
-    public static async Task EmptyVersion1CheckpointAllowsAppendAndRestart()
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task EmptyVersion2CheckpointAllowsAppendAndRestart()
     {
         var location = CreateLocation();
         using (var checkpoint = new CheckpointFile(location))
@@ -284,7 +392,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
 
         using (var checkpoint = new CheckpointFile(location))
         {
-            Equal(1U, checkpoint.Version);
+            Equal(2U, checkpoint.Version);
             Equal(0L, checkpoint.Read<long>("LastIndex"));
             Equal(0UL, checkpoint.Read<ulong>("WritePosition"));
         }
@@ -308,11 +416,11 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal("first", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ChecksummedUnsupportedSlotVersionRetainsExceptionType()
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         var path = Path.Combine(location.FullName, "checkpoint");
         var bytes = File.ReadAllBytes(path);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(BlockSize), 37U);
@@ -322,11 +430,11 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(37U, error.Version);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task HeaderIntegrityDoesNotDependOnEntryHashing()
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         var path = Path.Combine(location.FullName, "checkpoint");
         var bytes = File.ReadAllBytes(path);
         bytes[16] ^= 0x80;
@@ -334,34 +442,34 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SidecarsFromAnotherStoreAreRejected()
     {
         var location = CreateLocation();
         var other = CreateLocation();
-        await CreateVersion1(location);
-        await CreateVersion1(other);
+        await CreateVersion2(location);
+        await CreateVersion2(other);
         File.Copy(Path.Combine(other.FullName, "checkpoint.format"),
             Path.Combine(location.FullName, "checkpoint.format"), overwrite: true);
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("checkpoint.format")]
     [InlineData("checkpoint.pending")]
     public static async Task InvalidSidecarIsRejected(string sidecar)
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         File.WriteAllBytes(Path.Combine(location.FullName, sidecar), [1, 2, 3]);
         Throws<IntegrityException>(() => new CheckpointFile(location));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnpublishedSidecarsDoNotReplaceAValidGeneration()
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint.pending.prepared"), [1, 2, 3]);
         File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint.format.prepared"), [1, 2, 3]);
         File.WriteAllBytes(Path.Combine(location.FullName, "checkpoint.prepared"), [1, 2, 3]);
@@ -369,11 +477,11 @@ public sealed class WriteAheadLogCheckpointTests : Test
         Equal(2L, recovered.Generation);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UpgradeInterruptedBeforeFormatMarkerStillRecovers()
     {
         var location = CreateLocation();
-        await CreateVersion1(location);
+        await CreateVersion2(location);
         File.Delete(Path.Combine(location.FullName, "checkpoint.format"));
         using (var recovered = new CheckpointFile(location))
         {
@@ -398,7 +506,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         False(File.Exists(Path.Combine(location.FullName, "checkpoint")));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ValidationAndCancellationDoNotAdvanceGeneration()
     {
         var location = CreateLocation();
@@ -465,7 +573,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
         return result;
     }
 
-    private static async Task CreateVersion1(DirectoryInfo location)
+    private static async Task CreateVersion2(DirectoryInfo location)
     {
         using var checkpoint = new CheckpointFile(location);
         await checkpoint.UpdateAsync(0L, 1L, 100UL, 0L, 1L, TestToken);
@@ -476,7 +584,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
     {
         Span<byte> record = stackalloc byte[64];
         record.Clear();
-        BinaryPrimitives.WriteUInt32LittleEndian(record, 1U);
+        BinaryPrimitives.WriteUInt32LittleEndian(record, 2U);
         BinaryPrimitives.WriteUInt32LittleEndian(record.Slice(4), 0x31504B43U);
         BinaryPrimitives.WriteInt32LittleEndian(record.Slice(8), record.Length);
         primary.Slice(16, 16).CopyTo(record.Slice(16));
@@ -493,7 +601,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
     {
         private const BindingFlags Members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         private static readonly Type CheckpointType = typeof(WriteAheadLog).GetNestedType("Checkpoint", BindingFlags.NonPublic)!;
-        private static readonly Type Version1Type = typeof(WriteAheadLog).GetNestedType("CheckpointVersion1", BindingFlags.NonPublic)!;
+        private static readonly Type Version2Type = typeof(WriteAheadLog).GetNestedType("CheckpointVersion2", BindingFlags.NonPublic)!;
         private readonly object instance;
 
         internal CheckpointFile(DirectoryInfo location)
@@ -522,7 +630,7 @@ public sealed class WriteAheadLogCheckpointTests : Test
 
         internal ValueTask UpdateAsync(long committed, long appended, ulong position, long snapshot, long generation, CancellationToken token)
         {
-            var value = Activator.CreateInstance(Version1Type, [committed, appended, position, snapshot, generation]);
+            var value = Activator.CreateInstance(Version2Type, [committed, appended, position, snapshot, generation]);
             return (ValueTask)CheckpointType.GetMethod("UpdateAsync", Members)!.Invoke(instance, [value, token])!;
         }
 

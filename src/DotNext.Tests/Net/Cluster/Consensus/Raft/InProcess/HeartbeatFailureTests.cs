@@ -6,7 +6,7 @@ using Threading;
 
 public sealed class HeartbeatFailureTests : RaftTest
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CommitFailureInvalidatesLeadership()
     {
         var storage = new FaultingPersistentState();
@@ -31,7 +31,7 @@ public sealed class HeartbeatFailureTests : RaftTest
             cluster.Leader.ForceReplicationAsync(TestToken).AsTask());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task TimerFailureInvalidatesLeadership()
     {
         await using var cluster = new InProcessClusterFixture(3);
@@ -51,7 +51,7 @@ public sealed class HeartbeatFailureTests : RaftTest
             cluster.Leader.ForceReplicationAsync(TestToken).AsTask());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task FailureDuringShutdownDoesNotDeadlock(bool dispose)

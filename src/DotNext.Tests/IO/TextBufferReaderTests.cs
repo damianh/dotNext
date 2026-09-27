@@ -67,7 +67,7 @@ public sealed class TextBufferReaderTests : Test
         False(tr.Peek() == -1, "End of TextReader was true after ReadToEnd");
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(LargeDataSet))]
     public static async Task ReadToEndAsync(ReadOnlySequence<char> largeData)
     {
@@ -129,7 +129,7 @@ public sealed class TextBufferReaderTests : Test
         True(data.SequenceEqual(array));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadFromFragmentedBufferAsync()
     {
         var data = ToReadOnlySequence<char>(SmallData, 3);
@@ -143,7 +143,7 @@ public sealed class TextBufferReaderTests : Test
         Equal(new[] { 'L', 'O' }, array[0..2]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadBlockFromFragmentedBufferAsync()
     {
         var data = ToReadOnlySequence<char>(SmallData, 3);
@@ -170,7 +170,7 @@ public sealed class TextBufferReaderTests : Test
         Null(tr.ReadLine());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(CharDataSet))]
     public static async Task ReadLinesAsync(ReadOnlySequence<char> charData)
     {

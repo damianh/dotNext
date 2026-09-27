@@ -5,7 +5,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class ThreadPoolWorkItemFactoryTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WorkItemWithSingleArg()
     {
         var source = new TaskCompletionSource<int>();
@@ -20,7 +20,7 @@ public sealed class ThreadPoolWorkItemFactoryTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WorkItemWithTwoArgs()
     {
         var source = new TaskCompletionSource<int>();
@@ -35,7 +35,7 @@ public sealed class ThreadPoolWorkItemFactoryTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task WorkItemWithThreeArgs()
     {
         var source = new TaskCompletionSource<int>();

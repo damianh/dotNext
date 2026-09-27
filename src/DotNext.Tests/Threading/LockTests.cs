@@ -67,7 +67,7 @@ public sealed class LockTests : Test
         Equal(3, sem.CurrentCount);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InterruptibleLock2()
     {
         using var cts = new CancellationTokenSource();
@@ -79,7 +79,7 @@ public sealed class LockTests : Test
         False(await task);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InterruptThreadJoin()
     {
         using var cts = new CancellationTokenSource();

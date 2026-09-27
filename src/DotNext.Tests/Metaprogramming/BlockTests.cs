@@ -99,7 +99,7 @@ public sealed class BlockTests : Test
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task AwaitDisposableTest(bool configureAwait)

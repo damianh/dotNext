@@ -20,7 +20,7 @@ public sealed class MtuDiscoveryTests : Test
         }
     }
 
-    [PlatformSpecificFact("windows")]
+    [PlatformSpecificFact("windows", Timeout = TestTimeouts.Default)]
     public static async Task PingToOpenDNS()
     {
         var address = IPAddress.Parse("208.67.222.222");

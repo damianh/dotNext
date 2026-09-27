@@ -29,7 +29,7 @@ public sealed class PointerTests : Test
         Equal(20, ptr[0]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StreamInteropAsync()
     {
         var array = new ushort[] { 1, 2, 3 }.AsMemory();

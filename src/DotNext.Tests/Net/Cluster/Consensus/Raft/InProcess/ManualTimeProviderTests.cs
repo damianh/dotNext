@@ -2,7 +2,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
 public sealed class ManualTimeProviderTests : RaftTest
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task AsyncDisposalDrainsActiveCallback(bool disposeFirst)
@@ -51,7 +51,7 @@ public sealed class ManualTimeProviderTests : RaftTest
         Equal(1, callbacks);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task DisposedTimerDoesNotFire(bool asynchronous)

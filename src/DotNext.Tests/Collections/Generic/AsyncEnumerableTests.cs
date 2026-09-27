@@ -2,7 +2,7 @@ namespace DotNext.Collections.Generic;
 
 public sealed class AsyncEnumerableTests : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ForEachTestAsync(bool yieldIteration)
@@ -18,7 +18,7 @@ public sealed class AsyncEnumerableTests : Test
         Equal(5, counter.value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ForEachTest1Async()
     {
         var list = new List<int> { 1, 10, 20 }.ToAsyncEnumerable();
@@ -32,7 +32,7 @@ public sealed class AsyncEnumerableTests : Test
         Equal(5, counter.value);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FirstOrNullTestAsync()
     {
         var array = Array.Empty<long>().ToAsyncEnumerable();
@@ -43,7 +43,7 @@ public sealed class AsyncEnumerableTests : Test
         Equal(10, element);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CopyListAsync(bool yieldIteration)
@@ -57,14 +57,14 @@ public sealed class AsyncEnumerableTests : Test
         Equal(30, copy[2]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyEmptyCollectionAsync()
     {
         using var copy = await Enumerable.Empty<int>().ToAsyncEnumerable().CopyAsync(token: TestToken);
         True(copy.IsEmpty);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SkipNullsTestAsync()
     {
         var list = new LinkedList<string>();

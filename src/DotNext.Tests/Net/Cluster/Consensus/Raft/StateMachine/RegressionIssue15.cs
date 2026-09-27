@@ -25,7 +25,7 @@ public sealed class RegressionIssue15 : Test
     /// <summary>
     /// Race window A: the applier samples its target, then suspends on the read lock behind an installation.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StaleApplierTargetCannotRegressAnInstalledSnapshot()
     {
         var options = CreateOptions(InfiniteTimeSpan);
@@ -89,7 +89,7 @@ public sealed class RegressionIssue15 : Test
     /// reproduces the state that window B produces with real components and then drives the production
     /// publication path with the stale target the applier would have carried.
     /// </remarks>
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StalePublicationAfterInstallationCannotLowerAppliedProgress()
     {
         var options = CreateOptions(InfiniteTimeSpan);
@@ -122,7 +122,7 @@ public sealed class RegressionIssue15 : Test
     /// in-flight application must leave a consistent checkpoint and must not push the applier back over
     /// metadata that reclamation already removed.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task InstallationBehindInFlightApplicationSurvivesFlushAndRestart()
     {
         var options = CreateOptions(InfiniteTimeSpan);
@@ -195,7 +195,7 @@ public sealed class RegressionIssue15 : Test
     /// Bounded interleaving coverage: repeated installations racing ordinary commits and applications must
     /// never move applied progress backwards nor strand a waiter.
     /// </summary>
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConcurrentInstallationAndApplicationKeepProgressMonotonic()
     {
         const int rounds = 25;

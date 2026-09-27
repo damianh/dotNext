@@ -5,7 +5,7 @@ namespace DotNext.Threading.Tasks;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class GenericValueTaskCompletionSourceTests : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task SuccessfulCompletion(bool runContinuationsAsynchronously)
@@ -24,7 +24,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         Equal(ManualResetCompletionSourceStatus.Consumed, source.Status);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumePendingTask()
     {
         var source = new ValueTaskCompletionSource<int>();
@@ -38,7 +38,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         Equal(42, await task);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CompleteWithError(bool runContinuationsAsynchronously)
@@ -49,7 +49,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         await ThrowsAsync<ArithmeticException>(() => task.AsTask());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task Cancellation(bool runContinuationsAsynchronously)
@@ -63,7 +63,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         False(source.TrySetResult(42));
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancelImmediately()
     {
         var source = new ValueTaskCompletionSource<int>();
@@ -81,7 +81,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         Same(string.Empty, source.CompletionData);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task ForceTimeout(bool runContinuationsAsynchronously)
@@ -92,7 +92,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         False(source.TrySetResult(42));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CompleteWithToken(bool runContinuationsAsynchronously)
@@ -106,7 +106,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         Equal(42, await task);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task Reuse(bool runContinuationsAsynchronously)
@@ -125,7 +125,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         Equal(43, await task);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task AsyncCompletion(bool runContinuationsAsynchronously)
@@ -139,7 +139,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         Equal(42, await result);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task AsyncLocalAccess(bool runContinuationsAsynchronously)
@@ -161,7 +161,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         Equal(42, await result);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task InteropWithTaskCompletionSourceTimeout(bool runContinuationsAsynchronously)
@@ -173,7 +173,7 @@ public sealed class GenericValueTaskCompletionSourceTests : Test
         await ThrowsAsync<TimeoutException>(task);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsumeTwice()
     {
         var source = new ValueTaskCompletionSource<int>();

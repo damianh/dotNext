@@ -198,7 +198,7 @@ public abstract class TransportTestSuite : RaftTest
         Equal(44L, preVote.Term);
 
         //Resign request
-        True(await client.As<IRaftClusterMember>().ResignAsync(TestToken));
+        True(await client.ResignAsync(TestToken));
 
         //Heartbeat request
         var appendEntries = await client.As<IRaftClusterMember>().AppendEntriesAsync<BufferedEntry, BufferedEntry[]>(42L, Array.Empty<BufferedEntry>(), 1L, 56L, 10L, TestToken);
@@ -264,7 +264,8 @@ public abstract class TransportTestSuite : RaftTest
 
         //prepare client
         using var client = clientFactory(serverAddr, member, timeout);
-        Equal(member.Metadata, await client.As<IRaftClusterMember>().GetMetadataAsync(refresh: true, TestToken));
+        Equal(member.Metadata, await client.GetMetadataAsync(refresh: true, TestToken));
+        Equal(member.Metadata, client.TryGetMetadata());
     }
 
     private protected async Task MetadataRequestFollowedByVoteTest(ServerFactory serverFactory, ClientFactory clientFactory, int valueLength)

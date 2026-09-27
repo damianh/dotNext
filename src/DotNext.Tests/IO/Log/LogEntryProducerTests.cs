@@ -2,7 +2,7 @@ namespace DotNext.IO.Log;
 
 public sealed class LogEntryProducerTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyProducer()
     {
         await using ILogEntryProducer<ILogEntry> producer = new LogEntryProducer<ILogEntry>();

@@ -5,7 +5,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncCorrelationSourceTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RoutingByKey()
     {
         var key1 = Guid.NewGuid();
@@ -25,7 +25,7 @@ public sealed class AsyncCorrelationSourceTests : Test
         Equal(20, await listener2);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BroadcastException()
     {
         var key1 = Guid.NewGuid();
@@ -41,7 +41,7 @@ public sealed class AsyncCorrelationSourceTests : Test
         await ThrowsAsync<ArithmeticException>(listener2.AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BroadcastCancellation()
     {
         var key1 = Guid.NewGuid();
@@ -57,7 +57,7 @@ public sealed class AsyncCorrelationSourceTests : Test
         await ThrowsAnyAsync<OperationCanceledException>(listener2.AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BroadcastResult()
     {
         var key1 = Guid.NewGuid();
@@ -73,7 +73,7 @@ public sealed class AsyncCorrelationSourceTests : Test
         Equal(42, await listener2);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PulseWithException()
     {
         var key1 = Guid.NewGuid();
@@ -85,7 +85,7 @@ public sealed class AsyncCorrelationSourceTests : Test
         await ThrowsAsync<ArithmeticException>(listener1.AsTask);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UserDataPropagation()
     {
         var key1 = Guid.NewGuid();

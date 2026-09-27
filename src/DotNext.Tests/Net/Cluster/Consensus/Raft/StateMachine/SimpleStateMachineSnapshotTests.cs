@@ -21,7 +21,7 @@ public sealed class SimpleStateMachineSnapshotTests : Test
         Outgoing,
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(FailureMode.Serialization)]
     [InlineData(FailureMode.Cancellation)]
     [InlineData(FailureMode.Write)]
@@ -96,7 +96,7 @@ public sealed class SimpleStateMachineSnapshotTests : Test
         Empty(location.EnumerateFiles("*.tmp"));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(FailureMode.Serialization)]
     [InlineData(FailureMode.Commit)]
     public async Task FailedOutgoingSnapshotIsRolledBack(FailureMode failureMode)
@@ -121,7 +121,7 @@ public sealed class SimpleStateMachineSnapshotTests : Test
         Empty(location.EnumerateFiles("*.tmp"));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(PublicationPath.Incoming)]
     [InlineData(PublicationPath.Outgoing)]
     public async Task FailedSnapshotReplacementPreservesExistingSnapshot(PublicationPath publicationPath)
@@ -166,7 +166,7 @@ public sealed class SimpleStateMachineSnapshotTests : Test
         Equal(previousState, restoredMachine.State);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public async Task IncomingSnapshotRollsBackOutgoingSnapshot()
     {
         var snapshotting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -3,7 +3,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncCountdownEventTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Counting()
     {
         using var countdown = new AsyncCountdownEvent(4);
@@ -63,7 +63,7 @@ public sealed class AsyncCountdownEventTests : Test
         Equal(ev.InitialCount, ev.CurrentCount);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AbortSuspendedCallers()
     {
         using var countdown = new AsyncCountdownEvent(4);
@@ -72,7 +72,7 @@ public sealed class AsyncCountdownEventTests : Test
         await ThrowsAsync<PendingTaskInterruptedException>(task);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AbortSuspendedCallersAndSetCounter()
     {
         const long initialCount = 4;

@@ -64,7 +64,7 @@ public sealed class StreamSegmentTests : Test
         Equal(-1, segment.ReadByte());
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadRangeAsync()
     {
         using var ms = new MemoryStream([1, 3, 5, 8, 12]);
@@ -94,7 +94,7 @@ public sealed class StreamSegmentTests : Test
         Equal(0, buffer[2]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExceptionCheck()
     {
         using var ms = new MemoryStream([1, 3, 5, 8, 12]);

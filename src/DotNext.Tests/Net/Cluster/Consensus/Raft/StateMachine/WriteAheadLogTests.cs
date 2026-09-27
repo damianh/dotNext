@@ -18,7 +18,7 @@ using LogEntryList = IO.Log.LogEntryProducer<IRaftLogEntry>;
 [Collection(TestCollections.WriteAheadLog)]
 public sealed class WriteAheadLogTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LockManager()
     {
         await using var lockManager = new WriteAheadLog.LockManager();
@@ -30,7 +30,7 @@ public sealed class WriteAheadLogTests : Test
         await readBarrierTask.WaitAsync(TestToken);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StateManipulations()
     {
         IPersistentState state;
@@ -62,7 +62,7 @@ public sealed class WriteAheadLogTests : Test
         }
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyLogEntry()
     {
         var dir = GetTempPath();
@@ -84,7 +84,7 @@ public sealed class WriteAheadLogTests : Test
         Equal(0L, await auditTrail.CommitAsync(auditTrail.LastEntryIndex, TestToken));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ContextFlow()
     {
         var dir = GetTempPath();
@@ -101,7 +101,7 @@ public sealed class WriteAheadLogTests : Test
         Equal(context, Contains(1L, stateMachine.Context));
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExceptionFlow()
     {
         var dir = GetTempPath();
@@ -117,7 +117,7 @@ public sealed class WriteAheadLogTests : Test
         await ThrowsAsync<WriteAheadLog.InternalException>(wal.CommitAsync(1L, TestToken).AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task QueryAppendEntries()
     {
         var entry1 = new TestLogEntry("SET X = 0") { Term = 42L };
@@ -164,7 +164,7 @@ public sealed class WriteAheadLogTests : Test
         await wal.ReadAsync(new LogEntryConsumer(checker), 2L, wal.LastEntryIndex, TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ParallelReads()
     {
         ReadOnlyMemory<byte> payload = RandomBytes(64);
@@ -194,7 +194,7 @@ public sealed class WriteAheadLogTests : Test
         await wal.ReadAsync(new LogEntryConsumer(checker1), 0L, wal.LastEntryIndex, TestToken);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AppendWhileReading()
     {
         var dir = GetTempPath();
@@ -219,7 +219,7 @@ public sealed class WriteAheadLogTests : Test
         Equal(2L, index);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AppendLargeEntry()
     {
         var dir = GetTempPath();
@@ -241,7 +241,7 @@ public sealed class WriteAheadLogTests : Test
         await wal.ReadAsync(new LogEntryConsumer(checker), 1L, 1L, TestToken);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.PrivateMemory, false)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.PrivateMemory, true)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.SharedMemory, false)]
@@ -277,7 +277,7 @@ public sealed class WriteAheadLogTests : Test
         await wal.ReadAsync(new LogEntryConsumer(checker), 1L, wal.LastEntryIndex, TestToken);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.PrivateMemory)]
     [InlineData(WriteAheadLog.MemoryManagementStrategy.SharedMemory)]
     public static async Task Commit(WriteAheadLog.MemoryManagementStrategy strategy)
@@ -326,7 +326,7 @@ public sealed class WriteAheadLogTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task IncrementalState()
     {
         var dir = GetTempPath();
@@ -347,7 +347,7 @@ public sealed class WriteAheadLogTests : Test
         Equal(count * (0L + count - 1L) / 2L, stateMachine.Value);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.None)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.Crc32)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.Crc64)]
@@ -391,7 +391,7 @@ public sealed class WriteAheadLogTests : Test
         Empty(reader);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task JsonSerialization()
     {
         var dir = GetTempPath();
@@ -411,7 +411,7 @@ public sealed class WriteAheadLogTests : Test
         Equal("Entry2", payload.StringField.Value);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ImportLog()
     {
         const long count = 1000L;
@@ -444,7 +444,7 @@ public sealed class WriteAheadLogTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CaptureConfiguration()
     {
         var dir = GetTempPath();
@@ -473,7 +473,7 @@ public sealed class WriteAheadLogTests : Test
         Contains(address, config.Members);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConcurrentOverwriteDoesNotDeadlockBehindAppend()
     {
         await using var wal = new WriteAheadLog(new() { Location = GetTempPath() }, IStateMachine.CreateNoOp());
@@ -513,7 +513,7 @@ public sealed class WriteAheadLogTests : Test
         }
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UseTimeBasedFlush()
     {
         var flushInterval = TimeSpan.FromMilliseconds(500);

@@ -16,7 +16,7 @@ public sealed class RegressionIssue16 : Test
 {
     private const long SnapshotDepth = 10L;
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task CompactedNoOpLogReopensFromRestoredSnapshot(bool flushOnCommit)

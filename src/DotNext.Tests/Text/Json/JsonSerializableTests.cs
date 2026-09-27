@@ -78,7 +78,7 @@ public sealed class JsonSerializableTests : Test
         Equal(expected.Value?.StringField, actual.Value?.StringField);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SerializeDeserializeWithStream()
     {
         var expected = new JsonSerializable<TestJsonObject>
@@ -95,7 +95,7 @@ public sealed class JsonSerializableTests : Test
         Equal(expected, actual);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SerializeDeserializeInMemory()
     {
         var expected = new JsonSerializable<TestJsonObject>
@@ -107,7 +107,7 @@ public sealed class JsonSerializableTests : Test
         Equal(expected, await JsonSerializable<TestJsonObject>.ReadFromAsync(new SequenceReader(memory), TestToken));
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true)]
     [InlineData(false)]
     public static async Task SerializeDeserializeWithFile(bool hideLengthInfo)
@@ -126,7 +126,7 @@ public sealed class JsonSerializableTests : Test
         Equal(expected, actual);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SerializeDeserializeWithPipe()
     {
         var expected = new JsonSerializable<TestJsonObject>

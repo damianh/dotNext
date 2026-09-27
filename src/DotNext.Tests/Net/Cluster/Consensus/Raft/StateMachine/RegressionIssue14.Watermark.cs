@@ -6,7 +6,7 @@ using Threading;
 
 public sealed partial class RegressionIssue14 : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotInstallationDoesNotPublishFlushWatermarkBeforeCheckpoint()
     {
         var startup = new PausedFlusherContext();

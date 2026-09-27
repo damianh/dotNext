@@ -4,7 +4,7 @@ using static System.Threading.Timeout;
 
 public sealed partial class RegressionIssue14 : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StartupSnapshotInstallSchedulesCleanupForSquashedPages()
     {
         var startup = new PausedFlusherContext();

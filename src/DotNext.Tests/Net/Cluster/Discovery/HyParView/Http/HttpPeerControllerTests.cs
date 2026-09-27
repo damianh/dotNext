@@ -31,7 +31,7 @@ public sealed class HttpPeerControllerTests : Test
             .Build();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConnectDisconnect()
     {
         var config1 = new Dictionary<string, string>
@@ -72,7 +72,7 @@ public sealed class HttpPeerControllerTests : Test
         await peer1.StopAsync(TestToken);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DependencyInjection()
     {
         var config1 = new Dictionary<string, string>

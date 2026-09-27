@@ -5,7 +5,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncLockTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task EmptyLock()
     {
         var @lock = default(AsyncLock);
@@ -21,7 +21,7 @@ public sealed class AsyncLockTests : Test
         holder.Dispose();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExclusiveLock()
     {
         using var syncRoot = new AsyncExclusiveLock();
@@ -39,7 +39,7 @@ public sealed class AsyncLockTests : Test
         False(syncRoot.IsLockHeld);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SemaphoreLock()
     {
         using var sem = new SemaphoreSlim(3);

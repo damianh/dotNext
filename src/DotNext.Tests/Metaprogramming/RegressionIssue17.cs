@@ -6,7 +6,7 @@ using static Linq.Expressions.ExpressionBuilder;
 
 public sealed class RegressionIssue17 : Test
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task Regression(bool useCompilerGeneratedExpression)

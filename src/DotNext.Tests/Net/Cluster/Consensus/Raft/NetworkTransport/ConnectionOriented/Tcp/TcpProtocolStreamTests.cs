@@ -25,7 +25,7 @@ public sealed class ProtocolStreamTests : Test
         Equal(expected, destination.ToArray());
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(32)]
     [InlineData(128)]
     [InlineData(1024)]

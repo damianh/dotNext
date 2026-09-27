@@ -3,7 +3,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncExchangerTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExchangeInts()
     {
         using var source = new CancellationTokenSource();
@@ -14,7 +14,7 @@ public sealed class AsyncExchangerTests : Test
         Equal(52, await task);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExchangerGracefulShutdown()
     {
         var exchanger = new AsyncExchanger<int>();
@@ -25,7 +25,7 @@ public sealed class AsyncExchangerTests : Test
         True(exchanger.DisposeAsync().IsCompletedSuccessfully);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExchangerGracefulShutdown2()
     {
         var exchanger = new AsyncExchanger<int>();
@@ -37,7 +37,7 @@ public sealed class AsyncExchangerTests : Test
         await disposeTask;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CheckCancellation()
     {
         await using var exchanger = new AsyncExchanger<int>();
@@ -49,7 +49,7 @@ public sealed class AsyncExchangerTests : Test
         Equal(56, await task);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Termination()
     {
         await using var exchanger = new AsyncExchanger<int>();
@@ -62,7 +62,7 @@ public sealed class AsyncExchangerTests : Test
         await ThrowsAsync<ExchangeTerminatedException>(task.AsTask);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SynchronousExchange()
     {
         using var exchanger = new AsyncExchanger<int>();
@@ -83,7 +83,7 @@ public sealed class AsyncExchangerTests : Test
         });
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StressTest()
     {
         await using var exchanger = new AsyncExchanger<int>();

@@ -5,7 +5,7 @@ using Diagnostics;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncAutoResetEventSlimTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Concurrency()
     {
         var ev = new AsyncAutoResetEventSlim();

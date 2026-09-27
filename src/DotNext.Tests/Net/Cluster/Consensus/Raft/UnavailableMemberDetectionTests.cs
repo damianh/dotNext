@@ -9,7 +9,7 @@ using Threading;
 
 public sealed class UnavailableMemberDetectionTests : RaftTest
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ObsoleteCallerStateReleasesMembershipLock()
     {
         await using var cluster = new TestCluster();
@@ -19,7 +19,7 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
         AssertLockReleased(cluster);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ThrowingDetectionCallbackReleasesMembershipLock()
     {
         await using var cluster = new TestCluster(static (_, _, _) => throw new InvalidOperationException());
@@ -29,7 +29,7 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
         AssertLockReleased(cluster);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CanceledAcquisitionDoesNotReleaseForeignLock()
     {
         await using var cluster = new TestCluster();
@@ -44,7 +44,7 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
         Accessors<TestMember>.MembershipLock(cluster).Release();
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CancellationAfterAcquisitionReleasesMembershipLock()
     {
         using var cancellation = new CancellationTokenSource();
@@ -64,7 +64,7 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
         AssertLockReleased(cluster);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DetectionCompletesAfterClusterDisposal()
     {
         var releaseCallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

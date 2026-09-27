@@ -43,7 +43,7 @@ partial class WriteAheadLog
             Checkpoint.PublishFile(temporary, path);
         }
 
-        internal void Recover(CheckpointVersion1 checkpoint, MetadataPageManager pages)
+        internal void Recover(CheckpointVersion2 checkpoint, MetadataPageManager pages)
         {
             if (!File.Exists(path))
                 return;

@@ -2,7 +2,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
 public sealed class QuorumLossTests : RaftTest
 {
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(2)]
     [InlineData(4)]
     public static async Task HalfUnavailableReleasesLeaderAndShutdown(int memberCount)
@@ -33,7 +33,7 @@ public sealed class QuorumLossTests : RaftTest
         await cluster.Leader.StopAsync(TestToken).WaitAsync(DefaultTimeout, TestToken);
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(2, false)]
     [InlineData(2, true)]
     [InlineData(4, false)]
@@ -68,7 +68,7 @@ public sealed class QuorumLossTests : RaftTest
         }
     }
 
-    [Theory]
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(2, false)]
     [InlineData(2, true)]
     [InlineData(4, false)]

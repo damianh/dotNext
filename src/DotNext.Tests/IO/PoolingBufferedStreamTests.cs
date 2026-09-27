@@ -36,7 +36,7 @@ public sealed class PoolingBufferedStreamTests : Test
         False(bufferedStream.HasBufferedDataToWrite);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SimpleReadAsync()
     {
         const int bufferSize = 4096;
@@ -89,7 +89,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Equal(expected.AsSpan(bufferSize / 2), actual.AsSpan());
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferizeAndAdvancePositionAsync()
     {
         const int bufferSize = 4096;
@@ -131,7 +131,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Equal(bufferedStream.BaseStream.Length, bufferedStream.Length);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DrainBufferAsync()
     {
         const int bufferSize = 4096;
@@ -168,7 +168,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Throws<InvalidOperationException>(() => stream.WriteTimeout = 10);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferedWriter()
     {
         const int bufferSize = 4096;
@@ -186,7 +186,7 @@ public sealed class PoolingBufferedStreamTests : Test
         False(bufferedStream.HasBufferedDataToRead);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task BufferedReader()
     {
         const int bufferSize = 4096;
@@ -271,7 +271,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Equal(expected, destination.GetBuffer());
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyStreamAsync()
     {
         const int bufferSize = 4096;
@@ -288,7 +288,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Equal(expected, destination.GetBuffer());
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CopyStream2Async()
     {
         const int bufferSize = 4096;
@@ -358,7 +358,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Equal(expected, actual);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ReadFromFileAsync()
     {
         var expected = RandomBytes(4096);
@@ -390,7 +390,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Equal(4L, buffered.Position);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue256Async()
     {
         const int dataSize = 128 + 3105 + 66 + 3111 + 66 + 3105 + 66 + 2513 + 128;
@@ -475,7 +475,7 @@ public sealed class PoolingBufferedStreamTests : Test
         Equal(position, reader.Position);
     }
     
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task FlushNonEmptyReadBufferAsync()
     {
         using var stream = new MemoryStream();

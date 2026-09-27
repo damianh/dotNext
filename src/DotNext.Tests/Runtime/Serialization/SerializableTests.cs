@@ -6,7 +6,7 @@ using IO;
 
 public sealed class SerializableTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SerializeDeserializeUsingPipe()
     {
         var pipe = new Pipe();
@@ -20,7 +20,7 @@ public sealed class SerializableTests : Test
         Equal(expected, actual);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SerializeDeserializeUsingStream()
     {
         using var ms = new MemoryStream();

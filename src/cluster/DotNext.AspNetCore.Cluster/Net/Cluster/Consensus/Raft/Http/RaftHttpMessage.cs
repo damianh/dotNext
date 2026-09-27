@@ -28,7 +28,7 @@ internal abstract class RaftHttpMessage : HttpMessage
         : base(headers)
     {
         ConsensusTerm = ParseHeader(headers, TermHeader, Int64Parser);
-        StateVersion = ParseHeader(headers, StateVersionHeader, Int32Parser);
+        StateVersion = ParseOptionalHeader(headers, StateVersionHeader, Int32Parser, defaultValue: 0);
     }
 
     protected new void PrepareRequest(HttpRequestMessage request)

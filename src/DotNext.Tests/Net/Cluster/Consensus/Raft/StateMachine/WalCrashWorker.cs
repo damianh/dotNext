@@ -14,7 +14,7 @@ public sealed class WalCrashWorker : Test
     internal sealed record Configuration(string Location, WriteAheadLog.MemoryManagementStrategy Strategy,
         bool Direct, int FlushMode, WriteAheadLog.IntegrityHashAlgorithm Hash, string Scenario);
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task Run()
     {
         var configuration = Environment.GetEnvironmentVariable(ConfigurationVariable);

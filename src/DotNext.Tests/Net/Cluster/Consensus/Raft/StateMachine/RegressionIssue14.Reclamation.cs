@@ -7,7 +7,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 
 public sealed partial class RegressionIssue14 : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task SnapshotBoundaryInLastMetadataSlotSurvivesReclamation()
     {
         const WriteAheadLog.IntegrityHashAlgorithm hashAlgorithm = WriteAheadLog.IntegrityHashAlgorithm.None;

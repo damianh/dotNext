@@ -5,7 +5,7 @@ namespace DotNext.Threading;
 [Collection(TestCollections.AsyncPrimitives)]
 public sealed class AsyncBarrierTests : Test
 {
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RemovingWaitingParticipants()
     {
         using var barrier = new AsyncBarrier(4);
@@ -20,7 +20,7 @@ public sealed class AsyncBarrierTests : Test
         await task;
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task AddRemoveParticipant()
     {
         for (var j = 0; j < 100; j++)
@@ -47,7 +47,7 @@ public sealed class AsyncBarrierTests : Test
         }
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task PhaseCompletion()
     {
         using var barrier = new AsyncBarrier(3);
@@ -67,7 +67,7 @@ public sealed class AsyncBarrierTests : Test
         Equal(2, barrier.CurrentPhaseNumber);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue73()
     {
         using var barrier = new AsyncBarrier(2);
@@ -89,7 +89,7 @@ public sealed class AsyncBarrierTests : Test
         Equal(42, result[1]);
     }
 
-    [Fact]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RegressionIssue205()
     {
         using var barrier = new AsyncBarrier(1);

@@ -459,8 +459,8 @@ public partial class RaftCluster<TMember>
         return await configurationStorage.LoadConfigurationAsync(token).ConfigureAwait(false);
     }
 
-    // Rejects the append if the leader's term has changed, so a stale leader cannot place an entry
-    // of its term after an entry of a newer term.
+    // Rejects terms already stale under the append lock. Term updates are not serialized here; if
+    // the term advances after the check, the entry is still ordered before any newer-term entry.
     private async ValueTask<long> AppendConfigurationAsync<TAddress>(LeaderState<TMember> leaderState,
         IClusterConfiguration<TAddress> configuration,
         CancellationToken token)

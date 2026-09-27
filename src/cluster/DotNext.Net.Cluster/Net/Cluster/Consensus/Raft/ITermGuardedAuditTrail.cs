@@ -1,17 +1,18 @@
 namespace DotNext.Net.Cluster.Consensus.Raft;
 
 /// <summary>
-/// Represents a log that can reject an append atomically when the entry is not from the current term.
+/// Represents a log that can reject a stale-term append while serializing the check with other appends.
 /// </summary>
 internal interface ITermGuardedAuditTrail
 {
     /// <summary>
-    /// Appends the entry if its term is still the current term of the log.
+    /// Appends the entry if its term matches the log term observed under the append lock.
     /// </summary>
     /// <remarks>
-    /// The term is checked while holding the lock that serializes appends. The term of the log only grows,
-    /// and it grows before any entry of the newer term is appended. Therefore, a successful append never
-    /// places the entry after an entry with a higher term.
+    /// The check is atomic with other appends, not with term updates. A successful call can publish
+    /// after the local term has advanced, but never after an entry with a higher term. That case is
+    /// equivalent to append-then-step-down: the old leader state is stopped before this node votes or
+    /// accepts newer-term entries, and an unreplicated tail is truncated by the next leader.
     /// </remarks>
     /// <typeparam name="TEntry">The type of the log entry.</typeparam>
     /// <param name="entry">The entry to append.</param>

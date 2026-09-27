@@ -429,12 +429,16 @@ thesis, chapter 4.
 **Term guard.** The WAL and `ConsensusOnlyState` implement the internal
 `ITermGuardedAuditTrail`: under the append lock, an entry whose term is not
 the log's current term is rejected with `NotLeaderException`, without
-modifying or poisoning the log. The term only grows, and it grows before any
-entry of a newer term is appended. So a stale leader can no longer place a
-configuration entry of its term after an entry of a newer term. Other
-`IPersistentState` implementations get a best-effort pre-check. The guard
-covers membership appends only; `ClusterConfigurationExtensions.AppendAsync`
-and replication still accept a caller-supplied term.
+modifying or poisoning the log. The check is atomic with other appends and
+overwrites, not with `UpdateTermAsync` or `IncrementTermAsync`. A configuration
+entry can still land after the local term advances, but never after an entry
+of a newer term. That is equivalent to append-then-step-down: the old leader
+state is stopped before this node votes or accepts newer-term entries, so a
+late entry that was not already replicated cannot be committed and is
+truncated by the next leader. Other `IPersistentState` implementations get a
+best-effort pre-check. The guard covers membership appends only;
+`ClusterConfigurationExtensions.AppendAsync` and replication still accept a
+caller-supplied term.
 
 **Known deviation.** Adopting a configuration on apply rather than on append
 is kept deliberately (option A for #18). Until a change is applied, the leader

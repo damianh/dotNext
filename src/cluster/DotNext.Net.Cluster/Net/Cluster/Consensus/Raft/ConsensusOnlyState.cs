@@ -227,7 +227,7 @@ public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuar
         await syncRoot.EnterWriteLockAsync(token).ConfigureAwait(false);
         try
         {
-            // see ITermGuardedAuditTrail: the term grows before any entry of the newer term is appended
+            // See ITermGuardedAuditTrail: this is serialized with appends, not with term updates.
             if (entry.Term != Term)
                 throw new NotLeaderException();
 

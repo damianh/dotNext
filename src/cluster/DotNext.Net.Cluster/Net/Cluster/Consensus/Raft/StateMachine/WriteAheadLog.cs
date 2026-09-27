@@ -367,9 +367,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
 
     private void ThrowIfNotCurrentTerm(long entryTerm, bool requireCurrentTerm)
     {
-        // Must be called under the append lock. A term only grows, and it grows before any entry
-        // of the newer term is appended; so if the entry has the current term here, no newer-term
-        // entry can precede it in the log.
+        // Must be called under the append lock. The check is serialized with appends, not with
+        // term updates, so the entry can land after a term advance but never after a newer-term entry.
         if (requireCurrentTerm && entryTerm != state.Term)
             throw new NotLeaderException();
     }

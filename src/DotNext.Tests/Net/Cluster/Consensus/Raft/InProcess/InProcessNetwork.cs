@@ -100,8 +100,6 @@ internal sealed class InProcessNetwork
 
     internal Task FailNext(EndPoint source, EndPoint target, RaftMessageType messageType, Exception exception)
     {
-        ArgumentNullException.ThrowIfNull(exception);
-
         lock (syncRoot)
         {
             var route = new Route(source, target, messageType);
@@ -158,8 +156,6 @@ internal sealed class InProcessNetwork
         Func<ILocalMember, CancellationToken, ValueTask<TResult>> action,
         CancellationToken token)
     {
-        ArgumentNullException.ThrowIfNull(action);
-
         var source = member.Source;
         var target = member.EndPoint;
         var sourceId = source.Id;
@@ -226,8 +222,6 @@ internal sealed class InProcessNetwork
 
     internal async Task DeliverAsync(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -242,8 +236,6 @@ internal sealed class InProcessNetwork
     /// </summary>
     internal async Task DeliverAndLoseResponseAsync(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -256,8 +248,6 @@ internal sealed class InProcessNetwork
     // Returns false if the message was canceled or completed concurrently.
     internal async Task<bool> TryDeliverAsync(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -270,8 +260,6 @@ internal sealed class InProcessNetwork
 
     internal bool TryDrop(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -284,8 +272,6 @@ internal sealed class InProcessNetwork
 
     internal void Drop(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))

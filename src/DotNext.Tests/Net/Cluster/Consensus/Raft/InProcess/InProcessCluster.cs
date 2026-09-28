@@ -32,12 +32,6 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
         LeaseOptions lease = null)
         : base(new Configuration(electionTimeout, lease))
     {
-        ArgumentNullException.ThrowIfNull(network);
-        ArgumentException.ThrowIfNullOrEmpty(name);
-        ArgumentNullException.ThrowIfNull(membership);
-        ArgumentNullException.ThrowIfNull(auditTrail);
-        ArgumentNullException.ThrowIfNull(timeProvider);
-
         this.network = network;
         TimeProvider = timeProvider;
         this.membership = membership.ToArray();
@@ -94,8 +88,6 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
         Func<IPersistentState, IPersistentState> reopenState,
         CancellationToken token = default)
     {
-        ArgumentNullException.ThrowIfNull(reopenState);
-
         await StopAsync(token).ConfigureAwait(false);
         var replacement = new InProcessCluster(
             network,

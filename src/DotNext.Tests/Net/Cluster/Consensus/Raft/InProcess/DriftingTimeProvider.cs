@@ -14,9 +14,6 @@ internal sealed class DriftingTimeProvider : TimeProvider
 
     internal DriftingTimeProvider(TimeProvider reference, double slowdown)
     {
-        ArgumentNullException.ThrowIfNull(reference);
-        ArgumentOutOfRangeException.ThrowIfLessThan(slowdown, 1D);
-
         this.reference = reference;
         Slowdown = slowdown;
         origin = reference.GetTimestamp();

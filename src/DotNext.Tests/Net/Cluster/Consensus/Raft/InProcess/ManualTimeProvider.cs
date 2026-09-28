@@ -8,8 +8,6 @@ internal sealed class ManualTimeProvider : FakeTimeProvider
 
     internal Task FailNextTimer(Exception exception)
     {
-        ArgumentNullException.ThrowIfNull(exception);
-
         var failure = new TimerFailure(exception);
         if (Interlocked.CompareExchange(ref timerFailure, failure, null) is not null)
             throw new InvalidOperationException("A timer failure is already pending.");

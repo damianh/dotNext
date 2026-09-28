@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
@@ -369,6 +369,13 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     public virtual async Task StartAsync(CancellationToken token = default)
     {
         await AuditTrail.InitializeAsync(token).ConfigureAwait(false);
+
+        // A restarted voter may have acknowledged a leader lease just before the crash. Leader stickiness
+        // is not persisted, so the node treats startup as leader activity and refuses to vote for one
+        // election timeout, which is not shorter than any lease issued by a leader with the same settings.
+        if (leaseEnabled)
+            Timestamp.Refresh(ref lastUpdated, TimeProvider);
+
         InitializeState();
     }
 

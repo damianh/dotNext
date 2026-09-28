@@ -67,6 +67,33 @@ public sealed class VoteStickinessTests : RaftTest
         await AssertVoteAsync(candidate, voter, preVote, accepted: true);
     }
 
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task StartupSuppressesVotingWhenLeaseIsEnabled(bool preVote)
+    {
+        var clock = CreateClock(0L);
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        var network = new InProcessNetwork();
+        EndPoint[] membership = [new DnsEndPoint("candidate", 0), new DnsEndPoint("voter", 0)];
+        using var candidateState = new ConsensusOnlyState();
+        using var voterState = new ConsensusOnlyState();
+        await using var candidate = CreateNode(network, clock, membership, 0, candidateState);
+        await using var voter = CreateNode(network, clock, membership, 1, voterState, new());
+        await candidate.StartAsync(TestToken);
+        await voter.StartAsync(TestToken);
+
+        // A restarted voter cannot know whether it acknowledged a lease just before the crash.
+        Null(voter.Leader);
+        await AssertVoteAsync(candidate, voter, preVote, accepted: false);
+
+        clock.Advance(TimeSpan.FromMilliseconds(99));
+        await AssertVoteAsync(candidate, voter, preVote, accepted: false);
+
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        await AssertVoteAsync(candidate, voter, preVote, accepted: true);
+    }
+
     private static ManualTimeProvider CreateClock(long initialTicks)
     {
         var clock = new ManualTimeProvider();
@@ -80,7 +107,8 @@ public sealed class VoteStickinessTests : RaftTest
         TimeProvider clock,
         IReadOnlyList<EndPoint> membership,
         int index,
-        IPersistentState state)
+        IPersistentState state,
+        InProcessCluster.LeaseOptions lease = null)
         => new(
             network,
             ((DnsEndPoint)membership[index]).Host,
@@ -88,7 +116,8 @@ public sealed class VoteStickinessTests : RaftTest
             state,
             clock,
             TimeSpan.FromMilliseconds(100),
-            startFollower: false);
+            startFollower: false,
+            lease);
 
     private static async Task AssertVoteAsync(
         InProcessCluster candidate, InProcessCluster voter, bool preVote, bool accepted)

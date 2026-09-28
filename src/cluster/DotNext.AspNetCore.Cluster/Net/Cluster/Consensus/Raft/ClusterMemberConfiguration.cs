@@ -42,12 +42,7 @@ public class ClusterMemberConfiguration : IClusterMemberConfiguration
         set => field = double.IsFinite(value) && value > 0D ? value : throw new ArgumentOutOfRangeException(nameof(value));
     } = 0.5D;
 
-    /// <summary>
-    /// A bound on clock drift across servers.
-    /// </summary>
-    /// <remarks>
-    /// Over a given time period, no server’s clock increases more than this bound times any other.
-    /// </remarks>
+    /// <inheritdoc cref="IClusterMemberConfiguration.ClockDriftBound"/>
     public double ClockDriftBound
     {
         get;

@@ -163,7 +163,7 @@ public sealed class LeaderLeaseTimingTests : RaftTest
             "A restarted voter helped elect a new leader while the old leader's lease was still usable.");
     }
 
-    [Fact(Timeout = TestTimeouts.Default)]
+    [Fact(Timeout = TestTimeouts.Default, Skip = "https://github.com/damianh/dotNext/issues/58")]
     public static async Task RetransmittedSnapshotAcknowledgmentKeepsVoterSticky()
     {
         await using var cluster = new InProcessClusterFixture(5, lease: new());

@@ -408,7 +408,7 @@ confirmed core defects; overlapping consequences are not counted twice.
 | S6: replay protection | Bounded deduplication, not an established security promise | The cache is expiring, evictable, and process-local. Qualify the internal "exactly-once" wording; no cryptographic replay-protection contract was established. |
 | O1: heartbeat exceptions | Confirmed new finding 16 | The task faults without invalidating leadership. The second review's election-timeout duration bound is unsupported. |
 | O2: failure-induced standby | Behavior confirmed; remedy overstated | Manual recovery is available and transition failure already logs at Critical. Automatically retrying after an unknown failure is not necessarily safe. |
-| O3: dangerous defaults | Conditional configuration risks | Cold start acts on empty stored configuration; independently bootstrapped singletons do not prove split brain within one correctly configured membership. Leases are opt-in, elapsed heartbeat time is deducted, and an arbitrary drift factor is not a measured safety bound. A slow follower alone need not block majority replication. |
+| O3: dangerous defaults | Conditional configuration risks; lease timing model established for #20 | Cold start acts on empty stored configuration; independently bootstrapped singletons do not prove split brain within one correctly configured membership. Leases are opt-in, elapsed heartbeat time is deducted, and an arbitrary drift factor is not a measured safety bound. A slow follower alone need not block majority replication. See [Leader lease timing model](#leader-lease-timing-model) for the supported assumptions, the two fixed lease defects, and the remaining snapshot hazard (#58). |
 | O4: deterministic core tests | Coverage gap confirmed | Election, lifecycle, and failure scenarios lack direct deterministic coverage. Existing component and integration tests must not be overlooked. |
 | O5: missing observability | Partial hardening | Dedicated rejection metrics would help, but malformed messages can already reach exception logging. |
 | O6: configuration/header validation | Mixed hardening; silent-degradation claim overstated | An underlying cache probe rejected several invalid settings, subject to the version caveat below. Explicit expiration validation and rejection of ambiguous singleton headers remain reasonable improvements; no authorization parser-differential exploit was established. |
@@ -469,6 +469,74 @@ is a candidate for a small TLA+ model covering append-time vs apply-time
 adoption, lagging appliers, and leader changes between the C' and C''
 appends. Until it is answered, do not treat apply-time adoption as equivalent
 to R2.
+
+## Leader lease timing model
+
+Recorded for #20. A leader that completes a heartbeat round acknowledged by a
+majority holds a lease for `ElectionTimeout.LowerValue / ClockDriftBound`,
+measured on its monotonic clock from the start of the round. A follower
+refuses PreVote and Vote while it has heard from the leader within its own
+election timeout, which is at least `LowerValue`. The lease is safe when every
+majority that could elect a new leader includes a member whose refusal window
+outlasts the lease.
+
+**Supported assumptions**
+
+| Assumption | Enforcement |
+|---|---|
+| Monotonic clocks (`TimeProvider.GetTimestamp`) drift apart by at most `ClockDriftBound`. Wall-clock adjustments do not matter. | Operator. `LeaseExpiresBeforeVotersForgetLeaderWithinDriftBound` shows no overlap within the bound. `DriftBeyondBoundLetsVotersForgetLeaderDuringLease` shows the overlap when the bound is exceeded. |
+| Timer callbacks may run arbitrarily late, for example under thread-pool starvation or GC pauses. | Fixed. The lease stores its deadline, and `TryGetLeaseToken` compares the clock against the deadline and cancels an expired lease. The timer only gives prompt notification. |
+| A voter may crash and restart with its persistent state inside a lease window. | Fixed. Leader stickiness is not persisted, so a lease-enabled node treats its startup as leader activity and refuses to vote for one election timeout. |
+| All members use the same lease setting, `LowerValue` and `ClockDriftBound`. | Operator. Startup suppression depends on the voter's own lease setting and timeout. |
+
+**Red baseline.** At `3cd0336e5`, with tests from `0ab59dedb`, this command
+failed 3 of 9 cases in 8 of 8 runs:
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-build -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderLeaseTimingTests' --progress off --timeout 180s
+```
+
+- `LateLeaseTimerDoesNotExtendLease(lateTimers: True)`: "The stale leader still
+  reports a usable lease after its deadline." The partitioned leader's lease
+  deadline was t=200. Its timers were delayed, and node 1 was elected at t=210
+  and committed index 2. The old leader still returned an uncancelled token.
+- `RestartedVoterRespectsAcknowledgedLease(restart: True)`: "A restarted voter
+  helped elect a new leader while the old leader's lease was still usable."
+  Node 2 acknowledged a lease valid until t=249 and restarted at t=150. At
+  t=210 it granted PreVote, and node 3 was elected and committed index 2.
+- `RetransmittedSnapshotAcknowledgmentKeepsVoterSticky`: see #58 below.
+
+The controls `lateTimers: False` and `restart: False` passed at baseline.
+Removing either fix makes its own test fail again.
+
+**Not supported**
+
+- Clock drift beyond `ClockDriftBound`, including a monotonic clock that stops
+  while the process or host is suspended when other members' clocks keep
+  running.
+- Different lease settings, `LowerValue` or `ClockDriftBound` across members.
+- Restarting a member with wiped persistent state. Such a node is a new
+  member, not a restarted voter.
+- A `ClockDriftBound` below 1. ASP.NET configuration rejects it, but the core
+  `RaftCluster` constructor does not validate it.
+- A pause between the final lease check and returning the read result. Check
+  the lease again after the read; a pause after that check cannot be detected
+  by the library.
+
+The TCP/UDP `RaftCluster.NodeConfiguration` does not expose
+`ClockDriftBound`, so its bound is always 1. A missing option alone does not
+show a defect, so this is documented rather than changed.
+
+**Known hazards**
+
+- #58: a retransmitted `InstallSnapshot` that the follower rejects as already
+  installed does not refresh its stickiness. The leader still counts the
+  rejection as `Touched` toward the lease quorum.
+  `RetransmittedSnapshotAcknowledgmentKeepsVoterSticky` is skipped until the
+  issue is fixed.
+- Finding 5 (#21): the lease token issued when a node becomes leader is
+  usable before the first quorum round. The lease tests do not rely on that
+  token.
 
 ## Scope and limitations
 

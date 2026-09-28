@@ -223,3 +223,34 @@ must obtain a read index that the leader has confirmed with a quorum.
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.FollowerReadBarrierTests' --progress off --timeout 180s
 ```
+
+## Leader lease timing
+
+`LeaderLeaseTimingTests` covers issue #20. The tests check the supported lease
+clock and timer model. A lease is usable when `TryGetLeaseToken` returns a
+token that is not cancelled. Every scenario establishes the lease through a
+completed quorum round, not the token issued when the node becomes leader
+(#21).
+
+- `InProcessCluster.LeaseOptions` enables leases with an optional
+  `ClockDriftBound`. `InProcessClusterFixture` accepts these options and a
+  per-node clock factory, and `RestartAsync(member)` replaces a node while
+  keeping its persistent state.
+- `DriftingTimeProvider` makes a node's monotonic clock and timers run slower
+  than the shared clock by a constant factor. Drift within the configured
+  bound keeps the lease inside the voters' stickiness window. Drift beyond it
+  produces the expected overlap, which is kept as a characterization of an
+  unsupported configuration.
+- `StarvableTimeProvider` queues a node's timer callbacks while its clock
+  keeps advancing. This models thread-pool starvation or a GC pause that
+  delays the lease timer.
+- `InProcessNetwork.DeliverAndLoseResponseAsync` runs the target handler and
+  then fails the sender, as if the response was lost.
+
+`RetransmittedSnapshotAcknowledgmentKeepsVoterSticky` is skipped until #58 is
+fixed. `VoteStickinessTests.StartupSuppressesVotingWhenLeaseIsEnabled` covers
+the startup vote suppression that makes voter restarts safe.
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderLeaseTimingTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.VoteStickinessTests' --progress off --timeout 180s
+```

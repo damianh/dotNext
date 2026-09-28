@@ -50,6 +50,15 @@ upstream sync is merged.
 * **Flusher:** the fork's flusher keeps its failure-propagation behaviour (#38 and #40). Upstream's
   `FlushState`/`UnflushedIndex` rework is not used.
 
+### Leader leases
+* **Lease validity is checked against the monotonic clock.** `TryGetLeaseToken` compares the time provider's
+  timestamp with the lease deadline and cancels an expired lease, even if its timer callback has not run yet (#20).
+  Upstream relies only on the timer, so a delayed callback extends the lease.
+* **Lease-enabled nodes refuse to vote for one election timeout after start** (#20). This keeps a restarted voter from
+  helping elect a new leader while a lease it acknowledged before the crash is still valid. The first election after
+  a cold start can take up to one election timeout longer than upstream. Nodes with leases disabled behave as upstream.
+  See [Leader lease timing model](RAFT-REVIEW.md#leader-lease-timing-model).
+
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.

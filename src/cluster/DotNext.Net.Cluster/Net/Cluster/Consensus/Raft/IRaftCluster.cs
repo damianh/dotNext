@@ -33,7 +33,9 @@ public interface IRaftCluster : IReplicationCluster<IRaftLogEntry>, IPeerMesh<IR
     /// Tries to get the lease that can be used to perform the read with linearizability guarantees.
     /// </summary>
     /// <remarks>
-    /// The lease is valid while the returned token is not canceled. Each call checks the lease deadline against
+    /// The lease is valid while the returned token is not canceled. A newly elected leader returns a canceled token
+    /// until a majority of the cluster has confirmed its term and the local state machine has applied the write barrier
+    /// of the current term. Each call checks the lease deadline against
     /// the monotonic clock and cancels an expired lease, even if its timer has not fired yet.
     /// A token obtained earlier is canceled when the lease timer fires, a later call observes the expiration,
     /// or leadership is lost and the leader state is destroyed. Call this method again after the read and discard

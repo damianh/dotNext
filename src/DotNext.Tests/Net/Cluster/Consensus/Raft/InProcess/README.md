@@ -229,8 +229,8 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --fi
 `LeaderLeaseTimingTests` covers issue #20. The tests check the supported lease
 clock and timer model. A lease is usable when `TryGetLeaseToken` returns a
 token that is not cancelled. Every scenario establishes the lease through a
-completed quorum round, not the token issued when the node becomes leader
-(#21).
+completed quorum round. See [Leader lease activation](#leader-lease-activation)
+for the conditions a new leader must meet first.
 
 - `InProcessCluster.LeaseOptions` enables leases with an optional
   `ClockDriftBound`. `InProcessClusterFixture` accepts these options and a
@@ -253,4 +253,26 @@ the startup vote suppression that makes voter restarts safe.
 
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderLeaseTimingTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.VoteStickinessTests' --progress off --timeout 180s
+```
+
+## Leader lease activation
+
+`LeaderLeaseActivationTests` covers issue #21. A new leader must not expose a
+usable lease until a majority has confirmed its term and its own state machine
+has applied the current-term write barrier.
+
+- The leader uses a `WriteAheadLog` whose state machine blocks on a gate. The
+  WAL applies the payload-less write barrier without calling the state
+  machine, so the leader first inherits a payload entry from an earlier term.
+  Blocking that entry holds back application of the barrier.
+- `LeaseRequiresQuorumAndAppliedWriteBarrier` checks each interval before
+  activation: before any quorum round, after quorum confirmation but before
+  the barrier is committed, and after commit but before it is applied. It then
+  releases the gate, waits for the lease, and checks that expiry and renewal
+  still work.
+- Other scenarios: a dropped first round, a failed replication worker,
+  step-down or shutdown before activation, and disabled leases.
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderLeaseActivationTests' --progress off --timeout 180s
 ```

@@ -58,6 +58,9 @@ upstream sync is merged.
   helping elect a new leader while a lease it acknowledged before the crash is still valid. The first election after
   a cold start can take up to one election timeout longer than upstream. Nodes with leases disabled behave as upstream.
   See [Leader lease timing model](RAFT-REVIEW.md#leader-lease-timing-model).
+* **A new leader's lease starts inactive** (#21). `TryGetLeaseToken` returns `true` with a canceled token until a
+  majority has confirmed the leader's term and the local state machine has applied the current-term write barrier.
+  Upstream issues a usable lease as soon as the node becomes leader.
 
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands

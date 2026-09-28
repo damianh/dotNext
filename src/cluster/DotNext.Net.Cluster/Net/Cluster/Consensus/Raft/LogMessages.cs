@@ -353,4 +353,12 @@ internal static partial class LogMessages
         EventName = $"{EventIdPrefix}.{nameof(UnsupportedVersion)}"
     )]
     public static partial void UnsupportedVersion(this ILogger logger, EndPoint member);
+
+    [LoggerMessage(
+        EventIdOffset + 46,
+        LogLevel.Error,
+        "The leader lease remains inactive because the write barrier {WriteBarrier} was not applied",
+        EventName = $"{EventIdPrefix}.{nameof(LeaderLeaseActivationFailed)}"
+    )]
+    public static partial void LeaderLeaseActivationFailed(this ILogger logger, long writeBarrier, Exception e);
 }

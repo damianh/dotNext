@@ -87,7 +87,8 @@ public sealed class LeaderLeaseActivationTests : RaftTest
         cluster.HoldFollowers();
         await cluster.ElectAsync();
 
-        var leadership = leader.LeadershipToken;
+        // The leader state's token is canceled after the node has left that state.
+        var leaderState = leader.ConsensusToken;
         var initial = await cluster.PendingRoundAsync();
         False(IsLeaseUsable(leader), "The leader exposes a usable lease before its first heartbeat completes.");
 
@@ -98,7 +99,7 @@ public sealed class LeaderLeaseActivationTests : RaftTest
             False(IsLeaseUsable(leader));
         }
 
-        await leadership.WaitAsync().AsTask().WaitAsync(DefaultTimeout, TestToken);
+        await leaderState.WaitAsync().AsTask().WaitAsync(DefaultTimeout, TestToken);
         False(leader.TryGetLeaseToken(out var token));
         True(token.IsCancellationRequested);
     }
@@ -153,14 +154,15 @@ public sealed class LeaderLeaseActivationTests : RaftTest
         cluster.HoldFollowers();
         await cluster.ElectAsync();
 
-        var leadership = leader.LeadershipToken;
+        // The leader state's token is canceled after the node has left that state.
+        var leaderState = leader.ConsensusToken;
         var initial = await cluster.PendingRoundAsync();
         False(IsLeaseUsable(leader), "The leader exposes a usable lease before any quorum round.");
 
         // Node 1 has observed a newer term, e.g. from another candidate, and answers the held first round with it.
         await cluster.States[1].UpdateTermAsync(leader.Term + 1L, resetLastVote: true, TestToken);
         await cluster.Network.DeliverAsync(initial[0]);
-        await leadership.WaitAsync().AsTask().WaitAsync(DefaultTimeout, TestToken);
+        await leaderState.WaitAsync().AsTask().WaitAsync(DefaultTimeout, TestToken);
 
         False(leader.TryGetLeaseToken(out var token));
         True(token.IsCancellationRequested);

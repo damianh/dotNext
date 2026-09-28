@@ -109,6 +109,26 @@ a linearizable read.
 **Fix:** Initialize the lease as invalid. Make it usable only after quorum
 confirmation and application of the current-term write barrier.
 
+**Status:** Fixed for #21. A new leader starts with an inactive (canceled)
+lease. The first quorum round that confirms its term replaces it with a real
+lease, and `TryGetLeaseToken` keeps returning a canceled token until the local
+state machine has applied the current-term write barrier. If applying the
+barrier fails, the lease stays inactive for that term. A failed or stalled
+round, a replication worker failure, step-down, shutdown, and disabled leases
+never publish a usable lease. `LeaderLeaseActivationTests` covers these paths
+with the in-process harness and a gated state machine:
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-build -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderLeaseActivationTests' --progress off --timeout 180s
+```
+
+On baseline `96b12d84c`, 6 of 7 tests fail.
+`LeaseRequiresQuorumAndAppliedWriteBarrier` reports: "The leader exposes a
+usable lease before any quorum round; after quorum confirmation, before the
+write barrier is committed; after the write barrier is committed, before it is
+applied." Lease timing remains covered by the
+[Leader lease timing model](#leader-lease-timing-model) (#20, #58).
+
 ### 6. P1: Failure detection permanently retains the membership lock
 
 **Location:** `RaftCluster.cs:1320-1346`
@@ -534,9 +554,6 @@ show a defect, so this is documented rather than changed.
   rejection as `Touched` toward the lease quorum.
   `RetransmittedSnapshotAcknowledgmentKeepsVoterSticky` is skipped until the
   issue is fixed.
-- Finding 5 (#21): the lease token issued when a node becomes leader is
-  usable before the first quorum round. The lease tests do not rely on that
-  token.
 
 ## Scope and limitations
 

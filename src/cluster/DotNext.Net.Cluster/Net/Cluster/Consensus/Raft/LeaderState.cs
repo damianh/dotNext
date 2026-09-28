@@ -37,7 +37,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
 
     public required bool IsLeaseEnabled
     {
-        init => lease = value ? new(TimeProvider) : null;
+        init => lease = value ? Lease.CreateInactive(TimeProvider) : null;
     }
 
     public required TimeSpan MaxLease
@@ -279,6 +279,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
     internal void StartLeading(TMember leaderNode, TimeSpan period)
     {
         runningReplications.Add(leaderNode, new());
+        StartLeaseActivation();
         heartbeatTask = DoHeartbeats(period);
         LeaderState.TransitionRateMeter.Add(1, in MeasurementTags);
     }
@@ -301,6 +302,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
             Cancel();
             replicationEvent.CancelSuspendedCallers(Token);
             await (heartbeatTask ?? Task.CompletedTask).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await (writeBarrierTask ?? Task.CompletedTask).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             
             // heartbeat task is the only background task that can modify the dictionary concurrently
             await StopReplicationAsync().ConfigureAwait(false);
@@ -318,6 +320,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
         {
             Cancel();
             heartbeatTask = null;
+            writeBarrierTask = null;
 
             DestroyLease();
 

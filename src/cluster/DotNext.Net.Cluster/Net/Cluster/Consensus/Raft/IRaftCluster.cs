@@ -35,8 +35,9 @@ public interface IRaftCluster : IReplicationCluster<IRaftLogEntry>, IPeerMesh<IR
     /// <remarks>
     /// The lease is valid while the returned token is not canceled. Each call checks the lease deadline against
     /// the monotonic clock and cancels an expired lease, even if its timer has not fired yet.
-    /// A token obtained earlier is canceled only when its timer fires or a later call observes the expiration,
-    /// so call this method again after the read and discard the result if the new token is canceled.
+    /// A token obtained earlier is canceled when the lease timer fires, a later call observes the expiration,
+    /// or leadership is lost and the leader state is destroyed. Call this method again after the read and discard
+    /// the result if the new token is canceled.
     /// See <see cref="IClusterMemberConfiguration.IsLeaderLeaseEnabled"/> for the supported clock model.
     /// </remarks>
     /// <param name="token">The token representing lease.</param>

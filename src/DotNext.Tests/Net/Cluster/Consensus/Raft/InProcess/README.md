@@ -247,8 +247,10 @@ for the conditions a new leader must meet first.
 - `InProcessNetwork.DeliverAndLoseResponseAsync` runs the target handler and
   then fails the sender, as if the response was lost.
 
-`RetransmittedSnapshotAcknowledgmentKeepsVoterSticky` is skipped until #58 is
-fixed. `VoteStickinessTests.StartupSuppressesVotingWhenLeaseIsEnabled` covers
+`RetransmittedSnapshotAcknowledgmentKeepsVoterSticky` covers #58: a leader
+retransmits a snapshot after the follower's acknowledgment was lost.
+`VoteStickinessTests.AlreadyInstalledSnapshotRefreshesStickiness` covers the
+follower side of the same fix. `VoteStickinessTests.StartupSuppressesVotingWhenLeaseIsEnabled` covers
 the startup vote suppression that makes voter restarts safe.
 
 ```powershell

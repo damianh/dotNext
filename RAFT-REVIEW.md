@@ -508,6 +508,7 @@ outlasts the lease.
 | Timer callbacks may run arbitrarily late, for example under thread-pool starvation or GC pauses. | Fixed. The lease stores its deadline, and `TryGetLeaseToken` compares the clock against the deadline and cancels an expired lease. The timer only gives prompt notification. |
 | A voter may crash and restart with its persistent state inside a lease window. | Fixed. Leader stickiness is not persisted, so a lease-enabled node treats its startup as leader activity and refuses to vote for one election timeout. |
 | All members use the same lease setting, `LowerValue` and `ClockDriftBound`. | Operator. Startup suppression depends on the voter's own lease setting and timeout. |
+| A leader may retransmit a snapshot the follower already installed, for example after a lost acknowledgment. | Fixed (#58). Any `InstallSnapshot` with `senderTerm >= Term` refreshes stickiness, steps the receiver down and records the leader, matching AppendEntries. A snapshot already covered by the committed log is acknowledged as `Replicated`/`ReplicatedWithLeaderTerm` without being reinstalled. The leader then advances `NextIndex` past it instead of retransmitting every round. |
 
 **Red baseline.** At `3cd0336e5`, with tests from `0ab59dedb`, this command
 failed 3 of 9 cases in 8 of 8 runs:
@@ -524,7 +525,9 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-build -- --filt
   helped elect a new leader while the old leader's lease was still usable."
   Node 2 acknowledged a lease valid until t=249 and restarted at t=150. At
   t=210 it granted PreVote, and node 3 was elected and committed index 2.
-- `RetransmittedSnapshotAcknowledgmentKeepsVoterSticky`: see #58 below.
+- `RetransmittedSnapshotAcknowledgmentKeepsVoterSticky` (added later for #58):
+  "A majority can elect a new leader while the lease is usable." See the
+  retransmitted snapshot row above.
 
 The controls `lateTimers: False` and `restart: False` passed at baseline.
 Removing either fix makes its own test fail again.
@@ -547,13 +550,26 @@ The TCP/UDP `RaftCluster.NodeConfiguration` does not expose
 `ClockDriftBound`, so its bound is always 1. A missing option alone does not
 show a defect, so this is documented rather than changed.
 
-**Known hazards**
+**Lease acknowledgment audit (#58)**
 
-- #58: a retransmitted `InstallSnapshot` that the follower rejects as already
-  installed does not refresh its stickiness. The leader still counts the
-  rejection as `Touched` toward the lease quorum.
-  `RetransmittedSnapshotAcknowledgmentKeepsVoterSticky` is skipped until the
-  issue is fixed.
+`ReplicationProcess.ConvertToResult` counts every response except a
+higher-term rejection, cancellation or unavailability toward the heartbeat and
+lease quorum (`MemberResult.Touched` or `Replicated`). This is safe only if the
+follower refreshed its stickiness before sending that response. After the #58
+fix, that holds for the current receivers:
+
+- AppendEntries refreshes on `senderTerm >= Term` before any check that can
+  reject, including log mismatch and `UnsupportedVersion`.
+- InstallSnapshot refreshes on `senderTerm >= Term` for any snapshot payload,
+  including an already installed snapshot and `UnsupportedVersion`. It
+  returns `Rejected` without refreshing only for a lower sender term, which
+  the leader sees as a higher term, or for a non-snapshot payload, which the
+  leader never sends.
+
+The leader was not changed. Members running a version older than the fix can
+still answer a retransmitted snapshot with a same-term `Rejected` that the
+leader counts. Do not rely on lease reads while such members are in the
+cluster, for example during a rolling upgrade.
 
 ## Scope and limitations
 

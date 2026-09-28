@@ -94,6 +94,65 @@ public sealed class VoteStickinessTests : RaftTest
         await AssertVoteAsync(candidate, voter, preVote, accepted: true);
     }
 
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(1L)]
+    [InlineData(2L)]
+    public static async Task AlreadyInstalledSnapshotRefreshesStickiness(long retransmissionTerm)
+    {
+        var clock = CreateClock(0L);
+        var network = new InProcessNetwork();
+        EndPoint[] membership =
+        [
+            new DnsEndPoint("candidate", 0),
+            new DnsEndPoint("voter", 0),
+            new DnsEndPoint("leader", 0),
+        ];
+        using var candidateState = new ConsensusOnlyState();
+        using var voterState = new ConsensusOnlyState();
+        using var leaderState = new ConsensusOnlyState();
+        await using var candidate = CreateNode(network, clock, membership, 0, candidateState);
+        await using var voter = CreateNode(network, clock, membership, 1, voterState);
+        await using var leader = CreateNode(network, clock, membership, 2, leaderState);
+        await candidate.StartAsync(TestToken);
+        await voter.StartAsync(TestToken);
+        await leader.StartAsync(TestToken);
+
+        const long snapshotIndex = 6L;
+        var snapshot = new EmptyLogEntry { Term = 1L, IsSnapshot = true };
+        var client = leader.GetMember(voter.EndPoint).As<IRaftClusterMember>();
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        var installed = await client.InstallSnapshotAsync(1L, snapshot, snapshotIndex, snapshot, 0L, TestToken);
+        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, installed.Value);
+        Equal(snapshotIndex, voterState.LastCommittedEntryIndex);
+
+        // The voter has forgotten the leader.
+        clock.Advance(TimeSpan.FromMilliseconds(150));
+        await AssertPreVoteAsync(accepted: true);
+
+        // The acknowledgment of the first installation was lost, so the leader retransmits the same snapshot.
+        var retransmitted = await client.InstallSnapshotAsync(retransmissionTerm, snapshot, snapshotIndex, snapshot, 0L, TestToken);
+        Equal(retransmissionTerm == snapshot.Term ? HeartbeatResult.ReplicatedWithLeaderTerm : HeartbeatResult.Replicated, retransmitted.Value);
+        Equal(snapshotIndex, voterState.LastCommittedEntryIndex);
+        Equal(snapshotIndex, voterState.LastEntryIndex);
+        Equal(retransmissionTerm, voterState.Term);
+        NotNull(voter.Leader);
+        Equal(leader.EndPoint, voter.Leader.EndPoint);
+        await AssertPreVoteAsync(accepted: false);
+
+        clock.Advance(TimeSpan.FromMilliseconds(99));
+        await AssertPreVoteAsync(accepted: false);
+
+        clock.Advance(TimeSpan.FromMilliseconds(2));
+        await AssertPreVoteAsync(accepted: true);
+
+        async Task AssertPreVoteAsync(bool accepted)
+        {
+            var response = await candidate.GetMember(voter.EndPoint).As<IRaftClusterMember>()
+                .PreVoteAsync(retransmissionTerm, snapshotIndex, snapshot.Term, TestToken);
+            Equal(accepted ? PreVoteResult.Accepted : PreVoteResult.RejectedByFollower, response.Value);
+        }
+    }
+
     private static ManualTimeProvider CreateClock(long initialTicks)
     {
         var clock = new ManualTimeProvider();

@@ -163,7 +163,7 @@ public sealed class LeaderLeaseTimingTests : RaftTest
             "A restarted voter helped elect a new leader while the old leader's lease was still usable.");
     }
 
-    [Fact(Timeout = TestTimeouts.Default, Skip = "https://github.com/damianh/dotNext/issues/58")]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RetransmittedSnapshotAcknowledgmentKeepsVoterSticky()
     {
         await using var cluster = new InProcessClusterFixture(5, lease: new());
@@ -180,7 +180,7 @@ public sealed class LeaderLeaseTimingTests : RaftTest
         await round;
         Equal(1L, cluster.States[lagging].LastCommittedEntryIndex);
 
-        // t = 149: the leader retransmits the snapshot and counts its rejection towards the lease quorum.
+        // t = 149: the leader retransmits the snapshot, and the acknowledgment counts towards the lease quorum.
         cluster.TimeProvider.Advance(TimeSpan.FromMilliseconds(49));
         round = leader.ForceReplicationAsync(TestToken).AsTask();
         messages = await cluster.PendingRoundAsync(RaftMessageType.InstallSnapshot);
@@ -189,11 +189,16 @@ public sealed class LeaderLeaseTimingTests : RaftTest
         cluster.Network.Drop(messages[2]);
         await cluster.Network.DeliverAsync(messages[^1]);
         var retransmission = await IsType<Task<Result<HeartbeatResult>>>(messages[^1].Completion);
-        Equal(HeartbeatResult.Rejected, retransmission.Value);
+        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, retransmission.Value);
         await round;
         True(IsLeaseUsable(leader));
 
-        // t = 201: nodes 2, 3 and 4 last heard from the leader at t = 100.
+        // The acknowledgment advanced NextIndex past the snapshot, so it is not retransmitted.
+        Equal(
+            cluster.States[lagging].LastCommittedEntryIndex + 1L,
+            leader.GetMember(cluster.Nodes[lagging].EndPoint).As<IRaftClusterMember>().State.NextIndex);
+
+        // t = 201: nodes 2 and 3 last heard from the leader at t = 100, node 4 at t = 149.
         cluster.TimeProvider.Advance(TimeSpan.FromMilliseconds(52));
         var candidate = cluster.Nodes[2];
         var lastIndex = candidate.AuditTrail.LastEntryIndex;

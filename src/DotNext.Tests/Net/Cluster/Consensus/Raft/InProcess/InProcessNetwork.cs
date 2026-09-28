@@ -237,6 +237,22 @@ internal sealed class InProcessNetwork
         await message.DeliverAsync().ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Runs the target's handler to completion, then fails the sender's request as if the response was lost.
+    /// </summary>
+    internal async Task DeliverAndLoseResponseAsync(PendingMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        lock (syncRoot)
+        {
+            if (!pendingMessages.Remove(message))
+                throw new InvalidOperationException("The message is not pending.");
+        }
+
+        await message.DeliverAsync(new MemberUnavailableException(message.Member)).ConfigureAwait(false);
+    }
+
     // Returns false if the message was canceled or completed concurrently.
     internal async Task<bool> TryDeliverAsync(PendingMessage message)
     {
@@ -358,7 +374,7 @@ internal abstract class PendingMessage
 
     internal abstract Task Completion { get; }
 
-    internal abstract Task DeliverAsync();
+    internal abstract Task DeliverAsync(Exception responseFailure = null);
 
     internal abstract void Fail(Exception exception);
 }
@@ -400,7 +416,7 @@ file sealed class PendingMessage<TResult> : PendingMessage
 
     internal override Task Completion => completion.Task;
 
-    internal override async Task DeliverAsync()
+    internal override async Task DeliverAsync(Exception responseFailure = null)
     {
         if (Interlocked.CompareExchange(ref state, 1, 0) is not 0)
         {
@@ -411,7 +427,10 @@ file sealed class PendingMessage<TResult> : PendingMessage
         try
         {
             var result = await Dispatch.InvokeAsync(Member, action, token).ConfigureAwait(false);
-            completion.TrySetResult(result);
+            if (responseFailure is null)
+                completion.TrySetResult(result);
+            else
+                completion.TrySetException(responseFailure);
         }
         catch (OperationCanceledException e)
         {

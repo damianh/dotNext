@@ -9,7 +9,11 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
     internal readonly IPersistentState[] States;
     internal readonly InProcessCluster[] Nodes;
 
-    internal InProcessClusterFixture(int memberCount, Func<int, IPersistentState> stateFactory = null)
+    internal InProcessClusterFixture(
+        int memberCount,
+        Func<int, IPersistentState> stateFactory = null,
+        InProcessCluster.LeaseOptions lease = null,
+        Func<int, TimeProvider, TimeProvider> clockFactory = null)
     {
         EndPoint[] membership = Enumerable.Range(0, memberCount)
             .Select(i => new DnsEndPoint($"node-{i}", 0)).ToArray();
@@ -18,10 +22,20 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
             .ToArray();
         Nodes = States.Select((state, i) => new InProcessCluster(
             Network, ((DnsEndPoint)membership[i]).Host, membership, state,
-            TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false)).ToArray();
+            clockFactory?.Invoke(i, TimeProvider) ?? TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false, lease)).ToArray();
     }
 
     internal InProcessCluster Leader => Nodes[0];
+
+    /// <summary>
+    /// Restarts the node with its retained persistent state (term, vote and log).
+    /// </summary>
+    internal async Task<InProcessCluster> RestartAsync(int member)
+    {
+        var replacement = await Nodes[member].RestartAsync(static state => state, TestToken);
+        await Nodes[member].DisposeAsync();
+        return Nodes[member] = replacement;
+    }
 
     internal async Task StartAsync()
     {
@@ -29,10 +43,10 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
             await node.StartAsync(TestToken);
     }
 
-    internal async Task ElectAsync()
+    internal async Task ElectAsync(TimeSpan? electionDelay = null)
     {
         Leader.StartElectionTimer();
-        TimeProvider.Advance(TimeSpan.FromMilliseconds(100));
+        TimeProvider.Advance(electionDelay ?? TimeSpan.FromMilliseconds(100));
         for (var i = 1; i < Nodes.Length; i++)
             await Network.DeliverAsync(await PendingAsync(i, RaftMessageType.PreVote));
         for (var i = 1; i < Nodes.Length; i++)
@@ -46,11 +60,11 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
             Network.Hold(Leader.EndPoint, node.EndPoint);
     }
 
-    internal async Task StartLeaderAsync(int laggingFollower = 0)
+    internal async Task StartLeaderAsync(int laggingFollower = 0, TimeSpan? electionDelay = null)
     {
         await StartAsync();
         HoldFollowers();
-        await ElectAsync();
+        await ElectAsync(electionDelay);
 
         // Observe the automatic round before forcing its retry, and account for
         // every worker's setup RPC before starting the round under test.

@@ -103,8 +103,6 @@ public sealed class HeartbeatFailureTests : RaftTest
 
         internal Task FailNextCommit(Exception exception)
         {
-            ArgumentNullException.ThrowIfNull(exception);
-
             var failure = new CommitFailure(exception);
             if (Interlocked.CompareExchange(ref commitFailure, failure, null) is not null)
                 throw new InvalidOperationException("A commit failure is already pending.");

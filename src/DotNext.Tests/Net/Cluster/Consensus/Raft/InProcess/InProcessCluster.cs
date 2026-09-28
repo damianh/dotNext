@@ -17,6 +17,7 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
     private readonly ClusterMemberId id;
     private readonly EndPoint[] membership;
     private readonly bool startFollower;
+    private readonly LeaseOptions lease;
     private bool registered;
 
     [SetsRequiredMembers]
@@ -27,19 +28,15 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
         IPersistentState auditTrail,
         TimeProvider timeProvider,
         TimeSpan electionTimeout,
-        bool startFollower = true)
-        : base(new Configuration(electionTimeout))
+        bool startFollower = true,
+        LeaseOptions lease = null)
+        : base(new Configuration(electionTimeout, lease))
     {
-        ArgumentNullException.ThrowIfNull(network);
-        ArgumentException.ThrowIfNullOrEmpty(name);
-        ArgumentNullException.ThrowIfNull(membership);
-        ArgumentNullException.ThrowIfNull(auditTrail);
-        ArgumentNullException.ThrowIfNull(timeProvider);
-
         this.network = network;
         TimeProvider = timeProvider;
         this.membership = membership.ToArray();
         this.startFollower = startFollower;
+        this.lease = lease;
         EndPoint = new DnsEndPoint(name, 0);
         id = ClusterMemberId.FromEndPoint(EndPoint);
         AuditTrail = auditTrail;
@@ -91,8 +88,6 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
         Func<IPersistentState, IPersistentState> reopenState,
         CancellationToken token = default)
     {
-        ArgumentNullException.ThrowIfNull(reopenState);
-
         await StopAsync(token).ConfigureAwait(false);
         var replacement = new InProcessCluster(
             network,
@@ -101,7 +96,8 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
             reopenState(AuditTrail),
             TimeProvider,
             ElectionTimeout,
-            startFollower);
+            startFollower,
+            lease);
         await replacement.StartAsync(token).ConfigureAwait(false);
         return replacement;
     }
@@ -164,7 +160,12 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
     ValueTask<long?> ILocalMember.SynchronizeAsync(long commitIndex, CancellationToken token)
         => SynchronizeAsync(commitIndex, token);
 
-    private sealed class Configuration(TimeSpan electionTimeout) : IClusterMemberConfiguration
+    /// <summary>
+    /// Enables leader leases. Omitting the options keeps leases disabled.
+    /// </summary>
+    internal sealed record LeaseOptions(double ClockDriftBound = 1D);
+
+    private sealed class Configuration(TimeSpan electionTimeout, LeaseOptions lease) : IClusterMemberConfiguration
     {
         public double HeartbeatThreshold => 0.5D;
 
@@ -176,7 +177,9 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
 
         public bool Standby => false;
 
-        public bool IsLeaderLeaseEnabled => false;
+        public double ClockDriftBound => lease?.ClockDriftBound ?? 1D;
+
+        public bool IsLeaderLeaseEnabled => lease is not null;
     }
 }
 

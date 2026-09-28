@@ -100,8 +100,6 @@ internal sealed class InProcessNetwork
 
     internal Task FailNext(EndPoint source, EndPoint target, RaftMessageType messageType, Exception exception)
     {
-        ArgumentNullException.ThrowIfNull(exception);
-
         lock (syncRoot)
         {
             var route = new Route(source, target, messageType);
@@ -158,8 +156,6 @@ internal sealed class InProcessNetwork
         Func<ILocalMember, CancellationToken, ValueTask<TResult>> action,
         CancellationToken token)
     {
-        ArgumentNullException.ThrowIfNull(action);
-
         var source = member.Source;
         var target = member.EndPoint;
         var sourceId = source.Id;
@@ -226,8 +222,6 @@ internal sealed class InProcessNetwork
 
     internal async Task DeliverAsync(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -237,11 +231,23 @@ internal sealed class InProcessNetwork
         await message.DeliverAsync().ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Runs the target's handler to completion, then fails the sender's request as if the response was lost.
+    /// </summary>
+    internal async Task DeliverAndLoseResponseAsync(PendingMessage message)
+    {
+        lock (syncRoot)
+        {
+            if (!pendingMessages.Remove(message))
+                throw new InvalidOperationException("The message is not pending.");
+        }
+
+        await message.DeliverAsync(new MemberUnavailableException(message.Member)).ConfigureAwait(false);
+    }
+
     // Returns false if the message was canceled or completed concurrently.
     internal async Task<bool> TryDeliverAsync(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -254,8 +260,6 @@ internal sealed class InProcessNetwork
 
     internal bool TryDrop(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -268,8 +272,6 @@ internal sealed class InProcessNetwork
 
     internal void Drop(PendingMessage message)
     {
-        ArgumentNullException.ThrowIfNull(message);
-
         lock (syncRoot)
         {
             if (!pendingMessages.Remove(message))
@@ -358,7 +360,7 @@ internal abstract class PendingMessage
 
     internal abstract Task Completion { get; }
 
-    internal abstract Task DeliverAsync();
+    internal abstract Task DeliverAsync(Exception responseFailure = null);
 
     internal abstract void Fail(Exception exception);
 }
@@ -400,7 +402,7 @@ file sealed class PendingMessage<TResult> : PendingMessage
 
     internal override Task Completion => completion.Task;
 
-    internal override async Task DeliverAsync()
+    internal override async Task DeliverAsync(Exception responseFailure = null)
     {
         if (Interlocked.CompareExchange(ref state, 1, 0) is not 0)
         {
@@ -411,7 +413,10 @@ file sealed class PendingMessage<TResult> : PendingMessage
         try
         {
             var result = await Dispatch.InvokeAsync(Member, action, token).ConfigureAwait(false);
-            completion.TrySetResult(result);
+            if (responseFailure is null)
+                completion.TrySetResult(result);
+            else
+                completion.TrySetException(responseFailure);
         }
         catch (OperationCanceledException e)
         {

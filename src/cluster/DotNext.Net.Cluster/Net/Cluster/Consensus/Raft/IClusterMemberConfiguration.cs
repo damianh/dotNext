@@ -26,7 +26,12 @@ public interface IClusterMemberConfiguration
     /// </summary>
     /// <remarks>
     /// Over a given time period, no server’s clock increases more than this bound times any other.
+    /// The bound applies to the monotonic clock of <see cref="TimeProvider.GetTimestamp"/>, not to wall-clock time.
+    /// The value must be finite and at least 1. The leader lease lasts <see cref="ElectionTimeout.LowerValue"/>
+    /// divided by this bound, so a value below 1 makes the lease longer than the election timeout and is not supported.
+    /// Configurations that do not expose this property use 1.
     /// </remarks>
+    /// <seealso cref="IsLeaderLeaseEnabled"/>
     double ClockDriftBound => 1D;
 
     /// <summary>
@@ -49,6 +54,22 @@ public interface IClusterMemberConfiguration
     /// <summary>
     /// Gets a value indicating that the lease-based linearizable read is enabled on the leader node.
     /// </summary>
+    /// <remarks>
+    /// After a majority acknowledges a heartbeat round, the leader holds a lease for
+    /// <see cref="ElectionTimeout.LowerValue"/> divided by <see cref="ClockDriftBound"/>, measured from the start of the round.
+    /// Followers refuse to vote while they have heard from the leader within their election timeout,
+    /// so no other leader can be elected while the lease is valid. This holds under the following assumptions:
+    /// <list type="bullet">
+    /// <item><description>The monotonic clocks of the members drift apart by no more than <see cref="ClockDriftBound"/>.
+    /// A clock that stops while the process or host is suspended violates this assumption.</description></item>
+    /// <item><description>All members use the same lease setting, <see cref="ElectionTimeout.LowerValue"/> and <see cref="ClockDriftBound"/>.</description></item>
+    /// <item><description>Members keep their persistent state across restarts. With leases enabled, a started member refuses
+    /// to vote for one election timeout, because it cannot know whether it acknowledged a lease before a crash.
+    /// This can delay the first election after the cluster starts by up to one election timeout.</description></item>
+    /// </list>
+    /// Timer callbacks may run late: the lease validity is checked against the monotonic clock, not against the timer.
+    /// </remarks>
+    /// <seealso cref="IRaftCluster.TryGetLeaseToken(out CancellationToken)"/>
     bool IsLeaderLeaseEnabled { get; }
 
     /// <summary>

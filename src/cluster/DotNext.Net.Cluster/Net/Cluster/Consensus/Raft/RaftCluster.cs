@@ -641,7 +641,11 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <param name="snapshotIndex">The index of the last log entry included in the snapshot.</param>
     /// <param name="stateVersion">The version of the state machine.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
-    /// <returns><see langword="true"/> if snapshot is installed successfully; <see langword="null"/> if snapshot is outdated.</returns>
+    /// <returns>
+    /// <see cref="HeartbeatResult.Replicated"/> or <see cref="HeartbeatResult.ReplicatedWithLeaderTerm"/> if the snapshot is installed
+    /// or is already covered by the committed log; <see cref="HeartbeatResult.UnsupportedVersion"/> if the sender has higher state machine version;
+    /// otherwise, <see cref="HeartbeatResult.Rejected"/>.
+    /// </returns>
     protected async ValueTask<Result<HeartbeatResult>> InstallSnapshotAsync<TSnapshot>(ClusterMemberId sender, long senderTerm, TSnapshot snapshot,
         long snapshotIndex, int stateVersion, CancellationToken token)
         where TSnapshot : IRaftLogEntry
@@ -655,10 +659,10 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             lockTaken = true;
 
             result = new() { Term = AuditTrail.Term, Value = HeartbeatResult.Rejected };
-            if (snapshot.IsSnapshot
-                && senderTerm >= result.Term
-                && snapshotIndex > AuditTrail.LastCommittedEntryIndex)
+            if (snapshot.IsSnapshot && senderTerm >= result.Term)
             {
+                // Any snapshot from the current leader refreshes stickiness, even if it is already installed,
+                // because the leader counts the response towards its lease quorum.
                 Timestamp.Refresh(ref lastUpdated, TimeProvider);
                 await StepDownAsync(senderTerm, consensusReached: true).ConfigureAwait(false);
                 Leader = TryGetMember(sender);
@@ -669,8 +673,11 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 }
                 else
                 {
-                    // install snapshot
-                    await AuditTrail.AppendAsync(snapshot, snapshotIndex, tokenSource.Token).ConfigureAwait(false);
+                    // A retransmitted snapshot (e.g. the previous acknowledgment was lost) is already covered by
+                    // the committed log, which matches the leader's log. Acknowledge it so the leader advances NextIndex.
+                    if (snapshotIndex > AuditTrail.LastCommittedEntryIndex)
+                        await AuditTrail.AppendAsync(snapshot, snapshotIndex, tokenSource.Token).ConfigureAwait(false);
+
                     result = result with
                     {
                         Value = senderTerm == snapshot.Term ? HeartbeatResult.ReplicatedWithLeaderTerm : HeartbeatResult.Replicated

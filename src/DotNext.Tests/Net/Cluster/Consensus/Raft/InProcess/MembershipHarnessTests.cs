@@ -22,7 +22,7 @@ public sealed class MembershipHarnessTests : RaftTest
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task AppliedConfigurationReachesMembersOnlyWhenPropagated()
+    public static async Task ConfigurationIsActiveOnAppend()
     {
         await using var cluster = new MembershipClusterFixture();
         await cluster.StartAsync();
@@ -30,15 +30,17 @@ public sealed class MembershipHarnessTests : RaftTest
         await cluster.ElectAsync(leader);
         var removed = cluster.Voters[^1];
 
-        var removal = leader.RemoveAsync(removed, TestToken);
-        await cluster.PumpAsync(leader, removal);
-        True(await removal);
-        DoesNotContain(removed, (await leader.LoadConfigurationAsync()).Members);
-        Equal(leader.Log.LastEntryIndex, await leader.LoadConfigurationVersionAsync());
-        Contains(leader.Members, member => object.Equals(member.EndPoint, removed));
-
-        await leader.PropagateConfigurationAsync();
+        // the removal is appended, but not replicated
+        await leader.DetectAsync(removed);
+        var removalIndex = leader.Log.LastEntryIndex;
+        True(removalIndex > leader.Log.LastCommittedEntryIndex);
         DoesNotContain(leader.Members, member => object.Equals(member.EndPoint, removed));
+        Contains(removed, (await leader.LoadConfigurationAsync()).Members);
+
+        // the storage keeps the applied configuration
+        await cluster.ReplicateUntilAppliedAsync(leader, removalIndex);
+        DoesNotContain(removed, (await leader.LoadConfigurationAsync()).Members);
+        Equal(removalIndex, await leader.LoadConfigurationVersionAsync());
         False(leader.IsMembershipLockHeld);
     }
 

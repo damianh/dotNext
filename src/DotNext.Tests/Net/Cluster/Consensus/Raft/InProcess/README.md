@@ -81,7 +81,7 @@ task completes, so borrowed log-entry payloads remain alive.
 The harness uses fixed membership. Configuration and snapshot installation
 invoke the production handlers with the caller's configuration storage;
 it does not emulate dynamic membership discovery or socket serialization.
-`MembershipClusterFixture` (below) adopts applied configurations explicitly.
+`MembershipClusterFixture` (below) derives each node's members from its log.
 
 `RestartAsync` always requires a callback that explicitly chooses the durable
 state for the replacement:
@@ -184,11 +184,18 @@ Nothing progresses on its own:
   follower and then drops the rest, so the leader steps down with the entries
   uncommitted. It holds the other RPCs until the follower has the entries,
   because dropping them first makes the leader step down and cancel the
-  follower's in-flight append.
-- The applied configuration reaches a node's member list only through
-  `MembershipNode.PropagateConfigurationAsync`, the same path the production
-  polling loop takes. This keeps "applied" and "adopted" as separate,
-  controllable steps.
+  follower's in-flight append. An RPC that cannot carry the entries (an empty
+  heartbeat, or a round that started before the entries were appended) is
+  delivered to everyone, because a held one would keep that round from
+  completing. The in-process network records the last entry index of each
+  append (`PendingMessage.LastEntryIndex`) for this purpose.
+- Each node derives its member list from the latest configuration entry in
+  its log as soon as the entry is appended, committed or not, as in production
+  (`RaftCluster.UseLogConfiguration`). No polling step is needed.
+- `RestartAsync(index)` replaces a node with a new instance over the same WAL
+  location and configuration storage, so the active configuration is rebuilt
+  from the storage and the log. `MembershipClusterFixture(voterCount, joinerCount)`
+  changes the cluster size.
 - `DetectAsync` invokes the production unavailable-member callback (under
   `membershipLock`). `AppendRemovalAsync` appends an unreplicated removal
   directly, to model a change that reached only part of the cluster.
@@ -199,17 +206,27 @@ It also covers the stale-term detection and single-entry appends.
 `TermGuardedAppendTests` covers the log-level term guard for the WAL and
 `ConsensusOnlyState`.
 
-`MembershipWarmUpTests` covers issue #54. A removed node that received and applied
-its own removal still matches the leader's log. Re-adding it must complete warm-up
-after one empty heartbeat, which the node acknowledges as `Replicated`. No new
+`MembershipWarmUpTests` covers issue #54. A removed node that missed its own removal
+appends the same entry, so it still matches the leader's log. Re-adding it must complete
+warm-up after one empty heartbeat, which the node acknowledges as `Replicated`. No new
 application write is needed. A lagging joiner is added only after it holds the
 committed prefix, and a joiner that rejects every round is not added.
 `ReplicationUtils.ReplicationProcessCatchUpTests` drives `CatchUpAsync` with scripted
 responses: an empty heartbeat, snapshot catch-up, rejection, unsupported version,
-higher term, an unavailable member, and cancellation.
+higher term, an unavailable member, and cancellation. A rejection is never enough to
+catch up, even when the committed prefix is empty (#52).
+
+`LaggingCandidateElectionTests` covers issue #49 (CE-2): a candidate whose log holds a
+configuration that removes a member counts votes against that configuration, so the
+nodes of the previous configuration cannot elect a second leader in the same term.
+`LogDerivedConfigurationTests` covers the rest of the log-derived configuration: a
+truncated, uncommitted configuration is reverted; a restart rebuilds the configuration
+from the storage and the log; a leader that removes itself steps down once the removal
+is committed; and a leader never commits under a configuration it has already replaced
+(CE-1).
 
 ```powershell
-dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipHarnessTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipWarmUpTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils.ReplicationProcessCatchUpTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 180s
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipHarnessTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipWarmUpTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils.ReplicationProcessCatchUpTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LaggingCandidateElectionTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LogDerivedConfigurationTests' --progress off --timeout 180s
 ```
 
 ## Follower read barriers

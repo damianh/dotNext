@@ -48,7 +48,6 @@ public sealed class MembershipConfigurationTests : RaftTest
         True(await operation);
 
         await AssertConfigurationAsync(leader, expected);
-        await leader.PropagateConfigurationAsync();
         Equal(expected, leader.Members.Select(static member => member.EndPoint).ToHashSet());
         False(leader.IsMembershipLockHeld);
     }
@@ -183,7 +182,6 @@ public sealed class MembershipConfigurationTests : RaftTest
         var removedId = cluster.Nodes[4].Id;
         await cluster.PumpAsync(leader, removal, message => message.TargetId == removedId ? MessageAction.Drop : MessageAction.Deliver);
         True(await removal);
-        await leader.PropagateConfigurationAsync();
 
         var addition = leader.AddAsync(member, TestToken);
         await cluster.PumpAsync(leader, addition);

@@ -105,6 +105,25 @@ public abstract partial class ClusterConfigurationStorage<TAddress> : Disposable
         return result;
     }
 
+    /// <inheritdoc />
+    async ValueTask<IClusterConfiguration<TAddress>> IClusterConfigurationStorage<TAddress>.ReadConfigurationAsync<TConfiguration>(
+        TConfiguration configuration, CancellationToken token)
+    {
+        if (configuration.TryGetMemory(out var payload))
+            return Deserialize(payload);
+
+        var writer = new PoolingBufferWriter<byte>(allocator) { Capacity = BufferSize };
+        try
+        {
+            await configuration.WriteToAsync(writer, token).ConfigureAwait(false);
+            return Deserialize(writer.WrittenMemory);
+        }
+        finally
+        {
+            writer.Dispose();
+        }
+    }
+
     /// <summary>
     /// Stores the configuration.
     /// </summary>

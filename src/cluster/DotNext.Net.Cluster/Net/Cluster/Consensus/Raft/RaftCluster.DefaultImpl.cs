@@ -1,8 +1,6 @@
 using System.Collections.Frozen;
-using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Net;
-using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
 namespace DotNext.Net.Cluster.Consensus.Raft;
@@ -24,8 +22,6 @@ public partial class RaftCluster : RaftCluster<RaftClusterMember>, ILocalMember
     private readonly bool coldStart;
     private readonly ClusterMemberId localMemberId;
     private readonly IClusterConfigurationStorage<EndPoint> configurationStorage;
-    private readonly Channel<IClusterConfiguration<EndPoint>> configurationEvents;
-    private Task pollingLoopTask;
     private IServer? server;
 
     /// <summary>
@@ -43,13 +39,6 @@ public partial class RaftCluster : RaftCluster<RaftClusterMember>, ILocalMember
         warmupRounds = configuration.WarmupRounds;
         coldStart = configuration.ColdStart;
         configurationStorage = configuration.ConfigurationStorage;
-        configurationEvents = Channel.CreateUnbounded<IClusterConfiguration<EndPoint>>(new()
-        {
-            AllowSynchronousContinuations = false,
-            SingleReader = true,
-            SingleWriter = true,
-        });
-        pollingLoopTask = Task.CompletedTask;
         Logger = configuration.LoggerFactory.CreateLogger<RaftCluster>();
     }
 
@@ -89,9 +78,8 @@ public partial class RaftCluster : RaftCluster<RaftClusterMember>, ILocalMember
             announcementNeeded = false;
         }
 
-        await ApplyConfigurationAsync(config, token).ConfigureAwait(false);
-        configurationStorage.ConfigurationChanged += configurationEvents.Writer.WriteAsync;
-        pollingLoopTask = ConfigurationPollingLoop();
+        // the active configuration is the latest configuration in the log, or the stored configuration
+        UseLogConfiguration(configurationStorage, CreateMember, GetAddress, EndPointComparer);
         await base.StartAsync(token).ConfigureAwait(false);
         server = serverFactory(this);
         await server.StartAsync(token).ConfigureAwait(false);
@@ -116,14 +104,6 @@ public partial class RaftCluster : RaftCluster<RaftClusterMember>, ILocalMember
             {
                 await (server?.DisposeAsync() ?? ValueTask.CompletedTask).ConfigureAwait(false);
                 server = null;
-                configurationStorage.ConfigurationChanged -= configurationEvents.Writer.WriteAsync;
-                configurationEvents.Writer.TryComplete();
-                await pollingLoopTask.ConfigureAwait(false);
-                pollingLoopTask = Task.CompletedTask;
-            }
-            catch (Exception e)
-            {
-                configurationEvents.Writer.TryComplete(e);
             }
             finally
             {
@@ -167,45 +147,6 @@ public partial class RaftCluster : RaftCluster<RaftClusterMember>, ILocalMember
     /// <exception cref="OperationCanceledException">The operation has been canceled or the cluster elects a new leader.</exception>
     public Task<bool> RemoveMemberAsync(EndPoint address, CancellationToken token = default)
         => RemoveMemberAsync(ClusterMemberId.FromEndPoint(address), configurationStorage, GetAddress, token);
-
-    private async Task ConfigurationPollingLoop()
-    {
-        await foreach (var configuration in configurationEvents.Reader.ReadAllAsync(LifecycleToken).ConfigureAwait(false))
-        {
-            await ApplyConfigurationAsync(configuration, LifecycleToken).ConfigureAwait(false);
-        }
-    }
-
-    private async ValueTask ApplyConfigurationAsync(IClusterConfiguration<EndPoint> configuration, CancellationToken token)
-    {
-        var scope = await ChangeConfigurationAsync(token).ConfigureAwait(false);
-        try
-        {
-            // detect deleted members
-            foreach (var member in scope.Members.Values)
-            {
-                var address = GetAddress(member);
-                if (!configuration.Members.Contains(address))
-                {
-                    scope.MarkAsRemoved(member);
-                }
-            }
-                
-            // detect added members
-            var addresses = ImmutableHashSet.CreateRange(EndPointComparer, scope.Members.Values.Select(GetAddress));
-            foreach (var address in configuration.Members)
-            {
-                if (!addresses.Contains(address))
-                {
-                    scope.MarkAsAdded(CreateMember(address));
-                }
-            }
-        }
-        finally
-        {
-            await scope.DisposeAsync().ConfigureAwait(false);
-        }
-    }
 
     /// <inheritdoc />
     protected sealed override ValueTask UnavailableMemberDetected(RaftClusterMember member, long term, CancellationToken token)

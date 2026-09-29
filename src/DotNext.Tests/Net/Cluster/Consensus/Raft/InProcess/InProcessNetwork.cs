@@ -154,7 +154,8 @@ internal sealed class InProcessNetwork
         InProcessClusterMember member,
         RaftMessageType messageType,
         Func<ILocalMember, CancellationToken, ValueTask<TResult>> action,
-        CancellationToken token)
+        CancellationToken token,
+        long lastEntryIndex = -1L)
     {
         var source = member.Source;
         var target = member.EndPoint;
@@ -198,7 +199,10 @@ internal sealed class InProcessNetwork
                     dispatch,
                     action,
                     token,
-                    RemovePending);
+                    RemovePending)
+                {
+                    LastEntryIndex = lastEntryIndex,
+                };
                 pendingMessages.Add(message);
                 pendingChanged.TrySetResult();
                 pendingChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -353,6 +357,11 @@ internal abstract class PendingMessage
     internal ClusterMemberId TargetId { get; }
 
     internal RaftMessageType MessageType { get; }
+
+    /// <summary>
+    /// The index of the last entry carried by an AppendEntries request, or -1.
+    /// </summary>
+    internal long LastEntryIndex { get; init; } = -1L;
 
     internal DispatchRegistration Dispatch { get; }
 

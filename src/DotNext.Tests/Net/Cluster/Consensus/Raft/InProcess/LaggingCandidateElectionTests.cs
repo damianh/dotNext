@@ -6,15 +6,14 @@ namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 using static MembershipClusterFixture;
 
 /// <summary>
-/// #49 "CE-2, lagging candidate": a voter that applied the committed membership changes but did not activate
-/// them still counts votes over its old member set, so it can win a term that a node on the new set also wins.
+/// #49 "CE-2, lagging candidate": a voter that holds the committed membership changes must count votes over
+/// the new member set, otherwise it can win a term that a node on the new set also wins. The configuration
+/// is active as soon as it is appended, so every node that holds the changes counts over {0..4}.
 /// </summary>
 public sealed class LaggingCandidateElectionTests : RaftTest
 {
-    private const string Issue = "Reproduces #49 CE-2 (two leaders in one term): https://github.com/damianh/dotNext/issues/49";
-
     // voters {0,1,2}, joiners 3 and 4
-    [Fact(Timeout = TestTimeouts.Default, Skip = Issue)]
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StaleActiveMembersCannotWinTheTermOfANodeOnTheNewMembers()
     {
         await using var cluster = new MembershipClusterFixture(voterCount: 3, joinerCount: 2);
@@ -50,24 +49,23 @@ public sealed class LaggingCandidateElectionTests : RaftTest
         True(n1.Log.LastCommittedEntryIndex >= 2L);
         True(n2.Log.LastCommittedEntryIndex >= 2L);
 
-        // node 0 loses its quorum and steps down, then activates {0..4}; nodes 1 and 2 activate nothing
+        // the changes are active on every node that holds them
+        foreach (var node in new[] { n0, n1, n2 })
+            Equal(Endpoints(cluster, 0, 1, 2, 3, 4), node.Members.Select(static member => member.EndPoint).ToHashSet());
+
+        // node 0 loses its quorum and steps down
         await cluster.PumpAsync(n0, WaitForFollowerAsync(n0), static _ => MessageAction.Drop);
-        await n0.PropagateConfigurationAsync();
-        Equal(Endpoints(cluster, 0, 1, 2, 3, 4), n0.Members.Select(static member => member.EndPoint).ToHashSet());
-        Equal(Endpoints(cluster, 0, 1, 2), n1.Members.Select(static member => member.EndPoint).ToHashSet());
-        Equal(Endpoints(cluster, 0, 1, 2), n2.Members.Select(static member => member.EndPoint).ToHashSet());
         DoesNotContain(claims, static claim => claim.Term > 1L);
 
         // term 2, partition {0,3,4} | {1,2}: only pre-votes and votes are delivered
         var votes = new ConcurrentDictionary<long, PendingMessage>();
         var first = await TryElectAsync(cluster, n0, target => target == n1.Id || target == n2.Id, votes);
-        var second = await TryElectAsync(cluster, n1, target => target == n0.Id, votes);
+        var second = await TryWinAsync(cluster, n1, target => target == n0.Id, votes);
 
         var trace = Describe(cluster, votes);
         Equal(2L, n0.Term);
-        Equal(2L, n1.Term);
         True(first, $"node 0 did not win term 2 with {{0,3,4}}:{Environment.NewLine}{trace}");
-        True(second, $"node 1 did not win term 2 with {{1,2}}:{Environment.NewLine}{trace}");
+        False(second, $"node 1 won term {n1.Term} with {{1,2}}:{Environment.NewLine}{trace}");
 
         var duplicates = claims.GroupBy(static claim => claim.Term)
             .Where(static group => group.Select(static claim => claim.Node).Distinct().Count() > 1)
@@ -92,6 +90,56 @@ public sealed class LaggingCandidateElectionTests : RaftTest
         catch (TimeoutException)
         {
             return false;
+        }
+    }
+
+    // Starts an election of the candidate and delivers its pre-votes and votes (those to members matching dropTarget
+    // are lost) until it wins, or no new request arrives for a while after the last response.
+    private static async Task<bool> TryWinAsync(MembershipClusterFixture cluster, MembershipNode candidate,
+        Func<ClusterMemberId, bool> dropTarget, ConcurrentDictionary<long, PendingMessage> votes)
+    {
+        var quietPeriod = TimeSpan.FromMilliseconds(500);
+        var elected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var candidateId = candidate.Id;
+        candidate.LeaderChanged += OnLeaderChanged;
+        try
+        {
+            candidate.StartElectionTimer();
+            cluster.TimeProvider.Advance(TimeSpan.FromMilliseconds(100));
+            while (!elected.Task.IsCompleted)
+            {
+                using var quiet = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+                quiet.CancelAfter(quietPeriod);
+                PendingMessage message;
+                try
+                {
+                    message = await cluster.Network.WaitForMessageAsync(
+                        m => m.SourceId == candidateId && m.MessageType is RaftMessageType.PreVote or RaftMessageType.Vote,
+                        quiet.Token);
+                }
+                catch (OperationCanceledException) when (!TestToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                votes.TryAdd(message.Id, message);
+                if (dropTarget(message.TargetId))
+                    cluster.Network.TryDrop(message);
+                else
+                    await cluster.Network.TryDeliverAsync(message);
+            }
+        }
+        finally
+        {
+            candidate.LeaderChanged -= OnLeaderChanged;
+        }
+
+        return elected.Task.IsCompleted;
+
+        void OnLeaderChanged(RaftCluster<InProcessClusterMember> sender, InProcessClusterMember leader)
+        {
+            if (leader is not null && leader.Id == candidateId)
+                elected.TrySetResult();
         }
     }
 

@@ -17,13 +17,14 @@ public sealed class MembershipWarmUpTests : RaftTest
         await cluster.ElectAsync(leader);
         var node = cluster.Nodes[4];
 
-        // the removed node receives and applies its own removal, so its log keeps matching the leader's
+        // The removed node stops receiving replication once the removal is appended, so it misses its own removal.
+        // It appends the same entry itself, so its log keeps matching the leader's.
         var removal = leader.RemoveAsync(node.EndPoint, TestToken);
         await cluster.PumpAsync(leader, removal);
         True(await removal);
         var removalIndex = leader.Log.LastEntryIndex;
-        await cluster.PumpAsync(leader, node.Log.WaitForApplyAsync(removalIndex, TestToken).AsTask());
-        await leader.PropagateConfigurationAsync();
+        if (node.Log.LastEntryIndex < removalIndex)
+            Equal(removalIndex, await node.AppendRemovalAsync(node.EndPoint));
         DoesNotContain(node.EndPoint, leader.Members.Select(static member => member.EndPoint));
 
         Equal(removalIndex, leader.Log.LastCommittedEntryIndex);
@@ -36,8 +37,9 @@ public sealed class MembershipWarmUpTests : RaftTest
         var addition = leader.AddAsync(node.EndPoint, TestToken);
         await cluster.PumpAsync(leader, addition, message =>
         {
-            // the pump may classify the same message more than once
-            if (message.TargetId == nodeId && message.MessageType is RaftMessageType.AppendEntries)
+            // The pump may classify the same message more than once. Once the configuration is appended,
+            // the node is a member and receives regular replication.
+            if (message.TargetId == nodeId && message.MessageType is RaftMessageType.AppendEntries && leader.Log.LastEntryIndex == removalIndex)
                 warmUpRounds.Add(message.Id);
 
             return MessageAction.Deliver;

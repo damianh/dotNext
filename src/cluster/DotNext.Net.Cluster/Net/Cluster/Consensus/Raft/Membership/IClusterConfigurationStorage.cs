@@ -38,6 +38,22 @@ public interface IClusterConfigurationStorage<TAddress> : IClusterConfigurationS
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <returns>The copy of the configuration.</returns>
     new ValueTask<IClusterConfiguration<TAddress>> LoadConfigurationAsync(CancellationToken token = default);
+
+    /// <summary>
+    /// Decodes the configuration from its binary representation, without saving it.
+    /// </summary>
+    /// <remarks>
+    /// The cluster uses this method to decode configuration log entries, so that the latest configuration
+    /// in the log becomes active as soon as it is appended.
+    /// </remarks>
+    /// <param name="configuration">The binary representation of the configuration, such as a configuration log entry.</param>
+    /// <param name="token">The token that can be used to cancel the operation.</param>
+    /// <typeparam name="TConfiguration">The type of the configuration representation.</typeparam>
+    /// <returns>The decoded configuration.</returns>
+    /// <exception cref="NotSupportedException">The storage cannot decode configurations.</exception>
+    ValueTask<IClusterConfiguration<TAddress>> ReadConfigurationAsync<TConfiguration>(TConfiguration configuration, CancellationToken token = default)
+        where TConfiguration : IDataTransferObject
+        => ValueTask.FromException<IClusterConfiguration<TAddress>>(new NotSupportedException());
     
     /// <summary>
     /// An event occurred when the configuration is changed.

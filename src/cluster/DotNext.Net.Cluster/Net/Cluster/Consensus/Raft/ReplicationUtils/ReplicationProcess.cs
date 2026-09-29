@@ -121,7 +121,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
             for (MemberResult? result; reader.TryRead(out var barrier); SetResult(barrier, in result))
             {
                 replicationIndex = member.State.PrecedingIndex;
-                matchedIndex = 0L;
+                matchedIndex = -1L;
                 try
                 {
                     precedingTerm = await AuditTrail.GetTermAsync(replicationIndex, source.Token).ConfigureAwait(false);
@@ -280,8 +280,9 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
                     break;
                 // A matching-prefix acknowledgment up to the watermark is enough to catch up, even if it carries
                 // no entry of the leader's term (e.g. an empty heartbeat) and is therefore reported as Touched.
+                // A rejection is never enough, even if the watermark is 0 (#52).
                 // The barrier completion publishes matchedIndex written by the replication loop.
-                case var memberResult when result.HasConsensus && long.Max(memberResult.ReplicatedIndex, matchedIndex) >= watermarkIndex:
+                case var _ when result.HasConsensus && matchedIndex >= watermarkIndex:
                     writer.Complete();
                     return true;
             }

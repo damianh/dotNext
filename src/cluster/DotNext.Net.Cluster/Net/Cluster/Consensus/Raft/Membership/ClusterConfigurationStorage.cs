@@ -62,10 +62,10 @@ public abstract partial class ClusterConfigurationStorage<TAddress> : Disposable
     protected abstract TAddress Decode(ref SequenceReader reader);
 
     /// <summary>
-    /// Loads the configuration from the storage.
+    /// Loads the applied configuration baseline from the storage.
     /// </summary>
     /// <param name="token">The token that can be used to cancel the operation.</param>
-    /// <returns>The memory block representing the cluster configuration.</returns>
+    /// <returns>The memory block representing the applied cluster configuration baseline.</returns>
     protected abstract ValueTask<(MemoryOwner<byte> Configuration, long Version)> LoadConfigurationAsync(CancellationToken token);
 
     /// <inheritdoc />
@@ -103,6 +103,25 @@ public abstract partial class ClusterConfigurationStorage<TAddress> : Disposable
         }
 
         return result;
+    }
+
+    /// <inheritdoc />
+    async ValueTask<IClusterConfiguration<TAddress>> IClusterConfigurationStorage<TAddress>.ReadConfigurationAsync<TConfiguration>(
+        TConfiguration configuration, CancellationToken token)
+    {
+        if (configuration.TryGetMemory(out var payload))
+            return Deserialize(payload);
+
+        var writer = new PoolingBufferWriter<byte>(allocator) { Capacity = BufferSize };
+        try
+        {
+            await configuration.WriteToAsync(writer, token).ConfigureAwait(false);
+            return Deserialize(writer.WrittenMemory);
+        }
+        finally
+        {
+            writer.Dispose();
+        }
     }
 
     /// <summary>

@@ -2,7 +2,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
-using System.Threading.Channels;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,7 +32,6 @@ internal sealed partial class RaftHttpCluster : RaftCluster<RaftClusterMember>, 
     private readonly UriEndPoint localNode;
     private readonly ClusterMemberId localNodeId;
     private readonly int warmupRounds;
-    private readonly Channel<IClusterConfiguration<UriEndPoint>> configurationEvents;
 
     private RaftHttpCluster(
         IOptionsMonitor<HttpClusterMemberConfiguration> config,
@@ -67,7 +65,6 @@ internal sealed partial class RaftHttpCluster : RaftCluster<RaftClusterMember>, 
 
         // track changes in configuration, do not track membership
         configurationTracker = config.OnChange(ConfigurationChanged);
-        configurationEvents = Channel.CreateUnbounded<IClusterConfiguration<UriEndPoint>>(new() { SingleWriter = true, SingleReader = true });
     }
 
     int IHostingContext.Version => AuditTrail.Version;
@@ -186,9 +183,8 @@ internal sealed partial class RaftHttpCluster : RaftCluster<RaftClusterMember>, 
             announcementNeeded = false;
         }
 
-        await ApplyConfigurationAsync(config, token).ConfigureAwait(false);
-        ConfigurationStorage.ConfigurationChanged += configurationEvents.Writer.WriteAsync;
-        pollingLoopTask = ConfigurationPollingLoop();
+        // the active configuration is the latest configuration in the log, or the stored configuration
+        UseLogConfiguration(ConfigurationStorage, CreateMember, GetAddress, EndPointComparer);
         await base.StartAsync(token).ConfigureAwait(false);
         StartFollowing();
 
@@ -206,14 +202,6 @@ internal sealed partial class RaftHttpCluster : RaftCluster<RaftClusterMember>, 
             {
                 configurator?.OnStop(this);
                 duplicationDetector.Trim(100);
-                ConfigurationStorage.ConfigurationChanged -= configurationEvents.Writer.WriteAsync;
-                configurationEvents.Writer.TryComplete();
-                await pollingLoopTask.ConfigureAwait(false);
-                pollingLoopTask = Task.CompletedTask;
-            }
-            catch (Exception e)
-            {
-                configurationEvents.Writer.TryComplete(e);
             }
             finally
             {
@@ -244,7 +232,6 @@ internal sealed partial class RaftHttpCluster : RaftCluster<RaftClusterMember>, 
             configurationTracker?.Dispose();
             duplicationDetector.Dispose();
             messageHandlers = ImmutableList<IInputChannel>.Empty;
-            configurationEvents.Writer.TryComplete(CreateException());
         }
 
         base.Dispose(disposing);

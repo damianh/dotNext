@@ -29,19 +29,20 @@ public partial class RaftCluster<TMember>
         return true;
     }
 
-    private bool IsReplicatedWithExpectedTerm<TEntry>(ILogEntryProducer<TEntry> entries)
+    private bool IsReplicatedWithExpectedTerm<TEntry>(ILogEntryProducer<TEntry> entries, out bool configurationDetected)
         where TEntry : IRaftLogEntry
     {
         bool replicated;
         if (entries is ReplicationWithSenderTermDetector<TEntry> detector)
         {
             replicated = detector.IsReplicatedWithExpectedTerm;
+            configurationDetected = detector.IsConfigurationDetected;
             detector.Reset();
             cachedTermDetector = detector;
         }
         else
         {
-            replicated = false;
+            replicated = configurationDetected = false;
         }
 
         return replicated;
@@ -53,14 +54,17 @@ file sealed class ReplicationWithSenderTermDetector<TEntry> : ILogEntryProducer<
 {
     private ILogEntryProducer<TEntry> entries = ILogEntryProducer<TEntry>.Empty;
     private long expectedTerm;
-    private bool replicatedWithExpectedTerm;
+    private bool replicatedWithExpectedTerm, configurationDetected;
 
     public bool IsReplicatedWithExpectedTerm => replicatedWithExpectedTerm;
+
+    public bool IsConfigurationDetected => configurationDetected;
 
     public void Initialize(ILogEntryProducer<TEntry> entries, long expectedTerm)
     {
         this.entries = entries;
         this.expectedTerm = expectedTerm;
+        configurationDetected = false;
     }
 
     public void Reset() => entries = ILogEntryProducer<TEntry>.Empty;
@@ -71,6 +75,7 @@ file sealed class ReplicationWithSenderTermDetector<TEntry> : ILogEntryProducer<
         {
             var entry = entries.Current;
             replicatedWithExpectedTerm |= expectedTerm == entry.Term;
+            configurationDetected |= entry.IsConfiguration;
             return entry;
         }
     }

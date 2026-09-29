@@ -8,7 +8,7 @@ using IO;
 /// <summary>
 /// Regressions for #54: membership warm-up must accept a member whose log already matches the leader's
 /// committed prefix, even though the acknowledgment carries no entry of the leader's term, and must
-/// keep refusing a member that has not acknowledged that prefix.
+/// keep refusing a member that has not acknowledged that prefix, even if the prefix is empty (#52).
 /// </summary>
 public sealed class ReplicationProcessCatchUpTests : Test
 {
@@ -77,6 +77,25 @@ public sealed class ReplicationProcessCatchUpTests : Test
         Equal(Rounds, member.Appends.Count + member.Snapshots.Count);
     }
 
+    // #52: with nothing committed yet, only an actual acknowledgment proves log matching and protocol support
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(HeartbeatResult.Rejected)]
+    [InlineData(HeartbeatResult.UnsupportedVersion)]
+    public static async Task UnacknowledgedEmptyPrefixIsNotCaughtUp(HeartbeatResult response)
+    {
+        var member = new ScriptedMember
+        {
+            OnAppend = (_, _) => new()
+            {
+                Term = LeaderTerm,
+                Value = new() { Result = response, LastIndex = 0L },
+            },
+            OnSnapshot = static _ => new() { Term = LeaderTerm, Value = HeartbeatResult.Rejected },
+        };
+
+        False(await CatchUpAsync(member, watermark: 0L));
+    }
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnsupportedVersionIsNotCaughtUp()
     {
@@ -131,14 +150,17 @@ public sealed class ReplicationProcessCatchUpTests : Test
         await ThrowsAnyAsync<OperationCanceledException>(() => CatchUpAsync(member, new(canceled: true)));
     }
 
-    private static async Task<bool> CatchUpAsync(ScriptedMember member, CancellationToken token = default)
+    private static async Task<bool> CatchUpAsync(ScriptedMember member, CancellationToken token = default, long watermark = Watermark)
     {
         IPersistentState log = new ConsensusOnlyState();
-        await log.AppendAsync(new EmptyLogEntry { Term = 1L }, TestToken);
-        await log.AppendAsync(new EmptyLogEntry { Term = 2L }, TestToken);
-        await log.CommitAsync(Watermark, TestToken);
+        for (var term = 1L; term <= watermark; term++)
+            await log.AppendAsync(new EmptyLogEntry { Term = term }, TestToken);
+
+        if (watermark > 0L)
+            await log.CommitAsync(watermark, TestToken);
+
         await log.UpdateTermAsync(LeaderTerm, false, TestToken);
-        Equal(Watermark, log.LastEntryIndex);
+        Equal(watermark, log.LastEntryIndex);
 
         // as AddMemberAsync does: assume that the member is up-to-date with the leader
         ((IRaftClusterMember)member).State.Initialize(log);

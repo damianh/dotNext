@@ -12,9 +12,9 @@ using Threading;
 /// Five WAL-backed voters and one joiner (by default) on a fully held in-process network.
 /// </summary>
 /// <remarks>
-/// Nothing progresses on its own: elections need <see cref="ElectAsync"/>, RPCs need
-/// <see cref="PumpAsync"/>, and applied configuration only reaches a node's member list
-/// through <see cref="MembershipNode.PropagateConfigurationAsync"/>.
+/// Nothing progresses on its own: elections need <see cref="ElectAsync"/> and RPCs need
+/// <see cref="PumpAsync"/>. Each node derives its members from the latest configuration in its log,
+/// as soon as the configuration is appended.
 /// </remarks>
 internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
 {
@@ -43,6 +43,22 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
     }
 
     internal MembershipNode Joiner => Nodes[^1];
+
+    /// <summary>
+    /// Restarts the node with the same log location and configuration storage.
+    /// </summary>
+    internal async Task<MembershipNode> RestartAsync(int index)
+    {
+        var node = Nodes[index];
+        await node.StopAsync(TestToken);
+        await node.DisposeAsync();
+        await node.Log.DisposeAsync();
+
+        var replacement = new MembershipNode(Network, ((DnsEndPoint)node.EndPoint).Host, Voters, node.Location, TimeProvider, node.Storage);
+        Nodes[index] = replacement;
+        await replacement.StartAsync(TestToken);
+        return replacement;
+    }
 
     internal async Task StartAsync()
     {
@@ -110,7 +126,8 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// The leader loses quorum on the first such round and steps down, which is the point: the entries
-    /// reach exactly one follower and stay uncommitted.
+    /// reach exactly one follower and stay uncommitted. Requests that do not carry the entries, such as those
+    /// of a round that started before the entries were appended, are delivered to everyone.
     /// </remarks>
     internal async Task ReplicateOnlyToAsync(MembershipNode leader, MembershipNode follower, long index)
     {
@@ -124,11 +141,14 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
             await PumpAsync(
                 leader,
                 ForceRoundAsync(leader),
-                message => message.TargetId == target && message.MessageType is RaftMessageType.AppendEntries
-                    ? MessageAction.Deliver
-                    : follower.Log.LastEntryIndex < index
-                        ? MessageAction.Hold
-                        : MessageAction.Drop,
+                message => (message.TargetId == target && message.MessageType is RaftMessageType.AppendEntries) switch
+                {
+                    true => MessageAction.Deliver,
+                    false when follower.Log.LastEntryIndex >= index => MessageAction.Drop,
+                    false when message.MessageType is RaftMessageType.AppendEntries && message.LastEntryIndex < index
+                        => MessageAction.Deliver,
+                    false => MessageAction.Hold,
+                },
                 forceRounds: false);
         }
     }
@@ -271,20 +291,27 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
         private readonly InProcessNetwork network;
 
         [SetsRequiredMembers]
-        internal MembershipNode(InProcessNetwork network, string name, EndPoint[] voters, string location, TimeProvider timeProvider)
-            : base(network, name, voters, CreateLog(voters, location), timeProvider, TimeSpan.FromMilliseconds(100), startFollower: false)
+        internal MembershipNode(InProcessNetwork network, string name, EndPoint[] voters, string location, TimeProvider timeProvider,
+            InMemoryClusterConfigurationStorage storage = null)
+            : base(network, name, voters, CreateLog(storage ?? CreateStorage(voters), location), timeProvider, TimeSpan.FromMilliseconds(100), startFollower: false)
         {
             this.network = network;
+            Location = location;
             Storage = (InMemoryClusterConfigurationStorage)Log.ConfigurationStorage;
+            UseLogConfiguration(Storage, address => new InProcessClusterMember(this, network, address), static member => member.EndPoint);
         }
 
-        private static WriteAheadLog CreateLog(EndPoint[] voters, string location)
+        private static InMemoryClusterConfigurationStorage CreateStorage(EndPoint[] voters)
         {
             var storage = new InMemoryClusterConfigurationStorage(EqualityComparer<EndPoint>.Default);
             var builder = storage.CreateInitialConfigurationBuilder();
             builder.UnionWith(voters);
             builder.Build();
-            return new(new()
+            return storage;
+        }
+
+        private static WriteAheadLog CreateLog(InMemoryClusterConfigurationStorage storage, string location)
+            => new(new()
             {
                 Location = location,
                 MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
@@ -293,7 +320,8 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
             {
                 ConfigurationStorage = storage,
             };
-        }
+
+        internal string Location { get; }
 
         internal InMemoryClusterConfigurationStorage Storage { get; }
 
@@ -306,26 +334,6 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
 
         internal async ValueTask<long> LoadConfigurationVersionAsync()
             => (await ((IClusterConfigurationStorage)Storage).LoadConfigurationAsync(TestToken)).Version;
-
-        /// <summary>
-        /// Adopts the applied configuration, as the production configuration polling loop does.
-        /// </summary>
-        internal async Task PropagateConfigurationAsync()
-        {
-            var config = await LoadConfigurationAsync();
-            await using var scope = await ChangeConfigurationAsync(TestToken);
-            foreach (var member in scope.Members.Values)
-            {
-                if (!config.Members.Contains(member.EndPoint))
-                    scope.MarkAsRemoved(member);
-            }
-
-            foreach (var address in config.Members)
-            {
-                if (!scope.Members.Values.Any(member => object.Equals(member.EndPoint, address)))
-                    scope.MarkAsAdded(new(this, network, address));
-            }
-        }
 
         internal async Task<bool> AddAsync(EndPoint address, CancellationToken token)
         {

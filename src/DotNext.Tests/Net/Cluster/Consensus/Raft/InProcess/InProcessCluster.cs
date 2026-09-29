@@ -252,7 +252,8 @@ internal sealed class InProcessClusterMember(
                 commitIndex,
                 source.AuditTrail.Version,
                 requestToken),
-            token);
+            token,
+            entries.Count > 0 ? prevLogIndex + entries.Count : -1L);
 
     private protected override Task<Result<HeartbeatResult>> InstallSnapshotAsync(
         long term,

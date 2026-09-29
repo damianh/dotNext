@@ -3,7 +3,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.Membership;
 using IO;
 
 /// <summary>
-/// Provides a storage of cluster members.
+/// Provides storage for the applied cluster configuration baseline.
 /// </summary>
 public interface IClusterConfigurationStorage : IDisposable
 {
@@ -26,7 +26,7 @@ public interface IClusterConfigurationStorage : IDisposable
 }
 
 /// <summary>
-/// Provides a storage of cluster members.
+/// Provides storage for the applied cluster configuration baseline and decodes configuration log entries.
 /// </summary>
 /// <typeparam name="TAddress">The type of the cluster member address.</typeparam>
 public interface IClusterConfigurationStorage<TAddress> : IClusterConfigurationStorage
@@ -38,6 +38,21 @@ public interface IClusterConfigurationStorage<TAddress> : IClusterConfigurationS
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <returns>The copy of the configuration.</returns>
     new ValueTask<IClusterConfiguration<TAddress>> LoadConfigurationAsync(CancellationToken token = default);
+
+    /// <summary>
+    /// Decodes the configuration from its binary representation, without saving it.
+    /// </summary>
+    /// <remarks>
+    /// Implementations must decode configuration log entries because the cluster makes the latest configuration
+    /// in the log active as soon as it is appended. The storage itself persists the applied configuration baseline,
+    /// which is used as the committed starting point on startup and after snapshot installation.
+    /// </remarks>
+    /// <param name="configuration">The binary representation of the configuration, such as a configuration log entry.</param>
+    /// <param name="token">The token that can be used to cancel the operation.</param>
+    /// <typeparam name="TConfiguration">The type of the configuration representation.</typeparam>
+    /// <returns>The decoded configuration.</returns>
+    ValueTask<IClusterConfiguration<TAddress>> ReadConfigurationAsync<TConfiguration>(TConfiguration configuration, CancellationToken token = default)
+        where TConfiguration : IDataTransferObject;
     
     /// <summary>
     /// An event occurred when the configuration is changed.

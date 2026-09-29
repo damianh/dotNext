@@ -76,6 +76,38 @@ upstream sync is merged.
     synchronously on the calling thread until `Leader` changed or the token was canceled. A read barrier that runs
     while the local node is `Leader` but not yet in the leader state now yields and retries; it no longer spins.
 
+### Cluster membership (#49, #52)
+The TCP/UDP and HTTP hosts use the latest configuration entry in the log as the active configuration, as in Raft
+(Ongaro's thesis, §4.1). Upstream adopts a configuration only after it is applied, which can elect two leaders in one
+term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-semantics).
+* **`Members` changes when a configuration entry is appended**, committed or not, on the leader and on followers.
+  `MemberAdded` and `MemberRemoved` fire then. If the entry is later overwritten, the previous configuration in the log
+  becomes active again and the events fire in reverse. Upstream changes `Members` when the entry is applied.
+* **Restart rebuilds the configuration** from `IClusterConfigurationStorage` plus the configuration entries after it in
+  the log. Installing a snapshot activates the configuration shipped with it.
+* **`IClusterConfigurationStorage` holds the applied configuration only.** It is still written when a configuration
+  entry is applied and still raises `ConfigurationChanged`, but the hosts no longer watch it: the polling loops that
+  adopted a configuration on apply are removed.
+* **`AddMemberAsync`/`RemoveMemberAsync`** (and the hosts' add and remove APIs) build a change only after the latest
+  configuration in the leader's log and the leader's current-term no-op are committed and applied, then return once
+  the change is committed and applied by the leader. Upstream waits for the leader's whole log to be applied first.
+* **A failed or cancelled append or snapshot install rebuilds the active configuration at once** from the surviving log,
+  so a partially overwritten configuration is never left active. Removing the last configured member is rejected
+  (`RemoveMemberAsync` returns `false`), because an empty configuration cannot be committed.
+* **A snapshot's configuration is persisted only after the snapshot is installed.** With the log-derived configuration,
+  `InstallConfigurationAsync` stages the configuration in memory, and it reaches the storage after the snapshot append
+  succeeds. A failed or aborted snapshot transfer therefore cannot advance the stored baseline past the log.
+  Staged configurations are matched to a snapshot by sender term and the highest staged version not above the snapshot
+  index, so overlapping snapshot requests cannot take each other's configuration. If the snapshot is durable but its
+  configuration was not persisted (crash or storage failure), the leader's retransmission completes that second half
+  and the node withholds the acknowledgment until it does. There is no atomic snapshot-plus-configuration write.
+* **A leader that removes itself** keeps leading without counting itself until the removal is committed, then steps
+  down to standby before `RemoveMemberAsync` returns.
+* **A removed node may never learn of its removal** if it misses the entry. It keeps its old configuration; members
+  reject its vote requests.
+* **Warm-up (`CatchUpAsync`) needs an actual acknowledgment** (#52). A rejected or unsupported-version response no
+  longer catches a new member up when the leader's commit index is 0.
+* A `RaftCluster<TMember>` subclass that does not call `UseLogConfiguration` keeps the apply-time behaviour.
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
@@ -91,6 +123,8 @@ upstream sync is merged.
 |---|---|---|
 | `WriteAheadLog.Options.FlushOnCommit` | present (6.8.0+) | **removed** |
 | `DotNext.IO.Log.ILogCompactionSupport` | removed in 6.8.0 (breaking change in a minor release) | removed too (follows upstream) |
+| `RaftCluster<TMember>.UseLogConfiguration` (protected) | absent | **added**: enables the log-derived active configuration (#49) |
+| `IClusterConfigurationStorage<TAddress>.ReadConfigurationAsync` | absent | **added** (required interface member: implementations must decode configuration log entries; a breaking change for custom storages) |
 
 ## Fork-only fixes
 All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests are in `damianh/dotNext`:
@@ -99,7 +133,7 @@ All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests ar
 unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush target), #39 (test hangs/flakes),
 #40 (flusher failure), #41 (snapshot flush alignment), #42 (applied index regression), #43 (restore no-op snapshot
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
-configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down).
+configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration).
 
 ## Upstream sync log
 

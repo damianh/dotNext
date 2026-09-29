@@ -187,7 +187,11 @@ public partial class RaftCluster<TMember>
     /// </summary>
     /// <remarks>
     /// The new configuration is built from the latest configuration in the log: the method first waits until the leader
-    /// has applied its whole log, so a configuration change that is still pending cannot be overwritten.
+    /// has committed the latest configuration in its log and an entry of its own term (or, if the active configuration
+    /// is not derived from the log, until the leader has applied its whole log), so a configuration change that is still
+    /// pending cannot be overwritten. If the active configuration is derived from the log, the member appears in
+    /// <see cref="Members"/> as soon as the new configuration is appended; the method returns when the configuration
+    /// is committed and applied by the leader.
     /// </remarks>
     /// <typeparam name="TAddress">The type of the member address.</typeparam>
     /// <param name="member">The cluster member client used to catch up its state.</param>
@@ -264,7 +268,12 @@ public partial class RaftCluster<TMember>
     /// </summary>
     /// <remarks>
     /// The new configuration is built from the latest configuration in the log: the method first waits until the leader
-    /// has applied its whole log, so a configuration change that is still pending cannot be overwritten.
+    /// has committed the latest configuration in its log and an entry of its own term (or, if the active configuration
+    /// is not derived from the log, until the leader has applied its whole log), so a configuration change that is still
+    /// pending cannot be overwritten. Removing the last configured member is rejected and returns
+    /// <see langword="false"/>. If the active configuration is derived from the log, the member disappears from
+    /// <see cref="Members"/> as soon as the new configuration is appended; the method returns when the configuration
+    /// is committed and applied by the leader. A leader that removes itself steps down before the method returns.
     /// </remarks>
     /// <typeparam name="TAddress">The type of the member address.</typeparam>
     /// <param name="id">The cluster member to remove.</param>
@@ -273,7 +282,8 @@ public partial class RaftCluster<TMember>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <returns>
     /// <see langword="true"/> if the node has been removed from the cluster successfully;
-    /// <see langword="false"/> if the node rejects the replication or the address of the node cannot be committed.
+    /// <see langword="false"/> if the node rejects the replication, the address of the node cannot be committed,
+    /// or removing the member would leave the configuration empty.
     /// </returns>
     /// <exception cref="NotLeaderException">The current node is not a leader.</exception>
     /// <exception cref="OperationCanceledException">The operation has been canceled or the cluster elects a new leader.</exception>
@@ -294,10 +304,16 @@ public partial class RaftCluster<TMember>
             if (members.TryGetValue(id, out var member))
             {
                 var config = await LoadLatestConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
-                if (IClusterConfiguration<TAddress>.TryRemove(ref config, addressProvider(member)))
+                if (TryBuildNonEmptyRemoval(ref config, addressProvider(member)))
                 {
+                    var removingSelf = !member.IsRemote;
                     var commitIndex = await AppendConfigurationAsync(leaderState, config, tokenSource.Token).ConfigureAwait(false);
                     await AuditTrail.WaitForApplyAsync(commitIndex, tokenSource.Token).ConfigureAwait(false);
+
+                    // the leader removing itself steps down once the configuration is committed
+                    if (removingSelf && activeConfiguration is not null)
+                        await StepDownIfRemovedAsync(leaderState).ConfigureAwait(false);
+
                     return true;
                 }
             }
@@ -323,44 +339,9 @@ public partial class RaftCluster<TMember>
 
     private async ValueTask ProcessMembershipChangesAsync(IReadOnlySet<TMember> added, IReadOnlySet<TMember> removed)
     {
-        Debug.Assert(transitionLock.IsLockHeld);
-        
-        var membersCopy = members;
         try
         {
-            // remove nodes
-            foreach (var member in removed)
-            {
-                if (ReferenceEquals(member, membersCopy.TryRemove(member.Id, out membersCopy)))
-                {
-                    OnMemberRemoved(member);
-                }
-            }
-            
-            // add nodes
-            foreach (var member in added)
-            {
-                if (membersCopy.TryAdd(member, out membersCopy))
-                {
-                    OnMemberAdded(member);
-                }
-            }
-
-            switch (membersCopy.LocalMember)
-            {
-                case null when members.LocalMember is not null:
-                    // local member is removed, but can be added later, so the state is resumable
-                    await FreezeAsync().ConfigureAwait(false);
-                    break;
-                case not null when state is not UnstartedState && members.LocalMember is null:
-                    // local member is added
-                    await UnfreezeAsync().ConfigureAwait(false);
-                    break;
-            }
-
-            // rewrite the list of members
-            members = membersCopy;
-            Interlocked.MemoryBarrierProcessWide();
+            await ApplyMembershipChangesAsync(added, removed, configurationIndex: null).ConfigureAwait(false);
         }
         finally
         {
@@ -379,6 +360,65 @@ public partial class RaftCluster<TMember>
                 member.Dispose();
             }
         }
+    }
+
+    // configurationIndex is the index of the active configuration derived from the log, or null if the changes are
+    // reported by ChangeConfigurationAsync
+    private async ValueTask ApplyMembershipChangesAsync(IReadOnlySet<TMember> added, IReadOnlySet<TMember> removed, long? configurationIndex)
+    {
+        Debug.Assert(transitionLock.IsLockHeld);
+
+        var membersCopy = members;
+
+        // remove nodes
+        foreach (var member in removed)
+        {
+            if (ReferenceEquals(member, membersCopy.TryRemove(member.Id, out membersCopy)))
+            {
+                OnMemberRemoved(member);
+            }
+        }
+
+        // add nodes
+        foreach (var member in added)
+        {
+            if (membersCopy.TryAdd(member, out membersCopy))
+            {
+                OnMemberAdded(member);
+            }
+        }
+
+        var stepDownOnCommit = default(LeaderState<TMember>);
+        switch (membersCopy.LocalMember)
+        {
+            case null when members.LocalMember is null:
+                break;
+            case null when configurationIndex is null:
+                // local member is removed, but can be added later, so the state is resumable
+                await FreezeAsync().ConfigureAwait(false);
+                break;
+            case null when state is UnstartedState:
+                // the initial state is chosen on startup
+                break;
+            case null when state is LeaderState<TMember> leaderState:
+                // the leader manages the cluster without itself until the configuration is committed
+                stepDownOnCommit = leaderState;
+                break;
+            case null:
+                await FreezeAsync().ConfigureAwait(false);
+                break;
+            case not null when state is not UnstartedState && members.LocalMember is null:
+                // local member is added
+                await UnfreezeAsync().ConfigureAwait(false);
+                break;
+        }
+
+        // rewrite the list of members
+        members = membersCopy;
+        Interlocked.MemoryBarrierProcessWide();
+
+        if (stepDownOnCommit is not null)
+            _ = StepDownOnCommitAsync(stepDownOnCommit, configurationIndex.GetValueOrDefault());
     }
     
     /// <summary>
@@ -425,7 +465,7 @@ public partial class RaftCluster<TMember>
         try
         {
             var config = await LoadLatestConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
-            if (IClusterConfiguration<TAddress>.TryRemove(ref config, address))
+            if (TryBuildNonEmptyRemoval(ref config, address))
             {
                 await AppendConfigurationAsync(leaderState, config, tokenSource.Token).ConfigureAwait(false);
             }
@@ -444,10 +484,16 @@ public partial class RaftCluster<TMember>
         }
     }
 
-    // Configuration takes effect on apply here (the storage holds the last applied configuration), so a change
-    // must not be built before every configuration entry in the log is applied: otherwise a pending change
-    // (e.g. an automatic removal, or an entry inherited from the previous leader) is overwritten. The leader's
-    // no-op of the current term is already in the log, so no extra barrier entry is required.
+    private static bool TryBuildNonEmptyRemoval<TAddress>(ref IClusterConfiguration<TAddress> configuration, TAddress address)
+        where TAddress : notnull
+        => IClusterConfiguration<TAddress>.TryRemove(ref configuration, address) && configuration.Members.Count > 0;
+
+    // Without a log-derived configuration, a configuration takes effect on apply (the storage holds the last applied
+    // configuration), so a change must not be built before every configuration entry in the log is applied: otherwise
+    // a pending change (e.g. an automatic removal, or an entry inherited from the previous leader) is overwritten.
+    // With a log-derived configuration, the change is built from the latest configuration in the log, which must be
+    // committed first (Ongaro's thesis, §4.1), together with the no-op of the current term (§4.1, the fix for
+    // single-server changes across leader changes).
     // The caller must hold membershipLock, so no other configuration can be appended concurrently.
     private async ValueTask<IClusterConfiguration<TAddress>> LoadLatestConfigurationAsync<TAddress>(LeaderState<TMember> leaderState,
         IClusterConfigurationStorage<TAddress> configurationStorage,
@@ -455,6 +501,32 @@ public partial class RaftCluster<TMember>
         where TAddress : notnull
     {
         leaderState.ForceReplication();
+        if (activeConfiguration is ActiveConfiguration<TAddress> configuration)
+        {
+            if (configuration.IsDirty)
+            {
+                await transitionLock.AcquireAsync(token).ConfigureAwait(false);
+                try
+                {
+                    await RefreshConfigurationAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    transitionLock.Release();
+                }
+            }
+
+            while (true)
+            {
+                var version = configuration.Active;
+                Debug.Assert(version is not null);
+
+                await AuditTrail.WaitForApplyAsync(long.Max(version.Index, leaderState.WriteBarrier), token).ConfigureAwait(false);
+                if (ReferenceEquals(version, configuration.Active))
+                    return version.Configuration;
+            }
+        }
+
         await AuditTrail.WaitForApplyAsync(AuditTrail.LastEntryIndex, token).ConfigureAwait(false);
         return await configurationStorage.LoadConfigurationAsync(token).ConfigureAwait(false);
     }
@@ -466,7 +538,35 @@ public partial class RaftCluster<TMember>
         CancellationToken token)
         where TAddress : notnull
     {
-        var index = await AuditTrail.AppendInCurrentTermAsync(configuration, leaderState.Term, token).ConfigureAwait(false);
+        long index;
+        if (activeConfiguration is null)
+        {
+            index = await AuditTrail.AppendInCurrentTermAsync(configuration, leaderState.Term, token).ConfigureAwait(false);
+        }
+        else
+        {
+            // The configuration is active once appended (Ongaro's thesis, §4.1). A replication round that started
+            // before the activation counts its quorum over the previous configuration, which is safe because
+            // the majorities of two configurations that differ by a single server always overlap.
+            var startIndex = AuditTrail.LastEntryIndex + 1L;
+            try
+            {
+                index = await AuditTrail.AppendInCurrentTermAsync(configuration, leaderState.Term, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                await transitionLock.AcquireAsync(LifecycleToken).ConfigureAwait(false);
+                try
+                {
+                    await UpdateConfigurationAsync(startIndex, LifecycleToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    transitionLock.Release();
+                }
+            }
+        }
+
         leaderState.ForceReplication();
         return index;
     }

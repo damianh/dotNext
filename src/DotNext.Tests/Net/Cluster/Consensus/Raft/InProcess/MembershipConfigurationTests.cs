@@ -48,7 +48,6 @@ public sealed class MembershipConfigurationTests : RaftTest
         True(await operation);
 
         await AssertConfigurationAsync(leader, expected);
-        await leader.PropagateConfigurationAsync();
         Equal(expected, leader.Members.Select(static member => member.EndPoint).ToHashSet());
         False(leader.IsMembershipLockHeld);
     }
@@ -170,6 +169,34 @@ public sealed class MembershipConfigurationTests : RaftTest
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task LastConfiguredMemberCannotBeRemoved()
+    {
+        await using var cluster = new MembershipClusterFixture(voterCount: 2, joinerCount: 0);
+        await cluster.StartAsync();
+        var leader = cluster.Nodes[0];
+        await cluster.ElectAsync(leader);
+
+        var followerRemoval = leader.RemoveAsync(cluster.Nodes[1].EndPoint, TestToken);
+        await cluster.PumpAsync(leader, followerRemoval);
+        True(await followerRemoval);
+
+        await AssertConfigurationAsync(leader, Endpoints(cluster, 0));
+        var lastIndex = leader.Log.LastEntryIndex;
+
+        using var source = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+        source.CancelAfter(TimeSpan.FromSeconds(1));
+
+        var selfRemoval = leader.RemoveAsync(leader.EndPoint, source.Token);
+        False(await selfRemoval);
+        Equal(lastIndex, leader.Log.LastEntryIndex);
+        True(leader.LeadershipToken is { IsCancellationRequested: false });
+
+        await leader.ForceReplicationAsync(TestToken);
+        await AssertConfigurationAsync(leader, Endpoints(cluster, 0));
+        False(leader.IsMembershipLockHeld);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ExplicitReaddAfterAppliedRemoval()
     {
         await using var cluster = new MembershipClusterFixture();
@@ -183,7 +210,6 @@ public sealed class MembershipConfigurationTests : RaftTest
         var removedId = cluster.Nodes[4].Id;
         await cluster.PumpAsync(leader, removal, message => message.TargetId == removedId ? MessageAction.Drop : MessageAction.Deliver);
         True(await removal);
-        await leader.PropagateConfigurationAsync();
 
         var addition = leader.AddAsync(member, TestToken);
         await cluster.PumpAsync(leader, addition);

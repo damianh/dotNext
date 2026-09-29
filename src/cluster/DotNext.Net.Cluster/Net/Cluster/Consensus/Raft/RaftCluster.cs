@@ -370,6 +370,20 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     {
         await AuditTrail.InitializeAsync(token).ConfigureAwait(false);
 
+        // the active configuration is the latest configuration in the log, or the applied one
+        if (activeConfiguration is not null)
+        {
+            await transitionLock.AcquireAsync(token).ConfigureAwait(false);
+            try
+            {
+                await LoadConfigurationAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                transitionLock.Release();
+            }
+        }
+
         // A restarted voter may have acknowledged a leader lease just before the crash. Leader stickiness
         // is not persisted, so the node treats startup as leader activity and refuses to vote for one
         // election timeout, which is not shorter than any lease issued by a leader with the same settings.
@@ -632,12 +646,19 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <param name="configurationVersion">The configuration version.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <typeparam name="TConfiguration">The type of the configuration.</typeparam>
-    protected ValueTask<bool> InstallConfigurationAsync<TConfiguration>(long senderTerm, TConfiguration configuration, long configurationVersion,
+    protected async ValueTask<bool> InstallConfigurationAsync<TConfiguration>(long senderTerm, TConfiguration configuration, long configurationVersion,
         CancellationToken token)
         where TConfiguration : IDataTransferObject
-        => senderTerm >= AuditTrail.Term && AuditTrail.ConfigurationStorage is { } configurationStorage
-            ? configurationStorage.SaveConfigurationAsync(configuration, configurationVersion, token)
-            : ValueTask.FromResult(false);
+    {
+        if (senderTerm < AuditTrail.Term || AuditTrail.ConfigurationStorage is not { } configurationStorage)
+            return false;
+
+        if (activeConfiguration is null)
+            return await configurationStorage.SaveConfigurationAsync(configuration, configurationVersion, token).ConfigureAwait(false);
+
+        StageSnapshotConfiguration(senderTerm, await configuration.ToByteArrayAsync(token: token).ConfigureAwait(false), configurationVersion);
+        return true;
+    }
 
     /// <summary>
     /// Handles InstallSnapshot message received from remote cluster member.
@@ -681,10 +702,60 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 }
                 else
                 {
+                    var committedIndex = AuditTrail.LastCommittedEntryIndex;
+
                     // A retransmitted snapshot (e.g. the previous acknowledgment was lost) is already covered by
                     // the committed log, which matches the leader's log. Acknowledge it so the leader advances NextIndex.
-                    if (snapshotIndex > AuditTrail.LastCommittedEntryIndex)
-                        await AuditTrail.AppendAsync(snapshot, snapshotIndex, tokenSource.Token).ConfigureAwait(false);
+                    if (snapshotIndex > committedIndex)
+                    {
+                        try
+                        {
+                            await AuditTrail.AppendAsync(snapshot, snapshotIndex, tokenSource.Token).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            // uncommitted entries may be dropped
+                            await RefreshConfigurationAfterFailureAsync(committedIndex + 1L).ConfigureAwait(false);
+                            throw;
+                        }
+
+                        // the snapshot replaces the log prefix and its configurations
+                        if (activeConfiguration is not null)
+                        {
+                            try
+                            {
+                                var promoted = await PromoteStagedSnapshotConfigurationAsync(senderTerm, snapshotIndex, LifecycleToken).ConfigureAwait(false);
+                                await InstallSnapshotConfigurationAsync(snapshotIndex, committedIndex, LifecycleToken).ConfigureAwait(false);
+                                if (promoted)
+                                    RemoveStagedSnapshotConfigurations(senderTerm, snapshotIndex);
+                            }
+                            catch
+                            {
+                                InvalidateSnapshotConfiguration(snapshotIndex, committedIndex);
+                                throw;
+                            }
+
+                            Leader = TryGetMember(sender);
+                        }
+                    }
+                    else if (activeConfiguration is not null)
+                    {
+                        // A retransmission can complete the second half after the snapshot is already durable.
+                        try
+                        {
+                            if (await PromoteStagedSnapshotConfigurationAsync(senderTerm, snapshotIndex, LifecycleToken).ConfigureAwait(false))
+                            {
+                                await InstallSnapshotConfigurationAsync(snapshotIndex, committedIndex, LifecycleToken).ConfigureAwait(false);
+                                RemoveStagedSnapshotConfigurations(senderTerm, snapshotIndex);
+                                Leader = TryGetMember(sender);
+                            }
+                        }
+                        catch
+                        {
+                            InvalidateSnapshotConfiguration(snapshotIndex, committedIndex);
+                            throw;
+                        }
+                    }
 
                     result = result with
                     {
@@ -762,6 +833,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                     commitIndex = long.Min(commitIndex, lastIndex);
 
                     var notEmpty = UseTermDetector(ref entries, senderTerm);
+                    bool configurationDetected;
 
                     // prevent Follower state transition during processing of received log entries
                     using (new RefreshableState<TMember>.TransitionSuppressionScope(state as RefreshableState<TMember>))
@@ -773,15 +845,35 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                          * skipCommitted=true allows to skip the passed committed entry and append uncommitted entries.
                          * If it is 'false' then the method will throw the exception and the node becomes unavailable in each replication cycle.
                          */
-                        await AuditTrail.AppendAndCommitAsync(entries, prevLogIndex + 1L, true, commitIndex, tokenSource.Token).ConfigureAwait(false);
+                        try
+                        {
+                            await AuditTrail.AppendAndCommitAsync(entries, prevLogIndex + 1L, true, commitIndex, tokenSource.Token).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            // the log may be partially overwritten
+                            await RefreshConfigurationAfterFailureAsync(prevLogIndex + 1L).ConfigureAwait(false);
+                            throw;
+                        }
+
                         result = result with
                         {
                             Value = result.Value with
                             {
-                                Result = IsReplicatedWithExpectedTerm(entries) ? HeartbeatResult.ReplicatedWithLeaderTerm : HeartbeatResult.Replicated,
+                                Result = IsReplicatedWithExpectedTerm(entries, out configurationDetected) ? HeartbeatResult.ReplicatedWithLeaderTerm : HeartbeatResult.Replicated,
                                 LastIndex = lastIndex,
                             }
                         };
+                    }
+
+                    // The appended configuration is active before the entries are acknowledged. An overwritten
+                    // configuration reverts to the previous one in the log.
+                    if (activeConfiguration is { } configuration
+                        && (configurationDetected || configuration.IsDirty || configuration.HasEntriesAfter(prevLogIndex)))
+                    {
+                        // the entries are appended already, so the request cancellation must not leave the configuration stale
+                        await UpdateConfigurationAsync(prevLogIndex + 1L, LifecycleToken).ConfigureAwait(false);
+                        Leader = senderMember = TryGetMember(sender);
                     }
 
                     // This node is in sync with the leader and no entries arrived
@@ -1262,6 +1354,23 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             lockState = lockNotTaken;
             await transitionLock.AcquireAsync(LifecycleToken).ConfigureAwait(false);
             lockState = lockTaken;
+
+            // the votes must be counted against the latest configuration in the log
+            if (activeConfiguration is { IsDirty: true })
+            {
+                var membersCopy = members;
+                try
+                {
+                    await RefreshConfigurationAsync(LifecycleToken).ConfigureAwait(false);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    Logger.UnhandledException(e);
+                    readyForTransition = false;
+                }
+
+                readyForTransition &= ReferenceEquals(membersCopy, members);
+            }
 
             if (state is FollowerState<TMember> { IsExpired: true } followerState && callerState.IsValid(followerState))
             {

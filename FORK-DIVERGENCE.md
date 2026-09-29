@@ -62,6 +62,20 @@ upstream sync is merged.
   majority has confirmed the leader's term and the local state machine has applied the current-term write barrier.
   Upstream issues a usable lease as soon as the node becomes leader.
 
+### Leader visibility after step-down
+* **A leader that steps down stops reporting itself as leader straight away** (#65). When a leader steps down
+  (higher term in a response or request, or resignation), the fork clears `Leader` before the state changes. Upstream
+  keeps the local node as `Leader` until the node hears from the new leader or starts an election. In that window:
+  * `Leader` (including `ICluster.Leader` and `IMessageBus.Leader`) returns `null`, and `LeaderChanged` fires with
+    `null`. The sequence becomes old leader → `null` → new leader, where upstream goes from old leader straight to
+    new leader.
+  * `WaitForLeaderAsync` waits for the next leader. Upstream completes it with the stale local node.
+  * The HTTP leader router returns 503 (Service Unavailable). Upstream handles the request locally on a node that is
+    no longer leader.
+  * `ApplyReadBarrierAsync` throws `QuorumUnreachableException` straight away. Before this fix it could spin
+    synchronously on the calling thread until `Leader` changed or the token was canceled. A read barrier that runs
+    while the local node is `Leader` but not yet in the leader state now yields and retries; it no longer spins.
+
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
@@ -85,7 +99,7 @@ All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests ar
 unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush target), #39 (test hangs/flakes),
 #40 (flusher failure), #41 (snapshot flush alignment), #42 (applied index regression), #43 (restore no-op snapshot
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
-configuration barriers), #59 (leader lease timing).
+configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down).
 
 ## Upstream sync log
 

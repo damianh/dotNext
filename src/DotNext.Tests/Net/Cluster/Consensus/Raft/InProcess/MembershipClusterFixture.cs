@@ -9,7 +9,7 @@ using StateMachine;
 using Threading;
 
 /// <summary>
-/// Five WAL-backed voters and one joiner on a fully held in-process network.
+/// Five WAL-backed voters and one joiner (by default) on a fully held in-process network.
 /// </summary>
 /// <remarks>
 /// Nothing progresses on its own: elections need <see cref="ElectAsync"/>, RPCs need
@@ -32,12 +32,12 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
     internal readonly EndPoint[] Voters;
     internal readonly MembershipNode[] Nodes;
 
-    internal MembershipClusterFixture()
+    internal MembershipClusterFixture(int voterCount = VoterCount, int joinerCount = 1)
     {
-        Voters = Enumerable.Range(0, VoterCount)
+        Voters = Enumerable.Range(0, voterCount)
             .Select(EndPoint (i) => new DnsEndPoint($"member-{i}", 0))
             .ToArray();
-        Nodes = Enumerable.Range(0, VoterCount + 1)
+        Nodes = Enumerable.Range(0, voterCount + joinerCount)
             .Select(i => new MembershipNode(Network, $"member-{i}", Voters, GetTempPath(), TimeProvider))
             .ToArray();
     }

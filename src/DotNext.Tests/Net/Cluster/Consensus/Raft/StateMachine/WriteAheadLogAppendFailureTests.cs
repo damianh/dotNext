@@ -36,6 +36,33 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         }
     }
 
+    public static TheoryData<AppendKind> ProducerAppendKinds
+    {
+        get
+        {
+            var result = new TheoryData<AppendKind>();
+            result.Add(AppendKind.Producer);
+            result.Add(AppendKind.AppendAndCommit);
+            result.Add(AppendKind.AppendAndCommitSlow);
+            return result;
+        }
+    }
+
+    public static TheoryData<AppendKind, bool> ProducerMutationFailureKinds
+    {
+        get
+        {
+            var result = new TheoryData<AppendKind, bool>();
+            foreach (var kind in new[] { AppendKind.Producer, AppendKind.AppendAndCommit, AppendKind.AppendAndCommitSlow })
+            {
+                result.Add(kind, false);
+                result.Add(kind, true);
+            }
+
+            return result;
+        }
+    }
+
     [Theory(Timeout = TestTimeouts.Default)]
     [MemberData(nameof(AppendKinds))]
     public static async Task CancellationWhileWaitingForPersistenceDoesNotPoisonLog(AppendKind kind)
@@ -196,6 +223,99 @@ public sealed class WriteAheadLogAppendFailureTests : Test
     }
 
     [Theory(Timeout = TestTimeouts.Default)]
+    [MemberData(nameof(ProducerAppendKinds))]
+    public static async Task ProducerCancellationAfterWrittenPrefixPublishesAndPreservesLog(AppendKind kind)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var cancellation = new CancellationTokenSource();
+            await using var entries = new FailingProducer([new Entry { Term = 2L }], () =>
+            {
+                cancellation.Cancel();
+                return new OperationCanceledException(cancellation.Token);
+            });
+
+            var error = await ThrowsAnyAsync<OperationCanceledException>(
+                () => AppendProducerAsync(wal, kind, entries, cancellation.Token));
+            Equal(cancellation.Token, error.CancellationToken);
+            await AssertPublishedAsync(wal, 2L);
+            await AssertProgressAsync(wal, 3L, "next after producer cancellation");
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, 3L, 2L);
+        using var next = await recovered.ReadAsync(3L, 3L, TestToken);
+        Equal("next after producer cancellation", await next[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [MemberData(nameof(ProducerAppendKinds))]
+    public static async Task PreMoveNextCancellationPublishesWrittenPrefixWithoutAdvancingProducer(AppendKind kind)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var cancellation = new CancellationTokenSource();
+            await using var entries = new FailingProducer(
+                [new Entry { Term = 2L, AfterWrite = cancellation.Cancel }],
+                () => new IOException("MoveNextAsync should not be called after request cancellation."));
+
+            var error = await ThrowsAnyAsync<OperationCanceledException>(
+                () => AppendProducerAsync(wal, kind, entries, cancellation.Token));
+            Equal(cancellation.Token, error.CancellationToken);
+            Equal(1, entries.MoveNextCallCount);
+            await AssertPublishedAsync(wal, 2L);
+            await AssertProgressAsync(wal, 3L, "next after pre-MoveNext cancellation");
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, 3L, 2L);
+        using var next = await recovered.ReadAsync(3L, 3L, TestToken);
+        Equal("next after pre-MoveNext cancellation", await next[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [MemberData(nameof(ProducerMutationFailureKinds))]
+    public static async Task ProducerFailureAfterWrittenPrefixStillPoisonsLog(AppendKind kind, bool unrelatedCancellation)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            Exception failure;
+            if (unrelatedCancellation)
+            {
+                using var unrelated = new CancellationTokenSource();
+                unrelated.Cancel();
+                failure = new OperationCanceledException(unrelated.Token);
+            }
+            else
+            {
+                failure = new IOException("Producer failed.");
+            }
+
+            await using var entries = new FailingProducer([new Entry { Term = 2L }], () => failure);
+            if (unrelatedCancellation)
+                Same(failure, await ThrowsAnyAsync<OperationCanceledException>(() => AppendProducerAsync(wal, kind, entries, TestToken)));
+            else
+                Same(failure, await ThrowsAsync<IOException>(() => AppendProducerAsync(wal, kind, entries, TestToken)));
+
+            await AssertPoisonedAsync(wal, failure);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertUsableAsync(recovered, unrelatedCancellation
+            ? "next after unrelated producer cancellation"
+            : "next after producer failure");
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task MatchingPrefixThenInvalidEntryDoesNotPoisonLog(bool slow)
@@ -254,30 +374,203 @@ public sealed class WriteAheadLogAppendFailureTests : Test
     }
 
     [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(AppendKind.Unbuffered, false)]
+    [InlineData(AppendKind.Indexed, false)]
+    [InlineData(AppendKind.Overwrite, false)]
+    [InlineData(AppendKind.Producer, false)]
+    [InlineData(AppendKind.AppendAndCommit, false)]
+    [InlineData(AppendKind.AppendAndCommitSlow, false)]
+    [InlineData(AppendKind.Unbuffered, true)]
+    [InlineData(AppendKind.Indexed, true)]
+    [InlineData(AppendKind.Overwrite, true)]
+    [InlineData(AppendKind.Producer, true)]
+    [InlineData(AppendKind.AppendAndCommit, true)]
+    [InlineData(AppendKind.AppendAndCommitSlow, true)]
+    public static async Task CancellationDuringPayloadWriteRollsBackAndKeepsLogUsable(AppendKind kind, bool leadershipLoss)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var leadership = new CancellationTokenSource();
+            using var caller = new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(caller.Token, leadership.Token);
+            var entry = new PartiallyFailingEntry(
+                beforeFailure: leadershipLoss ? leadership.Cancel : caller.Cancel,
+                failureFactory: () => new OperationCanceledException(linked.Token))
+            { Term = 2L };
+
+            var error = await ThrowsAnyAsync<OperationCanceledException>(
+                () => AppendAsync(wal, kind, linked.Token, entry));
+            Equal(linked.Token, error.CancellationToken);
+            await AssertSeededStateAsync(wal);
+            False(File.Exists(Path.Combine(options.Location, "overwrite")));
+            await AssertUsableAsync(wal, expectedNext: "next after rollback");
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertRecoveredProgressAsync(recovered, 3L, "next after rollback");
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(AppendKind.Unbuffered)]
     [InlineData(AppendKind.Indexed)]
     [InlineData(AppendKind.Overwrite)]
     [InlineData(AppendKind.Producer)]
     [InlineData(AppendKind.AppendAndCommit)]
     [InlineData(AppendKind.AppendAndCommitSlow)]
-    public static async Task CancellationAfterWritingPayloadPoisonsLog(AppendKind kind)
+    public static async Task MidPayloadFailureStillPoisonsLog(AppendKind kind)
     {
         var options = CreateOptions();
         await SeedAsync(options);
-        await using var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp());
-        using var cancellation = new CancellationTokenSource();
-        var entry = new Entry
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
         {
-            Term = 2L,
-            AfterWrite = () =>
+            var failure = new IOException("Payload failed.");
+            var entry = new PartiallyFailingEntry(failureFactory: () => failure) { Term = 2L };
+            Same(failure, await ThrowsAsync<IOException>(() => AppendAsync(wal, kind, TestToken, entry)));
+            await AssertPoisonedAsync(wal, failure);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertUsableAsync(recovered, expectedNext: "next after payload failure");
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(AppendKind.Unbuffered)]
+    [InlineData(AppendKind.Indexed)]
+    [InlineData(AppendKind.Overwrite)]
+    [InlineData(AppendKind.Producer)]
+    [InlineData(AppendKind.AppendAndCommit)]
+    [InlineData(AppendKind.AppendAndCommitSlow)]
+    public static async Task UnrelatedPayloadCancellationStillPoisonsLog(AppendKind kind)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var unrelated = new CancellationTokenSource();
+            unrelated.Cancel();
+            var failure = new OperationCanceledException(unrelated.Token);
+            var entry = new PartiallyFailingEntry(failureFactory: () => failure) { Term = 2L };
+            Same(failure, await ThrowsAnyAsync<OperationCanceledException>(() => AppendAsync(wal, kind, TestToken, entry)));
+            await AssertPoisonedAsync(wal, failure);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertUsableAsync(recovered, expectedNext: "next after unrelated cancellation");
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(AppendKind.Unbuffered, false)]
+    [InlineData(AppendKind.Indexed, false)]
+    [InlineData(AppendKind.Overwrite, false)]
+    [InlineData(AppendKind.Producer, false)]
+    [InlineData(AppendKind.AppendAndCommit, false)]
+    [InlineData(AppendKind.AppendAndCommitSlow, false)]
+    [InlineData(AppendKind.Unbuffered, true)]
+    [InlineData(AppendKind.Overwrite, true)]
+    [InlineData(AppendKind.Producer, true)]
+    [InlineData(AppendKind.AppendAndCommit, true)]
+    public static async Task CancellationAfterPayloadCompletesPublishesDurableAppend(AppendKind kind, bool leadershipLoss)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        var expectedLast = kind is AppendKind.Unbuffered or AppendKind.Indexed ? 3L : 2L;
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            // Leadership loss reaches the WAL through a token linked with the caller's token.
+            using var leadership = new CancellationTokenSource();
+            using var caller = new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(caller.Token, leadership.Token);
+            var entry = new Entry
             {
-                cancellation.Cancel();
-                cancellation.Token.ThrowIfCancellationRequested();
-            },
-        };
-        var failure = await ThrowsAnyAsync<OperationCanceledException>(
-            () => AppendAsync(wal, kind, cancellation.Token, entry));
-        await AssertPoisonedAsync(wal, failure);
+                Term = 2L,
+                AfterWrite = leadershipLoss ? leadership.Cancel : caller.Cancel,
+            };
+
+            await AppendAsync(wal, kind, linked.Token, entry);
+            True(linked.IsCancellationRequested);
+            await AssertPublishedAsync(wal, expectedLast);
+            await AssertProgressAsync(wal, expectedLast + 1L);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, expectedLast + 1L, expectedLast);
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task CancellationBetweenEntriesPublishesWrittenPrefix(bool appendAndCommit)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var cancellation = new CancellationTokenSource();
+            await using var entries = new LogEntryProducer<IRaftLogEntry>(new IRaftLogEntry[]
+            {
+                new Entry { Term = 2L, AfterWrite = cancellation.Cancel },
+                new Entry { Term = 2L },
+            });
+            var append = appendAndCommit
+                ? ((IAuditTrail<IRaftLogEntry>)wal).AppendAndCommitAsync(entries, 2L, false, 1L, cancellation.Token).AsTask()
+                : wal.AppendAsync(entries, 2L, token: cancellation.Token).AsTask();
+
+            // The unknown outcome is reported to the caller; only the fully written prefix is published.
+            var error = await ThrowsAnyAsync<OperationCanceledException>(() => append);
+            Equal(cancellation.Token, error.CancellationToken);
+            await AssertPublishedAsync(wal, 2L);
+            await AssertProgressAsync(wal, 3L);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, 3L, 2L);
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public static async Task CancellationDuringSecondPayloadPublishesFirstEntry(bool appendAndCommit, bool leadershipLoss)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var leadership = new CancellationTokenSource();
+            using var caller = new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(caller.Token, leadership.Token);
+            await using var entries = new LogEntryProducer<IRaftLogEntry>(new IRaftLogEntry[]
+            {
+                new Entry { Term = 2L },
+                new PartiallyFailingEntry(
+                    beforeFailure: leadershipLoss ? leadership.Cancel : caller.Cancel,
+                    failureFactory: () => new OperationCanceledException(linked.Token))
+                { Term = 2L },
+            });
+
+            var append = appendAndCommit
+                ? ((IAuditTrail<IRaftLogEntry>)wal).AppendAndCommitAsync(entries, 2L, false, 1L, linked.Token).AsTask()
+                : wal.AppendAsync(entries, 2L, token: linked.Token).AsTask();
+
+            var error = await ThrowsAnyAsync<OperationCanceledException>(() => append);
+            Equal(linked.Token, error.CancellationToken);
+            await AssertPublishedAsync(wal, 2L);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            False(File.Exists(Path.Combine(options.Location, "overwrite")));
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, 2L);
+        await AssertProgressAsync(recovered, 3L, "next after published prefix");
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
@@ -418,7 +711,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await wal.AppendAsync(new TestLogEntry("old tail") { Term = 1L }, TestToken);
     }
 
-    private static async Task AssertUsableAsync(WriteAheadLog wal)
+    private static async Task AssertSeededStateAsync(WriteAheadLog wal)
     {
         Equal(2L, wal.LastEntryIndex);
         Equal(1L, wal.LastCommittedEntryIndex);
@@ -427,10 +720,44 @@ public sealed class WriteAheadLogAppendFailureTests : Test
             Equal("prefix", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
             Equal("old tail", await entries[1].ToStringAsync(Encoding.UTF8, token: TestToken));
         }
-        Equal(3L, await wal.AppendAsync(new TestLogEntry("next") { Term = 2L }, TestToken));
-        await wal.CommitAsync(3L, TestToken);
-        await wal.WaitForApplyAsync(3L, TestToken);
+    }
+
+    private static async Task AssertUsableAsync(WriteAheadLog wal, string expectedNext = "next")
+    {
+        await AssertSeededStateAsync(wal);
+        await AssertProgressAsync(wal, 3L, expectedNext);
+    }
+
+    private static async Task AssertRecoveredProgressAsync(WriteAheadLog wal, long expectedLast, string expectedNext)
+    {
+        Equal(expectedLast, wal.LastEntryIndex);
+        Equal(expectedLast, wal.LastCommittedEntryIndex);
+        Equal(expectedLast, wal.LastAppliedIndex);
+        using (var entries = await wal.ReadAsync(2L, expectedLast, TestToken))
+        {
+            Equal("old tail", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+            Equal(expectedNext, await entries[1].ToStringAsync(Encoding.UTF8, token: TestToken));
+        }
+    }
+
+    // The entry at `writtenIndex` carries the payload of the append published before cancellation surfaced.
+    private static async Task AssertPublishedAsync(WriteAheadLog wal, long expectedLast, long? writtenIndex = null)
+    {
+        Equal(expectedLast, wal.LastEntryIndex);
+        var index = writtenIndex ?? expectedLast;
+        using var entries = await wal.ReadAsync(index, index, TestToken);
+        Equal(2L, entries[0].Term);
+        Equal(new byte[] { 1, 2, 3 }, await entries[0].ToByteArrayAsync(token: TestToken));
+    }
+
+    private static async Task AssertProgressAsync(WriteAheadLog wal, long index, string payload = "next")
+    {
+        Equal(index, await wal.AppendAsync(new TestLogEntry(payload) { Term = 2L }, TestToken));
+        await wal.CommitAsync(index, TestToken);
+        await wal.WaitForApplyAsync(index, TestToken);
         await wal.FlushAsync(TestToken);
+        using var entries = await wal.ReadAsync(index, index, TestToken);
+        Equal(payload, await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
     private static async Task AssertPoisonedAsync(WriteAheadLog wal, Exception failure)
@@ -479,6 +806,17 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         }
     }
 
+    private static Task AppendProducerAsync(WriteAheadLog wal, AppendKind kind, ILogEntryProducer<IRaftLogEntry> entries, CancellationToken token)
+        => kind switch
+        {
+            AppendKind.Producer => wal.AppendAsync(entries, 2L, token: token).AsTask(),
+            AppendKind.AppendAndCommit => ((IAuditTrail<IRaftLogEntry>)wal)
+                .AppendAndCommitAsync(entries, 2L, false, 1L, token).AsTask(),
+            AppendKind.AppendAndCommitSlow => ((IAuditTrail<IRaftLogEntry>)wal)
+                .AppendAndCommitAsync(entries, 2L, false, 2L, token).AsTask(),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "persistenceLock")]
     private static extern ref AsyncExclusiveLock PersistenceLock(WriteAheadLog wal);
 
@@ -514,6 +852,18 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         public override long? Length => throw new ArgumentException("Invalid entry length.");
     }
 
+    private sealed class PartiallyFailingEntry(Action beforeFailure = null, Func<Exception> failureFactory = null) : Entry, IRaftLogEntry
+    {
+        public override long? Length => 3L;
+
+        async ValueTask IDataTransferObject.WriteToAsync<TWriter>(TWriter writer, CancellationToken token)
+        {
+            await writer.WriteAsync(new byte[] { 1, 2 }, token: token);
+            beforeFailure?.Invoke();
+            throw failureFactory?.Invoke() ?? new IOException("Payload failed.");
+        }
+    }
+
     private sealed class OwnedEntry(TrackedBuffer buffer = null) : Entry, ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>
     {
         MemoryOwner<byte> ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>.Invoke(MemoryAllocator<byte> allocator)
@@ -531,14 +881,20 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         public void Dispose() => IsDisposed = true;
     }
 
-    private sealed class FailingProducer(IRaftLogEntry[] prefix, Func<Exception> failure) : ILogEntryProducer<IRaftLogEntry>
+    private sealed class FailingProducer(IRaftLogEntry[] prefix, Func<Exception> failure, long remainingCountOnFailure = 1L) : ILogEntryProducer<IRaftLogEntry>
     {
         private int position = -1;
-        public long RemainingCount => prefix.Length - position;
+        public long RemainingCount => position < prefix.Length
+            ? prefix.Length - position - 1L + remainingCountOnFailure
+            : remainingCountOnFailure;
         public IRaftLogEntry Current => prefix[position];
+        internal int MoveNextCallCount { get; private set; }
 
         public ValueTask<bool> MoveNextAsync()
-            => ++position < prefix.Length ? ValueTask.FromResult(true) : ValueTask.FromException<bool>(failure());
+        {
+            MoveNextCallCount++;
+            return ++position < prefix.Length ? ValueTask.FromResult(true) : ValueTask.FromException<bool>(failure());
+        }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

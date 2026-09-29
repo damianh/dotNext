@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
@@ -25,30 +26,48 @@ public sealed class SteppedDownLeaderReadBarrierTests : RaftTest
         var newerWrite = newLeader.Log.LastCommittedEntryIndex;
         True(oldLeader.Log.LastAppliedIndex < newerWrite);
 
-        // the former leader learns the higher term from replication responses and steps down
-        await cluster.PumpAsync(oldLeader, WaitForStepDownAsync(oldLeader));
-        Equal(2L, oldLeader.Term);
+        var observedLeaders = new ConcurrentQueue<ClusterMemberId?>();
 
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(5));
-        var invocation = Task.Factory.StartNew(
-            () => oldLeader.ApplyReadBarrierAsync(ReadBarrierType.Strong, deadline.Token).AsTask(),
-            TestToken,
-            TaskCreationOptions.DenyChildAttach,
-            TaskScheduler.Default);
+        oldLeader.LeaderChanged += OnLeaderChanged;
+        try
+        {
+            // the former leader learns the higher term from replication responses and steps down
+            await cluster.PumpAsync(oldLeader, WaitForStepDownAsync(oldLeader));
+            Equal(2L, oldLeader.Term);
+            Null(oldLeader.Leader);
+            Equal([null], observedLeaders.ToArray());
+            await ThrowsAsync<TimeoutException>(() => oldLeader.WaitForLeaderAsync(TimeSpan.FromMilliseconds(200), TestToken));
 
-        // the call ends on its own only if it returns without spinning until the deadline
-        var read = await invocation;
-        False(deadline.IsCancellationRequested, "The read barrier spun synchronously until it was canceled.");
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(5));
+            var invocation = Task.Factory.StartNew(
+                () => oldLeader.ApplyReadBarrierAsync(ReadBarrierType.Strong, deadline.Token).AsTask(),
+                TestToken,
+                TaskCreationOptions.DenyChildAttach,
+                TaskScheduler.Default);
 
-        // the node has no known leader, so the read cannot be authorized
-        IsType<QuorumUnreachableException>(await Record.ExceptionAsync(() => read.WaitAsync(DefaultTimeout, TestToken)));
+            // the call ends on its own only if it returns without spinning until the deadline
+            var read = await invocation;
+            False(deadline.IsCancellationRequested, "The read barrier spun synchronously until it was canceled.");
 
-        // once the new leader is known, a read observes its writes
-        await cluster.PumpAsync(newLeader, WaitForLeaderAsync(oldLeader, newLeader));
-        var retry = oldLeader.ApplyReadBarrierAsync(ReadBarrierType.Strong, TestToken).AsTask();
-        await cluster.PumpAllAsync(retry, leader: newLeader);
-        True(oldLeader.Log.LastAppliedIndex >= newerWrite);
+            // the node has no known leader, so the read cannot be authorized
+            IsType<QuorumUnreachableException>(await Record.ExceptionAsync(() => read.WaitAsync(DefaultTimeout, TestToken)));
+
+            // once the new leader is known, a read observes its writes
+            await cluster.PumpAsync(newLeader, WaitForLeaderAsync(oldLeader, newLeader));
+            Equal([null, newLeader.Id], observedLeaders.ToArray());
+            Equal(newLeader.Id, (await oldLeader.WaitForLeaderAsync(DefaultTimeout, TestToken)).Id);
+            var retry = oldLeader.ApplyReadBarrierAsync(ReadBarrierType.Strong, TestToken).AsTask();
+            await cluster.PumpAllAsync(retry, leader: newLeader);
+            True(oldLeader.Log.LastAppliedIndex >= newerWrite);
+        }
+        finally
+        {
+            oldLeader.LeaderChanged -= OnLeaderChanged;
+        }
+
+        void OnLeaderChanged(RaftCluster<InProcessClusterMember> sender, InProcessClusterMember? leader)
+            => observedLeaders.Enqueue(leader?.Id);
     }
 
     private static async Task WaitForStepDownAsync(MembershipNode node)

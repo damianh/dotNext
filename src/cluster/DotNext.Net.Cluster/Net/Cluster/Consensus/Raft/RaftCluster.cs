@@ -498,6 +498,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 // ensure that we're trying to update the same state
                 if (ReferenceEquals(state, currentState))
                 {
+                    if (currentState is LeaderState<TMember>)
+                    {
+                        // preserve the invariant that only LeaderState can expose the local leader
+                        Leader = null;
+                    }
+
                     await UpdateStateAsync(new StandbyState<TMember>(this) { ConsensusTimeout = LeaderLeaseDuration }).ConfigureAwait(false);
                     return true;
                 }

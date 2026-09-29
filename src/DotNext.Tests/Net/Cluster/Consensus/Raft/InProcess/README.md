@@ -199,8 +199,17 @@ It also covers the stale-term detection and single-entry appends.
 `TermGuardedAppendTests` covers the log-level term guard for the WAL and
 `ConsensusOnlyState`.
 
+`MembershipWarmUpTests` covers issue #54. A removed node that received and applied
+its own removal still matches the leader's log. Re-adding it must complete warm-up
+after one empty heartbeat, which the node acknowledges as `Replicated`. No new
+application write is needed. A lagging joiner is added only after it holds the
+committed prefix, and a joiner that rejects every round is not added.
+`ReplicationUtils.ReplicationProcessCatchUpTests` drives `CatchUpAsync` with scripted
+responses: an empty heartbeat, snapshot catch-up, rejection, unsupported version,
+higher term, an unavailable member, and cancellation.
+
 ```powershell
-dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipHarnessTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 180s
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --configuration Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipConfigurationTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipHarnessTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.MembershipWarmUpTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils.ReplicationProcessCatchUpTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 180s
 ```
 
 ## Follower read barriers

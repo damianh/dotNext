@@ -30,9 +30,10 @@ using Threading.Tasks;
 /// the same multi-entry operation were already fully staged, that written prefix is still published before
 /// <see cref="OperationCanceledException"/> is thrown. An append whose token is canceled after its payload was
 /// written still succeeds, and a multi-entry append canceled between entries likewise publishes the entries already
-/// written and then throws <see cref="OperationCanceledException"/>. Cancellation therefore does not guarantee
-/// that no entry was appended, but routine caller or leadership cancellation after mutation does not permanently
-/// fault the WAL.
+/// written and then throws <see cref="OperationCanceledException"/>. The same durable-prefix outcome applies when
+/// advancing the producer between entries surfaces routine request cancellation (for example, follower replication
+/// reading from the network with that request token). Cancellation therefore does not guarantee that no entry was
+/// appended, but routine caller or leadership cancellation after mutation does not permanently fault the WAL.
 /// A non-cancellation failure while an entry payload is being written, cancellation thrown from the payload while
 /// the request itself was not canceled, an error from the state machine while applying a snapshot, or a real
 /// storage/integrity failure may leave partially modified state, so it faults the WAL and requires reopening it
@@ -623,17 +624,49 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             token.ThrowIfCancellationRequested();
             var commitIndex = LastCommittedEntryIndex;
             var firstIndex = long.Max(startIndex, commitIndex + 1L);
-            for (; await entries.MoveNextAsync().ConfigureAwait(false); startIndex++)
+            for (;; startIndex++)
             {
                 if (token.IsCancellationRequested)
                 {
                     if (!mutationStarted)
                         token.ThrowIfCancellationRequested();
 
+                    // A cancellation observed after the last staged entry still preserves the successful append.
+                    if (entries.RemainingCount is 0L)
+                        break;
+
+                    if (!hasStagedEntries)
+                    {
+                        RollbackPayloadWrite(dataPages.LastWrittenAddress, clearJournal: true);
+                        mutationStarted = false;
+                        token.ThrowIfCancellationRequested();
+                    }
+
                     // Entries already staged are complete; stop consuming the producer and publish them below.
                     canceledAfterMutation = true;
                     break;
                 }
+
+                bool hasNext;
+                try
+                {
+                    hasNext = await entries.MoveNextAsync().ConfigureAwait(false);
+                }
+                catch (Exception e) when (mutationStarted && IsRoutinePayloadCancellation(e, token))
+                {
+                    if (!hasStagedEntries)
+                    {
+                        RollbackPayloadWrite(dataPages.LastWrittenAddress, clearJournal: true);
+                        mutationStarted = false;
+                        throw;
+                    }
+
+                    canceledAfterMutation = true;
+                    break;
+                }
+
+                if (!hasNext)
+                    break;
 
                 if (entries.Current is not { IsSnapshot: false } currentEntry)
                     throw new InvalidOperationException(ExceptionMessages.SnapshotDetected);

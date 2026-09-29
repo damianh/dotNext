@@ -33,6 +33,11 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
     private readonly CancellationTokenSource interruption;
     private readonly TagList measurementTags;
     private long replicationIndex, precedingTerm;
+
+    // The index up to which the member confirmed, in the latest round, that its log matches the leader's log.
+    // Unlike MemberResult, it doesn't distinguish replication of the leader's term, which is required for
+    // commitment but not for catching up a new member.
+    private long matchedIndex;
     private bool available = true;
     private IFailureDetector? detector;
 
@@ -116,6 +121,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
             for (MemberResult? result; reader.TryRead(out var barrier); SetResult(barrier, in result))
             {
                 replicationIndex = member.State.PrecedingIndex;
+                matchedIndex = 0L;
                 try
                 {
                     precedingTerm = await AuditTrail.GetTermAsync(replicationIndex, source.Token).ConfigureAwait(false);
@@ -209,6 +215,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
     {
         Logger.ReplicationSuccessful(member.EndPoint, member.State.NextIndex);
         member.State.NextIndex = replicationIndex + 1L;
+        matchedIndex = replicationIndex;
     }
     
     ValueTask<Result<ReplicationStatus>> ILogEntryConsumer<IRaftLogEntry, Result<ReplicationStatus>>.
@@ -271,7 +278,10 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
                 case { Term: not null }:
                     rounds = 0;
                     break;
-                case var memberResult when result.HasConsensus && memberResult.ReplicatedIndex >= watermarkIndex:
+                // A matching-prefix acknowledgment up to the watermark is enough to catch up, even if it carries
+                // no entry of the leader's term (e.g. an empty heartbeat) and is therefore reported as Touched.
+                // The barrier completion publishes matchedIndex written by the replication loop.
+                case var memberResult when result.HasConsensus && long.Max(memberResult.ReplicatedIndex, matchedIndex) >= watermarkIndex:
                     writer.Complete();
                     return true;
             }

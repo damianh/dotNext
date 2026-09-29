@@ -16,15 +16,23 @@ public static class ClusterConfigurationExtensions
     /// <summary>
     /// Appends a new configuration as a log entry to the Write-Ahead Log.
     /// </summary>
+    /// <remarks>
+    /// This is a storage-level operation: it neither activates the configuration nor serializes it with other
+    /// membership changes. It cannot be used on the log of a running cluster that derives its configuration
+    /// from the log; use <c>AddMemberAsync</c> or <c>RemoveMemberAsync</c> of the cluster instead.
+    /// </remarks>
     /// <param name="state">The persistent state.</param>
     /// <param name="configuration">The configuration to append.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <typeparam name="TAddress">The type of the address.</typeparam>
     /// <returns>The index of the added entry.</returns>
+    /// <exception cref="InvalidOperationException"><paramref name="state"/> belongs to a running cluster that derives its configuration from the log.</exception>
     public static ValueTask<long> AppendAsync<TAddress>(this IPersistentState state, IClusterConfiguration<TAddress> configuration,
         CancellationToken token = default)
         where TAddress : notnull
-        => state.AppendAsync(configuration, state.Term, token);
+        => state is IManagedConfigurationAuditTrail { IsConfigurationManaged: true }
+            ? ValueTask.FromException<long>(new InvalidOperationException(ExceptionMessages.ConfigurationManagedByCluster))
+            : state.AppendAsync(configuration, state.Term, token);
 
     internal static ValueTask<long> AppendAsync<TAddress>(this IAuditTrail<IRaftLogEntry> state, IClusterConfiguration<TAddress> configuration,
         long term, CancellationToken token = default)

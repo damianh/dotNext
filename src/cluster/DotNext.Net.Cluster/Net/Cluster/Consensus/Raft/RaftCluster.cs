@@ -382,6 +382,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             {
                 transitionLock.Release();
             }
+
+            if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
+                managedLog.IsConfigurationManaged = true;
         }
 
         // A restarted voter may have acknowledged a leader lease just before the crash. Leader stickiness
@@ -592,6 +595,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
                 await MoveToStandbyState(resumable: false).ConfigureAwait(false);
                 LocalMemberGone();
+
+                if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
+                    managedLog.IsConfigurationManaged = false;
             }
             finally
             {
@@ -1547,10 +1553,17 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <summary>
     /// Appends a new log entry and ensures that it is replicated and committed.
     /// </summary>
+    /// <remarks>
+    /// Configuration entries are rejected: a membership change must go through
+    /// <see cref="AddMemberAsync{TAddress}(TMember, int, Membership.IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>
+    /// or <see cref="RemoveMemberAsync{TAddress}(ClusterMemberId, Membership.IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>,
+    /// which allow one change at a time and activate it on the leader.
+    /// </remarks>
     /// <typeparam name="TEntry">The type of the log entry.</typeparam>
     /// <param name="entry">The log entry to be added.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <exception cref="ObjectDisposedException">This object has been disposed.</exception>
+    /// <exception cref="ArgumentException"><paramref name="entry"/> is a configuration entry (<see cref="IRaftLogEntry.IsConfiguration"/>).</exception>
     /// <exception cref="NotLeaderException">The current node is not a leader.</exception>
     /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -1558,6 +1571,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         where TEntry : IRaftLogEntry
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
+
+        if (entry.IsConfiguration)
+            throw new ArgumentException(ExceptionMessages.ConfigurationEntryNotReplicable, nameof(entry));
 
         var leaderState = LeaderStateOrException;
         var tokenSource = CombineTokens(token, leaderState.Token);

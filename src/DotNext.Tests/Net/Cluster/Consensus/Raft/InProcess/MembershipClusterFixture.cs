@@ -361,13 +361,16 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
             => UnavailableMemberDetected(Storage, address, term, token);
 
         /// <summary>
-        /// Appends a removal of <paramref name="address"/> to the local log without replicating it.
+        /// Appends a removal of <paramref name="address"/> to the local log without replicating or activating it.
         /// </summary>
+        /// <remarks>
+        /// Uses the internal storage-level append, which bypasses the membership API on purpose.
+        /// </remarks>
         internal async Task<long> AppendRemovalAsync(EndPoint address)
         {
             var config = await LoadConfigurationAsync();
             True(IClusterConfiguration<EndPoint>.TryRemove(ref config, address));
-            return await Log.AppendAsync(config, TestToken);
+            return await ClusterConfigurationExtensions.AppendAsync(Log, config, ((IPersistentState)Log).Term, TestToken);
         }
 
         // mirrors RaftCluster.DefaultImpl and RaftHttpCluster

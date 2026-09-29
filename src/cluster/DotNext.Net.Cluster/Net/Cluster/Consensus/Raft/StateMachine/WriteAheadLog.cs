@@ -39,7 +39,7 @@ using Threading.Tasks;
 /// storage/integrity failure may leave partially modified state, so it faults the WAL and requires reopening it
 /// for recovery.
 /// </remarks>
-public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState, ITermGuardedAuditTrail
+public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState, ITermGuardedAuditTrail, IManagedConfigurationAuditTrail
 {
     private const int DictionaryConcurrencyLevel = 3; // append flow and cleaner and applier
 

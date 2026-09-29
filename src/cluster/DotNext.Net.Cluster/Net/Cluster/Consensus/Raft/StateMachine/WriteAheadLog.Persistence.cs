@@ -12,19 +12,23 @@ partial class WriteAheadLog
 
     // Call under Append (and, for replacements, Overwrite) and persistenceLock after pre-mutation checks.
     // Journal publication can fail after modifying storage, so the caller must already be in the fatal scope.
-    private async ValueTask PrepareAppendAsync(long firstIndex, CancellationToken token)
+    // Request cancellation is deliberately not observed: once mutation starts, the append either completes
+    // durably or fails as a storage error, so a canceled caller cannot leave a half-published state behind.
+    private async ValueTask PrepareAppendAsync(long firstIndex)
     {
         stagedLastIndex = LastEntryIndex;
         firstIndex = long.Max(firstIndex, LastCommittedEntryIndex + 1L);
         if (firstIndex <= stagedLastIndex)
         {
             await overwriteJournal.WriteAsync(checkpoint.Generation + 1L, firstIndex,
-                stagedLastIndex, metadataPages, token).ConfigureAwait(false);
+                stagedLastIndex, metadataPages, CancellationToken.None).ConfigureAwait(false);
         }
     }
 
-    private async ValueTask PersistAppendAsync(long firstIndex, CancellationToken token)
+    // Publishes the staged entries. Like PrepareAppendAsync, it ignores request cancellation.
+    private async ValueTask PersistAppendAsync(long firstIndex)
     {
+        var token = CancellationToken.None;
         var snapshotIndex = SnapshotIndex;
         var lastIndex = long.Max(stagedLastIndex, snapshotIndex);
         firstIndex = GetFlushStartIndex(firstIndex, snapshotIndex);

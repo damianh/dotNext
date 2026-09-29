@@ -260,7 +260,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
     [InlineData(AppendKind.Producer)]
     [InlineData(AppendKind.AppendAndCommit)]
     [InlineData(AppendKind.AppendAndCommitSlow)]
-    public static async Task CancellationAfterWritingPayloadPoisonsLog(AppendKind kind)
+    public static async Task CancellationThrownWhileWritingPayloadPoisonsLog(AppendKind kind)
     {
         var options = CreateOptions();
         await SeedAsync(options);
@@ -278,6 +278,76 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         var failure = await ThrowsAnyAsync<OperationCanceledException>(
             () => AppendAsync(wal, kind, cancellation.Token, entry));
         await AssertPoisonedAsync(wal, failure);
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(AppendKind.Unbuffered, false)]
+    [InlineData(AppendKind.Indexed, false)]
+    [InlineData(AppendKind.Overwrite, false)]
+    [InlineData(AppendKind.Producer, false)]
+    [InlineData(AppendKind.AppendAndCommit, false)]
+    [InlineData(AppendKind.AppendAndCommitSlow, false)]
+    [InlineData(AppendKind.Unbuffered, true)]
+    [InlineData(AppendKind.Overwrite, true)]
+    [InlineData(AppendKind.Producer, true)]
+    [InlineData(AppendKind.AppendAndCommit, true)]
+    public static async Task CancellationAfterPayloadCompletesPublishesDurableAppend(AppendKind kind, bool leadershipLoss)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        var expectedLast = kind is AppendKind.Unbuffered or AppendKind.Indexed ? 3L : 2L;
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            // Leadership loss reaches the WAL through a token linked with the caller's token.
+            using var leadership = new CancellationTokenSource();
+            using var caller = new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(caller.Token, leadership.Token);
+            var entry = new Entry
+            {
+                Term = 2L,
+                AfterWrite = leadershipLoss ? leadership.Cancel : caller.Cancel,
+            };
+
+            await AppendAsync(wal, kind, linked.Token, entry);
+            True(linked.IsCancellationRequested);
+            await AssertPublishedAsync(wal, expectedLast);
+            await AssertProgressAsync(wal, expectedLast + 1L);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, expectedLast + 1L, expectedLast);
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task CancellationBetweenEntriesPublishesWrittenPrefix(bool appendAndCommit)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var cancellation = new CancellationTokenSource();
+            await using var entries = new LogEntryProducer<IRaftLogEntry>(new IRaftLogEntry[]
+            {
+                new Entry { Term = 2L, AfterWrite = cancellation.Cancel },
+                new Entry { Term = 2L },
+            });
+            var append = appendAndCommit
+                ? ((IAuditTrail<IRaftLogEntry>)wal).AppendAndCommitAsync(entries, 2L, false, 1L, cancellation.Token).AsTask()
+                : wal.AppendAsync(entries, 2L, token: cancellation.Token).AsTask();
+
+            // The unknown outcome is reported to the caller; only the fully written prefix is published.
+            var error = await ThrowsAnyAsync<OperationCanceledException>(() => append);
+            Equal(cancellation.Token, error.CancellationToken);
+            await AssertPublishedAsync(wal, 2L);
+            await AssertProgressAsync(wal, 3L);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, 3L, 2L);
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
@@ -430,6 +500,24 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         Equal(3L, await wal.AppendAsync(new TestLogEntry("next") { Term = 2L }, TestToken));
         await wal.CommitAsync(3L, TestToken);
         await wal.WaitForApplyAsync(3L, TestToken);
+        await wal.FlushAsync(TestToken);
+    }
+
+    // The entry at `writtenIndex` carries the payload of the cancelled append.
+    private static async Task AssertPublishedAsync(WriteAheadLog wal, long expectedLast, long? writtenIndex = null)
+    {
+        Equal(expectedLast, wal.LastEntryIndex);
+        var index = writtenIndex ?? expectedLast;
+        using var entries = await wal.ReadAsync(index, index, TestToken);
+        Equal(2L, entries[0].Term);
+        Equal(new byte[] { 1, 2, 3 }, await entries[0].ToByteArrayAsync(token: TestToken));
+    }
+
+    private static async Task AssertProgressAsync(WriteAheadLog wal, long index)
+    {
+        Equal(index, await wal.AppendAsync(new TestLogEntry("next") { Term = 2L }, TestToken));
+        await wal.CommitAsync(index, TestToken);
+        await wal.WaitForApplyAsync(index, TestToken);
         await wal.FlushAsync(TestToken);
     }
 

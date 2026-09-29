@@ -254,30 +254,93 @@ public sealed class WriteAheadLogAppendFailureTests : Test
     }
 
     [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(AppendKind.Unbuffered, false)]
+    [InlineData(AppendKind.Indexed, false)]
+    [InlineData(AppendKind.Overwrite, false)]
+    [InlineData(AppendKind.Producer, false)]
+    [InlineData(AppendKind.AppendAndCommit, false)]
+    [InlineData(AppendKind.AppendAndCommitSlow, false)]
+    [InlineData(AppendKind.Unbuffered, true)]
+    [InlineData(AppendKind.Indexed, true)]
+    [InlineData(AppendKind.Overwrite, true)]
+    [InlineData(AppendKind.Producer, true)]
+    [InlineData(AppendKind.AppendAndCommit, true)]
+    [InlineData(AppendKind.AppendAndCommitSlow, true)]
+    public static async Task CancellationDuringPayloadWriteRollsBackAndKeepsLogUsable(AppendKind kind, bool leadershipLoss)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var leadership = new CancellationTokenSource();
+            using var caller = new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(caller.Token, leadership.Token);
+            var entry = new PartiallyFailingEntry(
+                beforeFailure: leadershipLoss ? leadership.Cancel : caller.Cancel,
+                failureFactory: () => new OperationCanceledException(linked.Token))
+            { Term = 2L };
+
+            var error = await ThrowsAnyAsync<OperationCanceledException>(
+                () => AppendAsync(wal, kind, linked.Token, entry));
+            Equal(linked.Token, error.CancellationToken);
+            await AssertSeededStateAsync(wal);
+            False(File.Exists(Path.Combine(options.Location, "overwrite")));
+            await AssertUsableAsync(wal, expectedNext: "next after rollback");
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertRecoveredProgressAsync(recovered, 3L, "next after rollback");
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(AppendKind.Unbuffered)]
     [InlineData(AppendKind.Indexed)]
     [InlineData(AppendKind.Overwrite)]
     [InlineData(AppendKind.Producer)]
     [InlineData(AppendKind.AppendAndCommit)]
     [InlineData(AppendKind.AppendAndCommitSlow)]
-    public static async Task CancellationThrownWhileWritingPayloadPoisonsLog(AppendKind kind)
+    public static async Task MidPayloadFailureStillPoisonsLog(AppendKind kind)
     {
         var options = CreateOptions();
         await SeedAsync(options);
-        await using var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp());
-        using var cancellation = new CancellationTokenSource();
-        var entry = new Entry
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
         {
-            Term = 2L,
-            AfterWrite = () =>
-            {
-                cancellation.Cancel();
-                cancellation.Token.ThrowIfCancellationRequested();
-            },
-        };
-        var failure = await ThrowsAnyAsync<OperationCanceledException>(
-            () => AppendAsync(wal, kind, cancellation.Token, entry));
-        await AssertPoisonedAsync(wal, failure);
+            var failure = new IOException("Payload failed.");
+            var entry = new PartiallyFailingEntry(failureFactory: () => failure) { Term = 2L };
+            Same(failure, await ThrowsAsync<IOException>(() => AppendAsync(wal, kind, TestToken, entry)));
+            await AssertPoisonedAsync(wal, failure);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertUsableAsync(recovered, expectedNext: "next after payload failure");
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(AppendKind.Unbuffered)]
+    [InlineData(AppendKind.Indexed)]
+    [InlineData(AppendKind.Overwrite)]
+    [InlineData(AppendKind.Producer)]
+    [InlineData(AppendKind.AppendAndCommit)]
+    [InlineData(AppendKind.AppendAndCommitSlow)]
+    public static async Task UnrelatedPayloadCancellationStillPoisonsLog(AppendKind kind)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var unrelated = new CancellationTokenSource();
+            unrelated.Cancel();
+            var failure = new OperationCanceledException(unrelated.Token);
+            var entry = new PartiallyFailingEntry(failureFactory: () => failure) { Term = 2L };
+            Same(failure, await ThrowsAnyAsync<OperationCanceledException>(() => AppendAsync(wal, kind, TestToken, entry)));
+            await AssertPoisonedAsync(wal, failure);
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertUsableAsync(recovered, expectedNext: "next after unrelated cancellation");
     }
 
     [Theory(Timeout = TestTimeouts.Default)]
@@ -348,6 +411,46 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
         await recovered.InitializeAsync(TestToken);
         await AssertPublishedAsync(recovered, 3L, 2L);
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public static async Task CancellationDuringSecondPayloadPublishesFirstEntry(bool appendAndCommit, bool leadershipLoss)
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        await using (var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
+        {
+            using var leadership = new CancellationTokenSource();
+            using var caller = new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(caller.Token, leadership.Token);
+            await using var entries = new LogEntryProducer<IRaftLogEntry>(new IRaftLogEntry[]
+            {
+                new Entry { Term = 2L },
+                new PartiallyFailingEntry(
+                    beforeFailure: leadershipLoss ? leadership.Cancel : caller.Cancel,
+                    failureFactory: () => new OperationCanceledException(linked.Token))
+                { Term = 2L },
+            });
+
+            var append = appendAndCommit
+                ? ((IAuditTrail<IRaftLogEntry>)wal).AppendAndCommitAsync(entries, 2L, false, 1L, linked.Token).AsTask()
+                : wal.AppendAsync(entries, 2L, token: linked.Token).AsTask();
+
+            var error = await ThrowsAnyAsync<OperationCanceledException>(() => append);
+            Equal(linked.Token, error.CancellationToken);
+            await AssertPublishedAsync(wal, 2L);
+            Equal(1L, wal.LastCommittedEntryIndex);
+            False(File.Exists(Path.Combine(options.Location, "overwrite")));
+        }
+
+        await using var recovered = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await recovered.InitializeAsync(TestToken);
+        await AssertPublishedAsync(recovered, 2L);
+        await AssertProgressAsync(recovered, 3L, "next after published prefix");
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
@@ -488,7 +591,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await wal.AppendAsync(new TestLogEntry("old tail") { Term = 1L }, TestToken);
     }
 
-    private static async Task AssertUsableAsync(WriteAheadLog wal)
+    private static async Task AssertSeededStateAsync(WriteAheadLog wal)
     {
         Equal(2L, wal.LastEntryIndex);
         Equal(1L, wal.LastCommittedEntryIndex);
@@ -497,13 +600,27 @@ public sealed class WriteAheadLogAppendFailureTests : Test
             Equal("prefix", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
             Equal("old tail", await entries[1].ToStringAsync(Encoding.UTF8, token: TestToken));
         }
-        Equal(3L, await wal.AppendAsync(new TestLogEntry("next") { Term = 2L }, TestToken));
-        await wal.CommitAsync(3L, TestToken);
-        await wal.WaitForApplyAsync(3L, TestToken);
-        await wal.FlushAsync(TestToken);
     }
 
-    // The entry at `writtenIndex` carries the payload of the cancelled append.
+    private static async Task AssertUsableAsync(WriteAheadLog wal, string expectedNext = "next")
+    {
+        await AssertSeededStateAsync(wal);
+        await AssertProgressAsync(wal, 3L, expectedNext);
+    }
+
+    private static async Task AssertRecoveredProgressAsync(WriteAheadLog wal, long expectedLast, string expectedNext)
+    {
+        Equal(expectedLast, wal.LastEntryIndex);
+        Equal(expectedLast, wal.LastCommittedEntryIndex);
+        Equal(expectedLast, wal.LastAppliedIndex);
+        using (var entries = await wal.ReadAsync(2L, expectedLast, TestToken))
+        {
+            Equal("old tail", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
+            Equal(expectedNext, await entries[1].ToStringAsync(Encoding.UTF8, token: TestToken));
+        }
+    }
+
+    // The entry at `writtenIndex` carries the payload of the append published before cancellation surfaced.
     private static async Task AssertPublishedAsync(WriteAheadLog wal, long expectedLast, long? writtenIndex = null)
     {
         Equal(expectedLast, wal.LastEntryIndex);
@@ -513,12 +630,14 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         Equal(new byte[] { 1, 2, 3 }, await entries[0].ToByteArrayAsync(token: TestToken));
     }
 
-    private static async Task AssertProgressAsync(WriteAheadLog wal, long index)
+    private static async Task AssertProgressAsync(WriteAheadLog wal, long index, string payload = "next")
     {
-        Equal(index, await wal.AppendAsync(new TestLogEntry("next") { Term = 2L }, TestToken));
+        Equal(index, await wal.AppendAsync(new TestLogEntry(payload) { Term = 2L }, TestToken));
         await wal.CommitAsync(index, TestToken);
         await wal.WaitForApplyAsync(index, TestToken);
         await wal.FlushAsync(TestToken);
+        using var entries = await wal.ReadAsync(index, index, TestToken);
+        Equal(payload, await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
     private static async Task AssertPoisonedAsync(WriteAheadLog wal, Exception failure)
@@ -600,6 +719,18 @@ public sealed class WriteAheadLogAppendFailureTests : Test
     private sealed class InvalidLengthEntry : Entry
     {
         public override long? Length => throw new ArgumentException("Invalid entry length.");
+    }
+
+    private sealed class PartiallyFailingEntry(Action beforeFailure = null, Func<Exception> failureFactory = null) : Entry, IRaftLogEntry
+    {
+        public override long? Length => 3L;
+
+        async ValueTask IDataTransferObject.WriteToAsync<TWriter>(TWriter writer, CancellationToken token)
+        {
+            await writer.WriteAsync(new byte[] { 1, 2 }, token: token);
+            beforeFailure?.Invoke();
+            throw failureFactory?.Invoke() ?? new IOException("Payload failed.");
+        }
     }
 
     private sealed class OwnedEntry(TrackedBuffer buffer = null) : Entry, ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>

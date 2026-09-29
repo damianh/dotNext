@@ -12,8 +12,9 @@ partial class WriteAheadLog
 
     // Call under Append (and, for replacements, Overwrite) and persistenceLock after pre-mutation checks.
     // Journal publication can fail after modifying storage, so the caller must already be in the fatal scope.
-    // Request cancellation is deliberately not observed: once mutation starts, the append either completes
-    // durably or fails as a storage error, so a canceled caller cannot leave a half-published state behind.
+    // Request cancellation is deliberately not observed here: once staging begins, journal publication itself
+    // must complete or fail as a storage error. Payload-copy cancellation is handled separately by rolling back
+    // unpublished bytes before metadata is written.
     private async ValueTask PrepareAppendAsync(long firstIndex)
     {
         stagedLastIndex = LastEntryIndex;

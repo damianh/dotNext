@@ -25,14 +25,18 @@ using Threading.Tasks;
 /// the checkpoint format, after which older versions cannot open the store.
 /// Cancellation or validation failure before an append starts modifying the log leaves the WAL usable.
 /// Once an append starts modifying the log, its journal, flush and checkpoint publication ignore
-/// the caller's cancellation token: a canceled append either completes durably or fails as a storage error.
-/// Consequently, an append whose token is canceled after its payload was written still succeeds, and a
-/// multi-entry append canceled between entries publishes the entries already written and then throws
-/// <see cref="OperationCanceledException"/>. A canceled append therefore has an unknown outcome:
-/// cancellation doesn't guarantee that no entry was appended. The WAL remains usable in all these cases.
-/// A failure while an entry payload is being written, an error from the state machine while applying a snapshot,
-/// or a real storage/integrity failure (including cancellation thrown by the entry itself in the middle of
-/// its payload) may leave partially modified state, so it faults the WAL and requires reopening it for recovery.
+/// the caller's cancellation token. If the request is canceled while an entry payload is still being written,
+/// that entry's unpublished payload bytes are rolled back and the WAL remains usable; if earlier entries from
+/// the same multi-entry operation were already fully staged, that written prefix is still published before
+/// <see cref="OperationCanceledException"/> is thrown. An append whose token is canceled after its payload was
+/// written still succeeds, and a multi-entry append canceled between entries likewise publishes the entries already
+/// written and then throws <see cref="OperationCanceledException"/>. Cancellation therefore does not guarantee
+/// that no entry was appended, but routine caller or leadership cancellation after mutation does not permanently
+/// fault the WAL.
+/// A non-cancellation failure while an entry payload is being written, cancellation thrown from the payload while
+/// the request itself was not canceled, an error from the state machine while applying a snapshot, or a real
+/// storage/integrity failure may leave partially modified state, so it faults the WAL and requires reopening it
+/// for recovery.
 /// </remarks>
 public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState, ITermGuardedAuditTrail
 {
@@ -297,6 +301,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             currentIndex = LastEntryIndex + 1L;
             await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
             var mutationStarted = false;
+            var payloadCanceled = false;
             try
             {
                 ThrowOnInternalError();
@@ -306,11 +311,23 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 token.ThrowIfCancellationRequested();
                 mutationStarted = true;
                 await PrepareAppendAsync(currentIndex).ConfigureAwait(false);
-                await AppendAsync(entry, length, out var startAddress, token).ConfigureAwait(false);
+                ulong startAddress;
+                var rollbackAddress = dataPages.LastWrittenAddress;
+                try
+                {
+                    await AppendAsync(entry, length, out startAddress, token).ConfigureAwait(false);
+                }
+                catch (Exception e) when (IsRoutinePayloadCancellation(e, token))
+                {
+                    RollbackPayloadWrite(rollbackAddress, clearJournal: true);
+                    payloadCanceled = true;
+                    throw;
+                }
+
                 WriteMetadata(entry, currentIndex, startAddress);
                 await PersistAppendAsync(currentIndex).ConfigureAwait(false);
             }
-            catch (Exception e) when (mutationStarted)
+            catch (Exception e) when (mutationStarted && !(payloadCanceled && IsRoutinePayloadCancellation(e, token)))
             {
                 OnBackgroundTaskFailure(e);
                 throw;
@@ -518,6 +535,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
 
                 await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
                 var mutationStarted = false;
+                var payloadCanceled = false;
                 try
                 {
                     ThrowOnInternalError();
@@ -526,11 +544,23 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                     token.ThrowIfCancellationRequested();
                     mutationStarted = true;
                     await PrepareAppendAsync(startIndex).ConfigureAwait(false);
-                    await AppendAsync(entry, length, out var startAddress, token).ConfigureAwait(false);
+                    ulong startAddress;
+                    var rollbackAddress = dataPages.LastWrittenAddress;
+                    try
+                    {
+                        await AppendAsync(entry, length, out startAddress, token).ConfigureAwait(false);
+                    }
+                    catch (Exception e) when (IsRoutinePayloadCancellation(e, token))
+                    {
+                        RollbackPayloadWrite(rollbackAddress, clearJournal: true);
+                        payloadCanceled = true;
+                        throw;
+                    }
+
                     WriteMetadata(entry, startIndex, startAddress);
                     await PersistAppendAsync(startIndex).ConfigureAwait(false);
                 }
-                catch (Exception e) when (mutationStarted)
+                catch (Exception e) when (mutationStarted && !(payloadCanceled && IsRoutinePayloadCancellation(e, token)))
                 {
                     OnBackgroundTaskFailure(e);
                     throw;
@@ -585,6 +615,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
         var mutationStarted = false;
         var canceledAfterMutation = false;
+        var payloadCanceled = false;
+        var hasStagedEntries = false;
         try
         {
             ThrowOnInternalError();
@@ -623,8 +655,27 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                         await PrepareAppendAsync(firstIndex).ConfigureAwait(false);
                     }
 
-                    await AppendAsync(currentEntry, length, out var startAddress, token).ConfigureAwait(false);
+                    ulong startAddress;
+                    var rollbackAddress = dataPages.LastWrittenAddress;
+                    try
+                    {
+                        await AppendAsync(currentEntry, length, out startAddress, token).ConfigureAwait(false);
+                    }
+                    catch (Exception e) when (IsRoutinePayloadCancellation(e, token))
+                    {
+                        RollbackPayloadWrite(rollbackAddress, clearJournal: !hasStagedEntries);
+                        if (hasStagedEntries)
+                        {
+                            canceledAfterMutation = true;
+                            break;
+                        }
+
+                        payloadCanceled = true;
+                        throw;
+                    }
+
                     WriteMetadata(currentEntry, startIndex, startAddress);
+                    hasStagedEntries = true;
                 }
                 else if (!skipCommitted)
                 {
@@ -637,7 +688,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             else
                 token.ThrowIfCancellationRequested();
         }
-        catch (Exception e) when (mutationStarted)
+        catch (Exception e) when (mutationStarted && !(payloadCanceled && IsRoutinePayloadCancellation(e, token)))
         {
             OnBackgroundTaskFailure(e);
             throw;
@@ -650,6 +701,20 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         // The written prefix is durable and the log remains usable; the outcome for the rest is unknown to the caller.
         if (canceledAfterMutation)
             throw new OperationCanceledException(token);
+    }
+
+    private static bool IsRoutinePayloadCancellation(Exception e, CancellationToken token)
+        => e is OperationCanceledException && token.IsCancellationRequested;
+
+    private void RollbackPayloadWrite(ulong rollbackAddress, bool clearJournal)
+    {
+        // Entry bytes stay unreachable until WriteMetadata publishes their metadata in the append-only data region.
+        dataPages.LastWrittenAddress = rollbackAddress;
+        if (clearJournal)
+        {
+            stagedLastIndex = LastEntryIndex;
+            overwriteJournal.Clear();
+        }
     }
 
     /// <inheritdoc/>

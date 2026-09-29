@@ -97,6 +97,10 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 * **A snapshot's configuration is persisted only after the snapshot is installed.** With the log-derived configuration,
   `InstallConfigurationAsync` stages the configuration in memory, and it reaches the storage after the snapshot append
   succeeds. A failed or aborted snapshot transfer therefore cannot advance the stored baseline past the log.
+  Staged configurations are matched to a snapshot by sender term and the highest staged version not above the snapshot
+  index, so overlapping snapshot requests cannot take each other's configuration. If the snapshot is durable but its
+  configuration was not persisted (crash or storage failure), the leader's retransmission completes that second half
+  and the node withholds the acknowledgment until it does. There is no atomic snapshot-plus-configuration write.
 * **A leader that removes itself** keeps leading without counting itself until the removal is committed, then steps
   down to standby before `RemoveMemberAsync` returns.
 * **A removed node may never learn of its removal** if it misses the entry. It keeps its old configuration; members

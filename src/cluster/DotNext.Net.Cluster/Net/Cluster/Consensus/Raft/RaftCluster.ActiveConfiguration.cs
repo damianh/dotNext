@@ -11,9 +11,11 @@ public partial class RaftCluster<TMember>
 {
     // The latest configuration in the log is active as soon as it is appended, committed or not (Ongaro's thesis, §4.1).
     // Everything except the published active version is protected by transitionLock.
+    private const int MaxStagedSnapshotConfigurations = 4;
+
     private readonly object stagedSnapshotConfigurationSync = new();
     private ActiveConfiguration? activeConfiguration;
-    private StagedSnapshotConfiguration? stagedSnapshotConfiguration;
+    private List<StagedSnapshotConfiguration> stagedSnapshotConfigurations = [];
 
     /// <summary>
     /// Derives the active cluster configuration from the log.
@@ -49,29 +51,84 @@ public partial class RaftCluster<TMember>
             comparer ?? EqualityComparer<TAddress>.Default);
     }
 
-    private void StageSnapshotConfiguration(byte[] payload, long version)
-    {
-        lock (stagedSnapshotConfigurationSync)
-            stagedSnapshotConfiguration = new(payload, version);
-    }
-
-    private StagedSnapshotConfiguration? TakeStagedSnapshotConfiguration()
+    private void StageSnapshotConfiguration(long senderTerm, byte[] payload, long version)
     {
         lock (stagedSnapshotConfigurationSync)
         {
-            var configuration = stagedSnapshotConfiguration;
-            stagedSnapshotConfiguration = null;
-            return configuration;
+            if (stagedSnapshotConfigurations is [.., { Term: var newestTerm }])
+            {
+                if (senderTerm < newestTerm)
+                    return;
+
+                if (senderTerm > newestTerm)
+                    stagedSnapshotConfigurations.Clear();
+            }
+
+            var updated = false;
+            for (var i = 0; i < stagedSnapshotConfigurations.Count; i++)
+            {
+                if (stagedSnapshotConfigurations[i] is { Term: var term, Version: var stagedVersion } && term == senderTerm && stagedVersion == version)
+                {
+                    stagedSnapshotConfigurations[i] = new(senderTerm, payload, version);
+                    updated = true;
+                    break;
+                }
+            }
+
+            if (!updated)
+            {
+                stagedSnapshotConfigurations.Add(new(senderTerm, payload, version));
+                stagedSnapshotConfigurations.Sort(static (x, y) => x.Version.CompareTo(y.Version));
+                if (stagedSnapshotConfigurations.Count > MaxStagedSnapshotConfigurations)
+                    stagedSnapshotConfigurations.RemoveRange(0, stagedSnapshotConfigurations.Count - MaxStagedSnapshotConfigurations);
+            }
         }
     }
 
-    private async ValueTask PromoteStagedSnapshotConfigurationAsync(StagedSnapshotConfiguration? configuration, long snapshotIndex,
+    private StagedSnapshotConfiguration? GetStagedSnapshotConfiguration(long senderTerm, long snapshotIndex)
+    {
+        lock (stagedSnapshotConfigurationSync)
+        {
+            // Stale entries are harmless: the leader stages applied configurations of one term, and the latest
+            // staged version at or below the snapshot index is the configuration in effect at that snapshot.
+            for (var i = stagedSnapshotConfigurations.Count - 1; i >= 0; i--)
+            {
+                if (stagedSnapshotConfigurations[i] is { Term: var term, Version: var version } configuration
+                    && term == senderTerm
+                    && version <= snapshotIndex)
+                {
+                    return configuration;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    private void RemoveStagedSnapshotConfigurations(long senderTerm, long snapshotIndex)
+    {
+        lock (stagedSnapshotConfigurationSync)
+            stagedSnapshotConfigurations.RemoveAll(configuration => configuration.Term == senderTerm && configuration.Version <= snapshotIndex);
+    }
+
+    private async ValueTask<bool> PromoteStagedSnapshotConfigurationAsync(long senderTerm, long snapshotIndex,
         CancellationToken token)
     {
         Debug.Assert(transitionLock.IsLockHeld);
 
-        if (configuration is not null && configuration.Version <= snapshotIndex && AuditTrail.ConfigurationStorage is { } configurationStorage)
-            await configurationStorage.SaveConfigurationAsync(new BinaryTransferObject(configuration.Payload), configuration.Version, token).ConfigureAwait(false);
+        if (GetStagedSnapshotConfiguration(senderTerm, snapshotIndex) is not { } configuration || AuditTrail.ConfigurationStorage is not { } configurationStorage)
+            return false;
+
+        await configurationStorage.SaveConfigurationAsync(new BinaryTransferObject(configuration.Payload), configuration.Version, token).ConfigureAwait(false);
+        return true;
+    }
+
+    private void InvalidateSnapshotConfiguration(long snapshotIndex, long committedIndex)
+    {
+        Debug.Assert(transitionLock.IsLockHeld);
+
+        if (activeConfiguration is { } configuration)
+            configuration.Invalidate(long.Min(snapshotIndex, committedIndex));
     }
 
     // Rebuilds the active configuration from the storage and the whole log
@@ -216,7 +273,7 @@ public partial class RaftCluster<TMember>
         }
     }
 
-    private sealed record StagedSnapshotConfiguration(byte[] Payload, long Version);
+    private sealed record StagedSnapshotConfiguration(long Term, byte[] Payload, long Version);
 
     private abstract class ActiveConfiguration
     {

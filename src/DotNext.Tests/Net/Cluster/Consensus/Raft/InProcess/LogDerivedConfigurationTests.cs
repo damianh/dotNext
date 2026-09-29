@@ -90,7 +90,56 @@ public sealed class LogDerivedConfigurationTests : RaftTest
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task SnapshotConfigurationIsPersistedOnlyAfterSuccessfulInstall()
+    public static async Task OverlappingSnapshotRequestsKeepTheirOwnConfigurations()
+    {
+        await using var cluster = new MembershipClusterFixture();
+        await cluster.StartAsync();
+        var (leader, follower, removedA, removedB) = (cluster.Nodes[0], cluster.Nodes[1], cluster.Nodes[3], cluster.Nodes[4]);
+        var expectedA = cluster.Voters.Where(address => !address.Equals(removedB.EndPoint)).ToHashSet();
+        var expectedB = cluster.Voters.Where(address => !address.Equals(removedA.EndPoint) && !address.Equals(removedB.EndPoint)).ToHashSet();
+        const long firstConfigurationVersion = 2L, secondConfigurationVersion = 5L;
+
+        var firstConfiguration = await follower.LoadConfigurationAsync();
+        True(IClusterConfiguration<EndPoint>.TryRemove(ref firstConfiguration, removedB.EndPoint));
+        var secondConfiguration = await follower.LoadConfigurationAsync();
+        True(IClusterConfiguration<EndPoint>.TryRemove(ref secondConfiguration, removedB.EndPoint));
+        True(IClusterConfiguration<EndPoint>.TryRemove(ref secondConfiguration, removedA.EndPoint));
+
+        True(await ((ILocalMember)follower).InstallConfigurationAsync(1L, firstConfiguration, firstConfigurationVersion, TestToken));
+        True(await ((ILocalMember)follower).InstallConfigurationAsync(1L, secondConfiguration, secondConfigurationVersion, TestToken));
+
+        var firstResult = await ((ILocalMember)follower).InstallSnapshotAsync(
+            leader.Id,
+            1L,
+            new DurableEntry { Term = 1L, IsSnapshot = true },
+            firstConfigurationVersion,
+            ((ILocalMember)leader).Version,
+            TestToken);
+
+        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, firstResult.Value);
+        Equal(firstConfigurationVersion, await follower.LoadConfigurationVersionAsync());
+        Equal(expectedA, (await follower.LoadConfigurationAsync()).Members.ToHashSet());
+        Equal(expectedA, EndPoints(follower));
+
+        var secondResult = await ((ILocalMember)follower).InstallSnapshotAsync(
+            leader.Id,
+            1L,
+            new DurableEntry { Term = 1L, IsSnapshot = true },
+            secondConfigurationVersion,
+            ((ILocalMember)leader).Version,
+            TestToken);
+
+        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, secondResult.Value);
+        Equal(secondConfigurationVersion, await follower.LoadConfigurationVersionAsync());
+        Equal(expectedB, (await follower.LoadConfigurationAsync()).Members.ToHashSet());
+        Equal(expectedB, EndPoints(follower));
+
+        follower = await cluster.RestartAsync(1);
+        Equal(expectedB, EndPoints(follower));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task SnapshotRetransmissionCompletesConfigurationPromotion()
     {
         await using var cluster = new MembershipClusterFixture();
         await cluster.StartAsync();
@@ -101,22 +150,8 @@ public sealed class LogDerivedConfigurationTests : RaftTest
 
         var configuration = await follower.LoadConfigurationAsync();
         True(IClusterConfiguration<EndPoint>.TryRemove(ref configuration, removed.EndPoint));
-        True(await ((ILocalMember)follower).InstallConfigurationAsync(1L, configuration, configurationVersion, TestToken));
-        Equal(0L, await follower.LoadConfigurationVersionAsync());
 
-        Equal(original, (await follower.LoadConfigurationAsync()).Members.ToHashSet());
-        Equal(original, EndPoints(follower));
-
-        follower = await cluster.RestartAsync(1);
-        Equal(0L, await follower.LoadConfigurationVersionAsync());
-        Equal(original, (await follower.LoadConfigurationAsync()).Members.ToHashSet());
-        Equal(original, EndPoints(follower));
-
-        configuration = await follower.LoadConfigurationAsync();
-        True(IClusterConfiguration<EndPoint>.TryRemove(ref configuration, removed.EndPoint));
-        True(await ((ILocalMember)follower).InstallConfigurationAsync(1L, configuration, configurationVersion, TestToken));
-        Equal(0L, await follower.LoadConfigurationVersionAsync());
-        var result = await ((ILocalMember)follower).InstallSnapshotAsync(
+        var firstResult = await ((ILocalMember)follower).InstallSnapshotAsync(
             leader.Id,
             1L,
             new DurableEntry { Term = 1L, IsSnapshot = true },
@@ -124,7 +159,22 @@ public sealed class LogDerivedConfigurationTests : RaftTest
             ((ILocalMember)leader).Version,
             TestToken);
 
-        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, result.Value);
+        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, firstResult.Value);
+        Equal(0L, await follower.LoadConfigurationVersionAsync());
+        Equal(original, (await follower.LoadConfigurationAsync()).Members.ToHashSet());
+        Equal(original, EndPoints(follower));
+
+        True(await ((ILocalMember)follower).InstallConfigurationAsync(1L, configuration, configurationVersion, TestToken));
+
+        var retransmitted = await ((ILocalMember)follower).InstallSnapshotAsync(
+            leader.Id,
+            1L,
+            new DurableEntry { Term = 1L, IsSnapshot = true },
+            snapshotIndex,
+            ((ILocalMember)leader).Version,
+            TestToken);
+
+        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, retransmitted.Value);
         Equal(configurationVersion, await follower.LoadConfigurationVersionAsync());
         Equal(expected, (await follower.LoadConfigurationAsync()).Members.ToHashSet());
         Equal(expected, EndPoints(follower));

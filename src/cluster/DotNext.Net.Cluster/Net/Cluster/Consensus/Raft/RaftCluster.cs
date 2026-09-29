@@ -656,7 +656,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         if (activeConfiguration is null)
             return await configurationStorage.SaveConfigurationAsync(configuration, configurationVersion, token).ConfigureAwait(false);
 
-        StageSnapshotConfiguration(await configuration.ToByteArrayAsync(token: token).ConfigureAwait(false), configurationVersion);
+        StageSnapshotConfiguration(senderTerm, await configuration.ToByteArrayAsync(token: token).ConfigureAwait(false), configurationVersion);
         return true;
     }
 
@@ -680,7 +680,6 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         where TSnapshot : IRaftLogEntry
     {
         Result<HeartbeatResult> result;
-        var stagedConfiguration = activeConfiguration is null ? null : TakeStagedSnapshotConfiguration();
         var lockTaken = false;
         var tokenSource = CombineTokens(token, LifecycleToken);
         try
@@ -703,11 +702,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 }
                 else
                 {
+                    var committedIndex = AuditTrail.LastCommittedEntryIndex;
+
                     // A retransmitted snapshot (e.g. the previous acknowledgment was lost) is already covered by
                     // the committed log, which matches the leader's log. Acknowledge it so the leader advances NextIndex.
-                    if (snapshotIndex > AuditTrail.LastCommittedEntryIndex)
+                    if (snapshotIndex > committedIndex)
                     {
-                        var committedIndex = AuditTrail.LastCommittedEntryIndex;
                         try
                         {
                             await AuditTrail.AppendAsync(snapshot, snapshotIndex, tokenSource.Token).ConfigureAwait(false);
@@ -722,9 +722,38 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                         // the snapshot replaces the log prefix and its configurations
                         if (activeConfiguration is not null)
                         {
-                            await PromoteStagedSnapshotConfigurationAsync(stagedConfiguration, snapshotIndex, LifecycleToken).ConfigureAwait(false);
-                            await InstallSnapshotConfigurationAsync(snapshotIndex, committedIndex, LifecycleToken).ConfigureAwait(false);
+                            try
+                            {
+                                var promoted = await PromoteStagedSnapshotConfigurationAsync(senderTerm, snapshotIndex, LifecycleToken).ConfigureAwait(false);
+                                await InstallSnapshotConfigurationAsync(snapshotIndex, committedIndex, LifecycleToken).ConfigureAwait(false);
+                                if (promoted)
+                                    RemoveStagedSnapshotConfigurations(senderTerm, snapshotIndex);
+                            }
+                            catch
+                            {
+                                InvalidateSnapshotConfiguration(snapshotIndex, committedIndex);
+                                throw;
+                            }
+
                             Leader = TryGetMember(sender);
+                        }
+                    }
+                    else if (activeConfiguration is not null)
+                    {
+                        // A retransmission can complete the second half after the snapshot is already durable.
+                        try
+                        {
+                            if (await PromoteStagedSnapshotConfigurationAsync(senderTerm, snapshotIndex, LifecycleToken).ConfigureAwait(false))
+                            {
+                                await InstallSnapshotConfigurationAsync(snapshotIndex, committedIndex, LifecycleToken).ConfigureAwait(false);
+                                RemoveStagedSnapshotConfigurations(senderTerm, snapshotIndex);
+                                Leader = TryGetMember(sender);
+                            }
+                        }
+                        catch
+                        {
+                            InvalidateSnapshotConfiguration(snapshotIndex, committedIndex);
+                            throw;
                         }
                     }
 

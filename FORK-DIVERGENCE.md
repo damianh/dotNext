@@ -91,6 +91,9 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 * **`AddMemberAsync`/`RemoveMemberAsync`** (and the hosts' add and remove APIs) build a change only after the latest
   configuration in the leader's log and the leader's current-term no-op are committed and applied, then return once
   the change is committed and applied by the leader. Upstream waits for the leader's whole log to be applied first.
+* **A failed or cancelled append or snapshot install rebuilds the active configuration at once** from the surviving log,
+  so a partially overwritten configuration is never left active. Removing the last configured member is rejected
+  (`RemoveMemberAsync` returns `false`), because an empty configuration cannot be committed.
 * **A leader that removes itself** keeps leading without counting itself until the removal is committed, then steps
   down to standby before `RemoveMemberAsync` returns.
 * **A removed node may never learn of its removal** if it misses the entry. It keeps its old configuration; members
@@ -114,7 +117,7 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 | `WriteAheadLog.Options.FlushOnCommit` | present (6.8.0+) | **removed** |
 | `DotNext.IO.Log.ILogCompactionSupport` | removed in 6.8.0 (breaking change in a minor release) | removed too (follows upstream) |
 | `RaftCluster<TMember>.UseLogConfiguration` (protected) | absent | **added**: enables the log-derived active configuration (#49) |
-| `IClusterConfigurationStorage<TAddress>.ReadConfigurationAsync` | absent | **added** (default interface method; throws `NotSupportedException` unless implemented) |
+| `IClusterConfigurationStorage<TAddress>.ReadConfigurationAsync` | absent | **added** (required interface member: implementations must decode configuration log entries; a breaking change for custom storages) |
 
 ## Fork-only fixes
 All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests are in `damianh/dotNext`:

@@ -707,7 +707,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                         catch
                         {
                             // uncommitted entries may be dropped
-                            activeConfiguration?.Invalidate(committedIndex + 1L);
+                            await RefreshConfigurationAfterFailureAsync(committedIndex + 1L).ConfigureAwait(false);
                             throw;
                         }
 
@@ -814,7 +814,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                         catch
                         {
                             // the log may be partially overwritten
-                            activeConfiguration?.Invalidate(prevLogIndex + 1L);
+                            await RefreshConfigurationAfterFailureAsync(prevLogIndex + 1L).ConfigureAwait(false);
                             throw;
                         }
 

@@ -76,6 +76,25 @@ public partial class RaftCluster<TMember>
     private ValueTask RefreshConfigurationAsync(CancellationToken token)
         => activeConfiguration is { IsDirty: true } ? UpdateConfigurationAsync(long.MaxValue, token) : ValueTask.CompletedTask;
 
+    private async ValueTask RefreshConfigurationAfterFailureAsync(long startIndex)
+    {
+        Debug.Assert(transitionLock.IsLockHeld);
+
+        if (activeConfiguration is { } configuration)
+        {
+            configuration.Invalidate(startIndex);
+            try
+            {
+                await UpdateConfigurationAsync(startIndex, LifecycleToken).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                configuration.Invalidate(startIndex);
+                Logger.UnhandledException(e);
+            }
+        }
+    }
+
     private async ValueTask InstallSnapshotConfigurationAsync(long snapshotIndex, long committedIndex, CancellationToken token)
     {
         Debug.Assert(transitionLock.IsLockHeld);

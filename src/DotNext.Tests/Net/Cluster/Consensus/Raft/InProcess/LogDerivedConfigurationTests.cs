@@ -3,6 +3,9 @@ using System.Runtime.CompilerServices;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
+using IO;
+using IO.Log;
+using NetworkTransport;
 using static MembershipClusterFixture;
 
 /// <summary>
@@ -35,6 +38,28 @@ public sealed class LogDerivedConfigurationTests : RaftTest
         var voters = cluster.Voters.ToHashSet();
         foreach (var node in new[] { n0, n1, n2 })
             Equal(voters, EndPoints(node));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task CanceledOverwriteRefreshesPublishedConfiguration()
+    {
+        await using var cluster = new MembershipClusterFixture();
+        await cluster.StartAsync();
+        var (n1, n2, n4) = await ReplicateUncommittedRemovalAsync(cluster);
+        var stateVersion = ((ILocalMember)n2).Version;
+
+        using var cancellation = new CancellationTokenSource();
+        await using var entries = new LogEntryProducer<IRaftLogEntry>(
+        [
+            new DurableEntry { Term = 2L },
+            new PartiallyFailingEntry(cancellation.Cancel, () => new OperationCanceledException(cancellation.Token)) { Term = 2L },
+        ]);
+
+        await ThrowsAnyAsync<OperationCanceledException>(() => ((ILocalMember)n1)
+            .AppendEntriesAsync(n2.Id, 2L, entries, 1L, 1L, 1L, stateVersion, cancellation.Token)
+            .AsTask());
+
+        Contains(n4.EndPoint, EndPoints(n1));
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
@@ -134,6 +159,19 @@ public sealed class LogDerivedConfigurationTests : RaftTest
     private static HashSet<EndPoint> EndPoints(MembershipNode node)
         => node.Members.Select(static member => member.EndPoint).ToHashSet();
 
+    private static async Task<(MembershipNode Follower, MembershipNode Sender, MembershipNode Removed)> ReplicateUncommittedRemovalAsync(
+        MembershipClusterFixture cluster)
+    {
+        var (n0, n1, n2, n4) = (cluster.Nodes[0], cluster.Nodes[1], cluster.Nodes[2], cluster.Nodes[4]);
+        await cluster.ElectAsync(n0);
+        await cluster.PumpAsync(n0, n0.ForceReplicationAsync(TestToken).AsTask());
+        await n0.DetectAsync(n4.EndPoint);
+        await cluster.ReplicateOnlyToAsync(n0, n1, 2L);
+
+        DoesNotContain(n4.EndPoint, EndPoints(n1));
+        return (n1, n2, n4);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         while (!condition())
@@ -148,5 +186,31 @@ public sealed class LogDerivedConfigurationTests : RaftTest
     {
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "state")]
         internal static extern ref RaftState<TMember> State(RaftCluster<TMember> cluster);
+    }
+
+    private class DurableEntry : IRaftLogEntry
+    {
+        public long Term { get; init; }
+
+        public virtual bool IsSnapshot { get; init; }
+
+        public bool IsReusable => false;
+
+        public virtual long? Length => 3L;
+
+        async ValueTask IDataTransferObject.WriteToAsync<TWriter>(TWriter writer, CancellationToken token)
+        {
+            await writer.WriteAsync(new byte[] { 1, 2, 3 }, token: token);
+        }
+    }
+
+    private sealed class PartiallyFailingEntry(Action beforeFailure, Func<Exception> failureFactory) : DurableEntry, IRaftLogEntry
+    {
+        async ValueTask IDataTransferObject.WriteToAsync<TWriter>(TWriter writer, CancellationToken token)
+        {
+            await writer.WriteAsync(new byte[] { 1, 2 }, token: token);
+            beforeFailure();
+            throw failureFactory();
+        }
     }
 }

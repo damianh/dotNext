@@ -39,6 +39,9 @@ public sealed class ClusterConfigurationStorageTests : Test
         
         var configuration = await storage.LoadConfigurationAsync(TestToken);
         Empty(configuration.Members);
+
+        var decoded = await storage.ReadConfigurationAsync(config, TestToken);
+        Empty(decoded.Members);
         
         // rewrite version 0
         var address = new HttpEndPoint(IPAddress.Loopback, 4292, false);
@@ -50,6 +53,9 @@ public sealed class ClusterConfigurationStorageTests : Test
         (config, version) = await storage.As<IClusterConfigurationStorage>().LoadConfigurationAsync(TestToken);
         Equal(await configuration.ToByteArrayAsync(token: TestToken), await config.ToByteArrayAsync(token: TestToken));
         Equal(0L, version);
+
+        decoded = await storage.ReadConfigurationAsync(config, TestToken);
+        Contains(address, decoded.Members);
         
         // try to rewrite version 0 again
         var address2 = new HttpEndPoint(IPAddress.Loopback, 4496, false);

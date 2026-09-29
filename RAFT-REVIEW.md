@@ -517,7 +517,8 @@ best-effort pre-check. The guard covers membership appends only;
 `ClusterConfigurationExtensions.AppendAsync` and replication still accept a
 caller-supplied term.
 
-**Answered: apply-time adoption does not preserve quorum overlap (#49).**
+**Resolution of the OPEN QUESTION (#49): apply-time adoption does not preserve
+quorum overlap, and is replaced.**
 Apply-time adoption, recorded here for #18 as a known deviation, did not
 preserve quorum overlap. #49 reproduced two leaders in one term: a lagging
 candidate that already held a committed configuration, but had not applied it
@@ -527,11 +528,17 @@ overlap with the majority that elected the other leader
 leader commits under a configuration it has already replaced, has the same
 cause. Both are fixed by R2: the configuration is active on append, so every
 server counts against the latest configuration in its log, and a leader
-appends a new configuration only after the previous one is committed. With
-single-server changes this is the thesis's argument, and it needs no
+appends a new configuration only after the previous one is committed. This
+follows the single-server-change argument of the thesis, and needs no
 apply-time barrier. `LogDerivedConfigurationTests` covers truncation, restart,
 self-removal, and CE-1.
 
+**Limits of this evidence.** The decision is backed by the regression tests
+above and by the thesis argument, not by a bounded model. No TLA+/PlusCal model
+or checker run is part of this change (#49 asked for one; it was scoped out
+here, together with the simulation work in #56). Individual regressions do not
+prove dynamic-membership safety in general. A model that compares append-time
+adoption with the fork's earlier stages remains an open follow-up.
 **Custom hosts.** A `RaftCluster<TMember>` subclass that does not call
 `UseLogConfiguration` keeps the previous behaviour: a configuration takes effect
 when the host applies it through `ChangeConfigurationAsync`, and changes wait

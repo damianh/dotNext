@@ -270,7 +270,8 @@ public partial class RaftCluster<TMember>
     /// The new configuration is built from the latest configuration in the log: the method first waits until the leader
     /// has committed the latest configuration in its log and an entry of its own term (or, if the active configuration
     /// is not derived from the log, until the leader has applied its whole log), so a configuration change that is still
-    /// pending cannot be overwritten. If the active configuration is derived from the log, the member disappears from
+    /// pending cannot be overwritten. Removing the last configured member is rejected and returns
+    /// <see langword="false"/>. If the active configuration is derived from the log, the member disappears from
     /// <see cref="Members"/> as soon as the new configuration is appended; the method returns when the configuration
     /// is committed and applied by the leader. A leader that removes itself steps down before the method returns.
     /// </remarks>
@@ -281,7 +282,8 @@ public partial class RaftCluster<TMember>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <returns>
     /// <see langword="true"/> if the node has been removed from the cluster successfully;
-    /// <see langword="false"/> if the node rejects the replication or the address of the node cannot be committed.
+    /// <see langword="false"/> if the node rejects the replication, the address of the node cannot be committed,
+    /// or removing the member would leave the configuration empty.
     /// </returns>
     /// <exception cref="NotLeaderException">The current node is not a leader.</exception>
     /// <exception cref="OperationCanceledException">The operation has been canceled or the cluster elects a new leader.</exception>
@@ -302,7 +304,7 @@ public partial class RaftCluster<TMember>
             if (members.TryGetValue(id, out var member))
             {
                 var config = await LoadLatestConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
-                if (IClusterConfiguration<TAddress>.TryRemove(ref config, addressProvider(member)))
+                if (TryBuildNonEmptyRemoval(ref config, addressProvider(member)))
                 {
                     var removingSelf = !member.IsRemote;
                     var commitIndex = await AppendConfigurationAsync(leaderState, config, tokenSource.Token).ConfigureAwait(false);
@@ -463,7 +465,7 @@ public partial class RaftCluster<TMember>
         try
         {
             var config = await LoadLatestConfigurationAsync(leaderState, configurationStorage, tokenSource.Token).ConfigureAwait(false);
-            if (IClusterConfiguration<TAddress>.TryRemove(ref config, address))
+            if (TryBuildNonEmptyRemoval(ref config, address))
             {
                 await AppendConfigurationAsync(leaderState, config, tokenSource.Token).ConfigureAwait(false);
             }
@@ -481,6 +483,10 @@ public partial class RaftCluster<TMember>
             await tokenSource.DisposeAsync().ConfigureAwait(false);
         }
     }
+
+    private static bool TryBuildNonEmptyRemoval<TAddress>(ref IClusterConfiguration<TAddress> configuration, TAddress address)
+        where TAddress : notnull
+        => IClusterConfiguration<TAddress>.TryRemove(ref configuration, address) && configuration.Members.Count > 0;
 
     // Without a log-derived configuration, a configuration takes effect on apply (the storage holds the last applied
     // configuration), so a change must not be built before every configuration entry in the log is applied: otherwise

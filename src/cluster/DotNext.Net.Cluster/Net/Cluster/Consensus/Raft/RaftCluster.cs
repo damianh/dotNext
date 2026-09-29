@@ -646,12 +646,19 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <param name="configurationVersion">The configuration version.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <typeparam name="TConfiguration">The type of the configuration.</typeparam>
-    protected ValueTask<bool> InstallConfigurationAsync<TConfiguration>(long senderTerm, TConfiguration configuration, long configurationVersion,
+    protected async ValueTask<bool> InstallConfigurationAsync<TConfiguration>(long senderTerm, TConfiguration configuration, long configurationVersion,
         CancellationToken token)
         where TConfiguration : IDataTransferObject
-        => senderTerm >= AuditTrail.Term && AuditTrail.ConfigurationStorage is { } configurationStorage
-            ? configurationStorage.SaveConfigurationAsync(configuration, configurationVersion, token)
-            : ValueTask.FromResult(false);
+    {
+        if (senderTerm < AuditTrail.Term || AuditTrail.ConfigurationStorage is not { } configurationStorage)
+            return false;
+
+        if (activeConfiguration is null)
+            return await configurationStorage.SaveConfigurationAsync(configuration, configurationVersion, token).ConfigureAwait(false);
+
+        StageSnapshotConfiguration(await configuration.ToByteArrayAsync(token: token).ConfigureAwait(false), configurationVersion);
+        return true;
+    }
 
     /// <summary>
     /// Handles InstallSnapshot message received from remote cluster member.
@@ -673,6 +680,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         where TSnapshot : IRaftLogEntry
     {
         Result<HeartbeatResult> result;
+        var stagedConfiguration = activeConfiguration is null ? null : TakeStagedSnapshotConfiguration();
         var lockTaken = false;
         var tokenSource = CombineTokens(token, LifecycleToken);
         try
@@ -714,6 +722,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                         // the snapshot replaces the log prefix and its configurations
                         if (activeConfiguration is not null)
                         {
+                            await PromoteStagedSnapshotConfigurationAsync(stagedConfiguration, snapshotIndex, LifecycleToken).ConfigureAwait(false);
                             await InstallSnapshotConfigurationAsync(snapshotIndex, committedIndex, LifecycleToken).ConfigureAwait(false);
                             Leader = TryGetMember(sender);
                         }

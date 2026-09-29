@@ -11,7 +11,9 @@ public partial class RaftCluster<TMember>
 {
     // The latest configuration in the log is active as soon as it is appended, committed or not (Ongaro's thesis, §4.1).
     // Everything except the published active version is protected by transitionLock.
+    private readonly object stagedSnapshotConfigurationSync = new();
     private ActiveConfiguration? activeConfiguration;
+    private StagedSnapshotConfiguration? stagedSnapshotConfiguration;
 
     /// <summary>
     /// Derives the active cluster configuration from the log.
@@ -45,6 +47,31 @@ public partial class RaftCluster<TMember>
 
         activeConfiguration = new ActiveConfiguration<TAddress>(storage, memberFactory, addressProvider,
             comparer ?? EqualityComparer<TAddress>.Default);
+    }
+
+    private void StageSnapshotConfiguration(byte[] payload, long version)
+    {
+        lock (stagedSnapshotConfigurationSync)
+            stagedSnapshotConfiguration = new(payload, version);
+    }
+
+    private StagedSnapshotConfiguration? TakeStagedSnapshotConfiguration()
+    {
+        lock (stagedSnapshotConfigurationSync)
+        {
+            var configuration = stagedSnapshotConfiguration;
+            stagedSnapshotConfiguration = null;
+            return configuration;
+        }
+    }
+
+    private async ValueTask PromoteStagedSnapshotConfigurationAsync(StagedSnapshotConfiguration? configuration, long snapshotIndex,
+        CancellationToken token)
+    {
+        Debug.Assert(transitionLock.IsLockHeld);
+
+        if (configuration is not null && configuration.Version <= snapshotIndex && AuditTrail.ConfigurationStorage is { } configurationStorage)
+            await configurationStorage.SaveConfigurationAsync(new BinaryTransferObject(configuration.Payload), configuration.Version, token).ConfigureAwait(false);
     }
 
     // Rebuilds the active configuration from the storage and the whole log
@@ -188,6 +215,8 @@ public partial class RaftCluster<TMember>
             transitionLock.Release();
         }
     }
+
+    private sealed record StagedSnapshotConfiguration(byte[] Payload, long Version);
 
     private abstract class ActiveConfiguration
     {

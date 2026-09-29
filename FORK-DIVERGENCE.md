@@ -94,6 +94,9 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 * **A failed or cancelled append or snapshot install rebuilds the active configuration at once** from the surviving log,
   so a partially overwritten configuration is never left active. Removing the last configured member is rejected
   (`RemoveMemberAsync` returns `false`), because an empty configuration cannot be committed.
+* **A snapshot's configuration is persisted only after the snapshot is installed.** With the log-derived configuration,
+  `InstallConfigurationAsync` stages the configuration in memory, and it reaches the storage after the snapshot append
+  succeeds. A failed or aborted snapshot transfer therefore cannot advance the stored baseline past the log.
 * **A leader that removes itself** keeps leading without counting itself until the removal is committed, then steps
   down to standby before `RemoveMemberAsync` returns.
 * **A removed node may never learn of its removal** if it misses the entry. It keeps its old configuration; members

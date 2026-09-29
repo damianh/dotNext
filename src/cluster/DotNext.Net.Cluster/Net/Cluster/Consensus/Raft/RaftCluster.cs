@@ -607,6 +607,8 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 followerOrStandbyState.Refresh();
                 break;
             case LeaderState<TMember> or CandidateState<TMember>:
+                // the local node must not be reported as a leader after the leader state is gone
+                Leader = null;
                 var newState = new FollowerState<TMember>(this) { ConsensusReached = consensusReached };
                 await UpdateStateAsync(newState).ConfigureAwait(false);
                 newState.StartServing(ElectionTimeout);
@@ -982,8 +984,8 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                 if (ReferenceEquals(state, leaderState))
                 {
                     var newState = new FollowerState<TMember>(this);
-                    await UpdateStateAsync(newState).ConfigureAwait(false);
                     Leader = null;
+                    await UpdateStateAsync(newState).ConfigureAwait(false);
                     newState.StartServing(ElectionTimeout);
                     return true;
                 }
@@ -1103,8 +1105,14 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             }
             else if (Leader is { } leader)
             {
-                if (!leader.IsRemote
-                    || !(await leader.SynchronizeAsync(AuditTrail.LastCommittedEntryIndex, token).ConfigureAwait(false)).TryGetValue(out commitIndex))
+                if (!leader.IsRemote)
+                {
+                    // the local node is changing its state, retry asynchronously
+                    await Task.Yield();
+                    continue;
+                }
+
+                if (!(await leader.SynchronizeAsync(AuditTrail.LastCommittedEntryIndex, token).ConfigureAwait(false)).TryGetValue(out commitIndex))
                     continue;
 
                 await AuditTrail.WaitForApplyAsync(commitIndex, token).ConfigureAwait(false);

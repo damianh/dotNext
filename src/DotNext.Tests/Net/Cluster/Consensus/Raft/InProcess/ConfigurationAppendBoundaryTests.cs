@@ -70,8 +70,10 @@ public sealed class ConfigurationAppendBoundaryTests : RaftTest
         Equal(lastIndex, leader.Log.LastEntryIndex);
     }
 
-    [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task AppendToStoppedClusterLogIsAllowed()
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task AppendToStoppedClusterLogIsAllowed(bool cancelStop)
     {
         await using var cluster = new MembershipClusterFixture();
         await cluster.StartAsync();
@@ -79,7 +81,17 @@ public sealed class ConfigurationAppendBoundaryTests : RaftTest
         var configuration = await BuildRemovalAsync(node, cluster.Voters[4]);
         var lastIndex = node.Log.LastEntryIndex;
 
-        await node.StopAsync(TestToken);
+        if (cancelStop)
+        {
+            // a canceled shutdown still ends the lifecycle, and a second StopAsync returns immediately
+            await ThrowsAnyAsync<OperationCanceledException>(() => node.StopAsync(new CancellationToken(canceled: true)));
+            await node.StopAsync(TestToken);
+        }
+        else
+        {
+            await node.StopAsync(TestToken);
+        }
+
         Equal(lastIndex + 1L, await node.Log.AppendAsync(configuration, TestToken));
     }
 

@@ -123,7 +123,7 @@ All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests ar
 unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush target), #39 (test hangs/flakes),
 #40 (flusher failure), #41 (snapshot flush alignment), #42 (applied index regression), #43 (restore no-op snapshot
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
-configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #PRNUM (log-derived active configuration).
+configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration).
 
 ## Upstream sync log
 

@@ -480,11 +480,13 @@ best-effort pre-check. Since #50 the guard also covers the public
 *Baseline for the red tests:* `fork` at `9d93f3b36` (PR #62). Command:
 `dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -c Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderProposalTermTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 300s`.
 Expected: proposals with a stale or future term, or appended after the term
-advanced, throw `NotLeaderException`. Observed on the baseline: 16 tests, 4
-failed (`StaleTermProposalIsRejected`, `FutureTermProposalIsRejected`,
+advanced, or whose entry was overwritten before the caller resumed, throw
+`NotLeaderException`. Observed on the baseline: 17 tests, 5 failed
+(`StaleTermProposalIsRejected`, `FutureTermProposalIsRejected`,
 `TermChangeBetweenCheckAndAppendIsRejected`,
+`ProposalOverwrittenByNextLeaderIsNotAcknowledged`,
 `ConfigurationAppendRejectsTermAdvancedWhileWaiting`). The rest were
-characterization tests that pass before and after. With the fix all 16 pass.
+characterization tests that pass before and after. With the fix all 17 pass.
 
 Contract:
 
@@ -507,8 +509,8 @@ Contract:
   mutates anything. A step-down cancels that token, so the proposal fails with
   `NotLeaderException`. A step-down after the check is append-then-step-down:
   there is one leader per term, so the entry is a legitimate entry of that
-  term. The caller cannot see success because `WaitForApplyAsync` observes the
-  same token. `ConsensusOnlyState` checks the token only when it takes the
+  term. The caller cannot see success: see "No false acknowledgement" below.
+  `ConsensusOnlyState` checks the token only when it takes the
   lock, which is equivalent because its append is synchronous and not
   cancelable.
 * **Cancellation and failure mean unknown outcome.** Since #53 a WAL append
@@ -537,9 +539,28 @@ Contract:
   race is not closed. This is documented and tested
   (`CustomStateGetsBestEffortCheck`).
 
-*Remaining gap, out of scope:* `WaitForApplyAsync(index)` verifies no term. A
-proposal whose entry was overwritten could in theory be reported as applied.
-The leader token cancellation on step-down prevents this in practice.
+* **No false acknowledgement.** `WaitForApplyAsync(index)` observes only the applied
+  index, not the term at that index. If a newer leader overwrites the entry and the
+  node applies the replacement, the wait can return, so `ReplicateAsync` checks
+  `leaderState.Token` after the wait and throws `NotLeaderException` if it is
+  cancelled. This is sound because the leader token is cancelled before any
+  higher-term overwrite reaches the log:
+  `AppendEntriesAsync` (and `InstallSnapshotAsync`) hold `transitionLock`, call
+  `StepDownAsync(senderTerm, ...)`, which runs `UpdateStateAsync` and awaits
+  `LeaderState.DisposeAsyncCore`; that calls `Cancel()` first. Only then do they
+  call `AuditTrail.AppendAndCommitAsync` (or `AppendAsync` for the snapshot).
+  The overwrite is the only way a leader's uncommitted index changes, and the applied
+  index can pass it only afterwards, so a wait that returns after the replacement
+  was applied always sees a cancelled token. `LeaderProposalTermTests.ProposalOverwrittenByNextLeaderIsNotAcknowledged`
+  forces the adversarial schedule: the caller is held between the append and the wait
+  (`ApplyGatedState`), the old leader is partitioned, a new leader commits a different
+  entry at the same index, the partition heals and the old leader applies it, and only
+  then the caller resumes. On the previous code that test failed: the proposal was
+  acknowledged. The check may report `NotLeaderException` for an entry that did
+  commit before the step-down, which the unknown-outcome rule allows. A term-at-index
+  comparison was not used, because it would need a snapshot-aware lookup for indices
+  already compacted. Membership changes (`RaftCluster.Membership.cs`) have their own
+  wait-for-apply calls and are not changed here.
 
 **Known deviation.** Adopting a configuration on apply rather than on append
 is kept deliberately (option A for #18). Until a change is applied, the leader

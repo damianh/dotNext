@@ -292,6 +292,12 @@ the append must be rejected with `NotLeaderException`.
   check and the append, same-term step-down, and two characterization tests
   for the unknown outcome (a canceled proposal or one failed by leadership
   loss may still commit).
+- `ProposalOverwrittenByNextLeaderIsNotAcknowledged` holds the caller of a
+  proposal between its append and its wait for the apply (`ApplyGatedState`
+  wraps the old leader's log; the fixture accepts an optional `decorate`
+  callback), partitions the old leader, lets a new leader commit a different
+  entry at the same index, heals, and only then resumes the caller, which must
+  see `NotLeaderException`.
 - `TermGuardedAppendTests` adds the configuration append race and the
   best-effort fallback for a custom `IPersistentState`
   (`UnguardedPersistentState`).

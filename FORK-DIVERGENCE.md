@@ -69,6 +69,9 @@ upstream sync is merged.
   `Replicate*Async` helpers stamp the term and are not affected.
 * **`ClusterConfigurationExtensions.AppendAsync(IPersistentState, ...)` is term-guarded** (#50). It can no longer land
   after the term advanced between sampling and appending. It is a low-level storage operation, not a proposal.
+* **`ReplicateAsync` never acknowledges an overwritten entry** (#50). After the wait for the apply it throws
+  `NotLeaderException` if the leader token is cancelled, because a newer leader can overwrite the entry and advance the
+  applied index past it. Upstream returns as soon as the index is applied.
 * **A cancelled or failed proposal has an unknown outcome** (#50, #53). The entry may still commit. Use an application
   idempotency key or check the log before retrying. The bounded request journal (#25) covers transport retries only.
 * No public signatures changed. `ITermGuardedAuditTrail` remains internal. Custom `IPersistentState` implementations

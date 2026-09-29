@@ -1449,6 +1449,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// The request journal of the HTTP transport deduplicates transport-level retries only; it is bounded and
     /// process-local and is not a replacement for such a key.
     /// </para>
+    /// <para>
+    /// <b>Success.</b> The task completes normally only if the entry was applied and the node had not lost leadership
+    /// by then. A newer leader can overwrite the entry and advance the applied index past it, so the wait for the
+    /// applied index alone is not proof of success; leadership loss is checked after the wait. This check can also
+    /// report <see cref="NotLeaderException"/> for an entry that did commit, which the unknown-outcome rule covers.
+    /// </para>
     /// </remarks>
     /// <typeparam name="TEntry">The type of the log entry.</typeparam>
     /// <param name="entry">The log entry to be added. Its term must be the current term of the leader.</param>
@@ -1479,6 +1485,11 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
             // 3 - wait for commit
             await AuditTrail.WaitForApplyAsync(index, tokenSource.Token).ConfigureAwait(false);
+
+            // 4 - the wait only observes the applied index, which a newer leader can also advance past this index
+            // after overwriting the entry. The leader token is canceled before such an overwrite can start.
+            if (leaderState.Token.IsCancellationRequested)
+                throw new NotLeaderException();
         }
         catch (OperationCanceledException e) when (e.CausedBy(tokenSource, leaderState.Token))
         {

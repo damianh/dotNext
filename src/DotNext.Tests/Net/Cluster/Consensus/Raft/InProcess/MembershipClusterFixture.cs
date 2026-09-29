@@ -32,13 +32,14 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
     internal readonly EndPoint[] Voters;
     internal readonly MembershipNode[] Nodes;
 
-    internal MembershipClusterFixture()
+    /// <param name="decorate">Optionally wraps the persistent state of a node, for example to intercept calls made by the cluster.</param>
+    internal MembershipClusterFixture(Func<int, WriteAheadLog, IPersistentState> decorate = null)
     {
         Voters = Enumerable.Range(0, VoterCount)
             .Select(EndPoint (i) => new DnsEndPoint($"member-{i}", 0))
             .ToArray();
         Nodes = Enumerable.Range(0, VoterCount + 1)
-            .Select(i => new MembershipNode(Network, $"member-{i}", Voters, GetTempPath(), TimeProvider))
+            .Select(i => new MembershipNode(Network, $"member-{i}", Voters, GetTempPath(), TimeProvider, decorate is null ? null : log => decorate(i, log)))
             .ToArray();
     }
 
@@ -271,11 +272,20 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
         private readonly InProcessNetwork network;
 
         [SetsRequiredMembers]
-        internal MembershipNode(InProcessNetwork network, string name, EndPoint[] voters, string location, TimeProvider timeProvider)
-            : base(network, name, voters, CreateLog(voters, location), timeProvider, TimeSpan.FromMilliseconds(100), startFollower: false)
+        internal MembershipNode(InProcessNetwork network, string name, EndPoint[] voters, string location, TimeProvider timeProvider,
+            Func<WriteAheadLog, IPersistentState> decorate = null)
+            : this(network, name, voters, CreateLog(voters, location), timeProvider, decorate)
+        {
+        }
+
+        [SetsRequiredMembers]
+        private MembershipNode(InProcessNetwork network, string name, EndPoint[] voters, WriteAheadLog log, TimeProvider timeProvider,
+            Func<WriteAheadLog, IPersistentState> decorate)
+            : base(network, name, voters, decorate?.Invoke(log) ?? log, timeProvider, TimeSpan.FromMilliseconds(100), startFollower: false)
         {
             this.network = network;
-            Storage = (InMemoryClusterConfigurationStorage)Log.ConfigurationStorage;
+            Log = log;
+            Storage = (InMemoryClusterConfigurationStorage)log.ConfigurationStorage;
         }
 
         private static WriteAheadLog CreateLog(EndPoint[] voters, string location)
@@ -297,7 +307,7 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
 
         internal InMemoryClusterConfigurationStorage Storage { get; }
 
-        internal WriteAheadLog Log => (WriteAheadLog)AuditTrail;
+        internal WriteAheadLog Log { get; }
 
         internal bool IsMembershipLockHeld => Accessors<InProcessClusterMember>.MembershipLock(this).IsLockHeld;
 

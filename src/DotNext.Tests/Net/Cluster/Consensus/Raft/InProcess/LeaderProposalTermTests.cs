@@ -172,6 +172,45 @@ public sealed class LeaderProposalTermTests : RaftTest
         True(newLeader.Log.LastAppliedIndex >= index);
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ProposalOverwrittenByNextLeaderIsNotAcknowledged()
+    {
+        ApplyGatedState gated = null;
+        await using var cluster = new MembershipClusterFixture((i, log) => i == 0 ? gated = new ApplyGatedState(log) : log);
+        await cluster.StartAsync();
+        var oldLeader = cluster.Nodes[0];
+        var newLeader = cluster.Nodes[1];
+        await cluster.ElectAsync(oldLeader);
+        var oldTerm = oldLeader.Term;
+        var index = oldLeader.Log.LastEntryIndex + 1L;
+
+        // The proposal is appended, then its caller is held right before it waits for the apply.
+        gated.Hold(index);
+        var proposal = Record.ExceptionAsync(() => oldLeader.ReplicateAsync(new EmptyLogEntry { Term = oldTerm }, TestToken).AsTask()).AsTask();
+        await gated.Entered.WaitAsync(DefaultTimeout, TestToken);
+        Equal(oldTerm, await oldLeader.Log.GetTermAsync(index, TestToken));
+
+        // The old leader is partitioned, and the majority elects a new leader that commits a different entry at the same index.
+        var oldId = oldLeader.Id;
+        await cluster.ElectAsync(
+            newLeader,
+            filter: message => message.TargetId == oldId ? MessageAction.Drop : MessageAction.Deliver);
+        True(newLeader.Term > oldTerm);
+        Equal(newLeader.Term, await newLeader.Log.GetTermAsync(index, TestToken));
+        True(newLeader.Log.LastAppliedIndex >= index);
+        False(proposal.IsCompleted);
+
+        // The partition heals: the old leader overwrites the index and applies the entry of the new leader
+        // before its caller is scheduled again.
+        await cluster.PumpAsync(newLeader, oldLeader.Log.WaitForApplyAsync(index, TestToken).AsTask());
+        Equal(newLeader.Term, await oldLeader.Log.GetTermAsync(index, TestToken));
+        True(oldLeader.Log.LastAppliedIndex >= index);
+        False(proposal.IsCompleted);
+
+        gated.Release();
+        IsType<NotLeaderException>(await proposal.WaitAsync(DefaultTimeout, TestToken));
+    }
+
     private static async Task WaitForLastIndexAsync(MembershipNode node, long index)
     {
         while (node.Log.LastEntryIndex < index)

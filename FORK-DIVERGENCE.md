@@ -62,6 +62,19 @@ upstream sync is merged.
   majority has confirmed the leader's term and the local state machine has applied the current-term write barrier.
   Upstream issues a usable lease as soon as the node becomes leader.
 
+### Leader proposal term safety
+* **`RaftCluster.ReplicateAsync` rejects entries whose term is not the leader's term** (#50). A stale or future term
+  throws `NotLeaderException` and nothing is appended. The append runs through the term guard, so it is also rejected
+  under the append lock if the term advanced after the check. Upstream appends the entry with the caller-supplied term.
+  `Replicate*Async` helpers stamp the term and are not affected.
+* **`ClusterConfigurationExtensions.AppendAsync(IPersistentState, ...)` is term-guarded** (#50). It can no longer land
+  after the term advanced between sampling and appending. It is a low-level storage operation, not a proposal.
+* **A cancelled or failed proposal has an unknown outcome** (#50, #53). The entry may still commit. Use an application
+  idempotency key or check the log before retrying. The bounded request journal (#25) covers transport retries only.
+* No public signatures changed. `ITermGuardedAuditTrail` remains internal. Custom `IPersistentState` implementations
+  get a best-effort check only.
+See "Leader proposal term contract" in [RAFT-REVIEW.md](RAFT-REVIEW.md).
+
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.

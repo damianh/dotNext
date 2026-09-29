@@ -1424,11 +1424,37 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <summary>
     /// Appends a new log entry and ensures that it is replicated and committed.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Term.</b> The entry is accepted only if the local node leads in exactly <c>entry.Term</c>. The term is compared
+    /// with the leader's term first, and then again under the append lock of the persistent state, which is the
+    /// authoritative check. An entry with a stale or a future term is rejected with <see cref="NotLeaderException"/>
+    /// and nothing is appended, so the caller may read <see cref="IRaftCluster.AuditTrail"/> term again and retry.
+    /// The term check is atomic with other appends and overwrites, not with term updates: the term may still advance
+    /// after the check, and the entry then lands as if appended right before the node stepped down. It is never
+    /// appended after an entry of a newer term. Cancellation of the leadership token is also observed by the
+    /// append lock of the built-in write-ahead log, so a node that stops leading without a term change does not append.
+    /// A custom <see cref="IPersistentState"/> that does not implement the term guard gets only a best-effort
+    /// comparison with <see cref="IPersistentState.Term"/> before the append, which is not serialized with appends and
+    /// term updates; term safety is not guaranteed for such a state.
+    /// </para>
+    /// <para>
+    /// <b>Unknown outcome.</b> Any exception, including <see cref="OperationCanceledException"/> and
+    /// <see cref="NotLeaderException"/> thrown after the entry is appended, means that the outcome is unknown.
+    /// The entry may already be in the log of this node, and it can still be replicated and committed, possibly by
+    /// the next leader. In particular, a write-ahead log completes an append that is canceled after it modified
+    /// the log. Do not assume that the entry has not been appended, and do not blindly retry a non-idempotent command.
+    /// To get an exactly-once effect, put an idempotency (deduplication) key into the entry and make the state machine
+    /// ignore a key it has already applied, or read the state machine after a read barrier before retrying.
+    /// The request journal of the HTTP transport deduplicates transport-level retries only; it is bounded and
+    /// process-local and is not a replacement for such a key.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TEntry">The type of the log entry.</typeparam>
-    /// <param name="entry">The log entry to be added.</param>
-    /// <param name="token">The token that can be used to cancel the operation.</param>
+    /// <param name="entry">The log entry to be added. Its term must be the current term of the leader.</param>
+    /// <param name="token">The token that can be used to cancel the operation. Cancellation leaves the outcome unknown.</param>
     /// <exception cref="ObjectDisposedException">This object has been disposed.</exception>
-    /// <exception cref="NotLeaderException">The current node is not a leader.</exception>
+    /// <exception cref="NotLeaderException">The current node is not a leader, has lost leadership, or <c>entry.Term</c> is not the term of the leader.</exception>
     /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask ReplicateAsync<TEntry>(TEntry entry, CancellationToken token)
@@ -1437,11 +1463,16 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         ObjectDisposedException.ThrowIf(IsDisposed, this);
 
         var leaderState = LeaderStateOrException;
+
+        // Fast path only: the authoritative check is made under the append lock by AppendInCurrentTermAsync
+        if (entry.Term != leaderState.Term)
+            throw new NotLeaderException();
+
         var tokenSource = CombineTokens(token, leaderState.Token);
         try
         {
-            // 1 - append entry to the log
-            var index = await AuditTrail.AppendAsync(entry, tokenSource.Token).ConfigureAwait(false);
+            // 1 - append entry to the log if it still belongs to the current term
+            var index = await AuditTrail.AppendInCurrentTermAsync(entry, tokenSource.Token).ConfigureAwait(false);
 
             // 2 - force replication
             leaderState.ForceReplication();

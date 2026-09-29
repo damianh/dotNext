@@ -16,15 +16,27 @@ public static class ClusterConfigurationExtensions
     /// <summary>
     /// Appends a new configuration as a log entry to the Write-Ahead Log.
     /// </summary>
+    /// <remarks>
+    /// This is a low-level storage operation, not a leader proposal: it does not check that the local node is the leader,
+    /// does not replicate the entry and does not wait for commit. Use the membership methods of the cluster
+    /// to change the configuration through the leader. The entry is stamped with <see cref="IPersistentState.Term"/>
+    /// observed at the time of the call. The built-in <see cref="StateMachine.WriteAheadLog"/> and <see cref="ConsensusOnlyState"/>
+    /// reject the entry with <see cref="NotLeaderException"/> if the term is no longer current under the append lock,
+    /// so the entry is never stamped with a stale term. A custom <see cref="IPersistentState"/> is not guarded:
+    /// the entry is appended with the term sampled by this method, and term safety is not guaranteed.
+    /// If the operation is canceled or fails, the outcome is unknown: the entry may have been appended.
+    /// </remarks>
     /// <param name="state">The persistent state.</param>
     /// <param name="configuration">The configuration to append.</param>
-    /// <param name="token">The token that can be used to cancel the operation.</param>
+    /// <param name="token">The token that can be used to cancel the operation. Cancellation leaves the outcome unknown.</param>
     /// <typeparam name="TAddress">The type of the address.</typeparam>
     /// <returns>The index of the added entry.</returns>
+    /// <exception cref="NotLeaderException">The term of the log has changed since the term was sampled; nothing is appended.</exception>
+    /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     public static ValueTask<long> AppendAsync<TAddress>(this IPersistentState state, IClusterConfiguration<TAddress> configuration,
         CancellationToken token = default)
         where TAddress : notnull
-        => state.AppendAsync(configuration, state.Term, token);
+        => state.AppendInCurrentTermAsync(configuration, state.Term, token);
 
     internal static ValueTask<long> AppendAsync<TAddress>(this IAuditTrail<IRaftLogEntry> state, IClusterConfiguration<TAddress> configuration,
         long term, CancellationToken token = default)

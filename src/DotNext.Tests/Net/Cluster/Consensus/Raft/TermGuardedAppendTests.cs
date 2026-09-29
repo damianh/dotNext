@@ -1,7 +1,10 @@
+using System.Net;
+
 namespace DotNext.Net.Cluster.Consensus.Raft;
 
 using Buffers;
 using IO;
+using Membership;
 using StateMachine;
 
 [Collection(TestCollections.WriteAheadLog)]
@@ -36,6 +39,61 @@ public sealed class TermGuardedAppendTests : Test
     {
         using var state = new ConsensusOnlyState();
         await AssertGuardAsync(state, kind);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task CustomStateGetsBestEffortCheck()
+    {
+        using var state = new UnguardedPersistentState();
+        await state.UpdateTermAsync(2L, resetLastVote: false, TestToken);
+
+        await ThrowsAsync<NotLeaderException>(() => state.AppendInCurrentTermAsync(CreateEntry(EntryKind.Memory, 1L), TestToken).AsTask());
+        await ThrowsAsync<NotLeaderException>(() => state.AppendInCurrentTermAsync(CreateEntry(EntryKind.Memory, 3L), TestToken).AsTask());
+        Equal(0L, state.LastEntryIndex);
+
+        Equal(1L, await state.AppendInCurrentTermAsync(CreateEntry(EntryKind.Memory, 2L), TestToken));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ConfigurationAppendOnCustomStateStampsCurrentTerm()
+    {
+        using var state = new UnguardedPersistentState();
+        await state.UpdateTermAsync(2L, resetLastVote: false, TestToken);
+
+        Equal(1L, await state.AppendAsync(await CreateConfigurationAsync(), TestToken));
+        Equal(2L, await state.GetTermAsync(1L, TestToken));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ConfigurationAppendRejectsTermAdvancedWhileWaiting()
+    {
+        await using var wal = new WriteAheadLog(new()
+        {
+            Location = GetTempPath(),
+            MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
+        }, IStateMachine.CreateNoOp());
+        IPersistentState state = wal;
+        await state.UpdateTermAsync(1L, resetLastVote: false, TestToken);
+
+        // The configuration is stamped with term 1 and queued behind another append.
+        var gate = new GatedLogEntry { Term = 1L };
+        var blocker = wal.AppendAsync(gate, TestToken).AsTask();
+        await gate.Started;
+        var append = state.AppendAsync(await CreateConfigurationAsync(), TestToken).AsTask();
+        False(append.IsCompleted);
+
+        await state.UpdateTermAsync(2L, resetLastVote: false, TestToken);
+        gate.Release();
+        Equal(1L, await blocker);
+
+        await ThrowsAsync<NotLeaderException>(() => append);
+        Equal(1L, wal.LastEntryIndex);
+    }
+
+    private static async Task<IClusterConfiguration<EndPoint>> CreateConfigurationAsync()
+    {
+        IClusterConfigurationStorage<EndPoint> storage = new InMemoryClusterConfigurationStorage(EqualityComparer<EndPoint>.Default);
+        return (await storage.LoadConfigurationAsync(TestToken)).Add(new IPEndPoint(IPAddress.Loopback, 9141));
     }
 
     private static async Task AssertGuardAsync(IPersistentState state, EntryKind kind)

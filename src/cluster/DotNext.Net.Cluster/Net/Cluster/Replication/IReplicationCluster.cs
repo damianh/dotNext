@@ -45,6 +45,10 @@ public interface IReplicationCluster<TEntry> : IReplicationCluster
     /// <summary>
     /// Appends a new log entry and ensures that it is replicated and committed.
     /// </summary>
+    /// <remarks>
+    /// If the operation throws, including <see cref="OperationCanceledException"/>, the entry may or may not have been appended
+    /// and may still be committed later. Use an idempotency key in the entry to make a retry safe.
+    /// </remarks>
     /// <typeparam name="TEntryImpl">The type of the log entry.</typeparam>
     /// <param name="entry">The log entry to be added.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>

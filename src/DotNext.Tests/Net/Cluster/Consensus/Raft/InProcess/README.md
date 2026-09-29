@@ -278,3 +278,24 @@ has applied the current-term write barrier.
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderLeaseActivationTests' --progress off --timeout 180s
 ```
+
+## Leader proposal term safety
+
+`LeaderProposalTermTests` covers issue #50. Public leader proposals must be
+appended in the leader's current term, and a term change between the check and
+the append must be rejected with `NotLeaderException`.
+
+- `GatedLogEntry` is an unbuffered entry whose write blocks until released. It
+  holds the WAL append lock, so a proposal queues behind it deterministically
+  and the test can change the term (or resign) before releasing the gate.
+- Tests: current-term commit, stale and future terms, term change between the
+  check and the append, same-term step-down, and two characterization tests
+  for the unknown outcome (a canceled proposal or one failed by leadership
+  loss may still commit).
+- `TermGuardedAppendTests` adds the configuration append race and the
+  best-effort fallback for a custom `IPersistentState`
+  (`UnguardedPersistentState`).
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -c Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderProposalTermTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 300s
+```

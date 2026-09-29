@@ -471,9 +471,75 @@ of a newer term. That is equivalent to append-then-step-down: the old leader
 state is stopped before this node votes or accepts newer-term entries, so a
 late entry that was not already replicated cannot be committed and is
 truncated by the next leader. Other `IPersistentState` implementations get a
-best-effort pre-check. The guard covers membership appends only;
-`ClusterConfigurationExtensions.AppendAsync` and replication still accept a
-caller-supplied term.
+best-effort pre-check. Since #50 the guard also covers the public
+`ClusterConfigurationExtensions.AppendAsync` and `RaftCluster.ReplicateAsync`
+(see "Leader proposal term contract" below).
+
+**Leader proposal term contract.** (#50)
+
+*Baseline for the red tests:* `fork` at `9d93f3b36` (PR #62). Command:
+`dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -c Debug --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderProposalTermTests' --filter-class 'DotNext.Net.Cluster.Consensus.Raft.TermGuardedAppendTests' --progress off --timeout 300s`.
+Expected: proposals with a stale or future term, or appended after the term
+advanced, throw `NotLeaderException`. Observed on the baseline: 16 tests, 4
+failed (`StaleTermProposalIsRejected`, `FutureTermProposalIsRejected`,
+`TermChangeBetweenCheckAndAppendIsRejected`,
+`ConfigurationAppendRejectsTermAdvancedWhileWaiting`). The rest were
+characterization tests that pass before and after. With the fix all 16 pass.
+
+Contract:
+
+* **Which term.** A leader proposal is always appended in the leader's
+  current term. The caller does not choose it. `entry.Term` in
+  `RaftCluster.ReplicateAsync` is metadata that must equal the leader term
+  (`ClusterMemberBase.Term` at the time of the call). A mismatch, stale or
+  future, throws `NotLeaderException` and nothing is appended. It is not
+  silently rewritten, because that would hide a caller that raced with a term
+  change. `Replicate*Async` helpers stamp the term themselves.
+* **Check and append.** The `leaderState.Term` comparison is only a fast path.
+  The authoritative check runs under the WAL append lock
+  (`AppendInCurrentTermAsync`): if the log term is not `entry.Term` by then, the
+  append is rejected with `NotLeaderException` and the log is untouched. The
+  guard is atomic with other appends and overwrites, but not with
+  `UpdateTermAsync`, so the same "append then step down" argument as above
+  applies.
+* **Step-down in the same term.** The WAL re-checks the cancellation token,
+  which is linked to the leader token, under the same lock and before it
+  mutates anything. A step-down cancels that token, so the proposal fails with
+  `NotLeaderException`. A step-down after the check is append-then-step-down:
+  there is one leader per term, so the entry is a legitimate entry of that
+  term. The caller cannot see success because `WaitForApplyAsync` observes the
+  same token. `ConsensusOnlyState` checks the token only when it takes the
+  lock, which is equivalent because its append is synchronous and not
+  cancelable.
+* **Cancellation and failure mean unknown outcome.** Since #53 a WAL append
+  canceled after mutation starts either completes durably or publishes the
+  fully written prefix and then throws `OperationCanceledException`. A
+  proposal that throws (`OperationCanceledException`, `NotLeaderException`
+  after leadership loss, timeouts) must not be treated as "definitely not
+  appended". The entry may still be replicated and committed, including by a
+  later leader. Callers that need at-most-once effects must carry an
+  application-level idempotency key in the payload and deduplicate when
+  applying, or inspect the log before retrying. The bounded request journal of
+  #25 covers transport retries only, is process-local and expires. It does not
+  cover this case.
+* **Low-level vs high-level.** `ReplicateAsync` and the `Replicate*Async`
+  helpers are high-level proposals (leader check, guard, replicate, wait for
+  commit and apply). `ClusterConfigurationExtensions.AppendAsync` is a
+  low-level storage operation: no leadership check, no replication, no commit.
+  It stamps the log term at the time of the call and is guarded, so it cannot
+  land after a newer term entry, but it does not serialize with the membership
+  lock. Bypasses of that lock remain visible to #48.
+* **Not restricted.** Follower replication, overwrite, snapshot install,
+  import and recovery keep accepting entries of any older term. The
+  current-term rule applies only to proposals.
+* **Custom `IPersistentState`.** Without `ITermGuardedAuditTrail` (internal)
+  only a best-effort `entry.Term == state.Term` pre-check is possible, so the
+  race is not closed. This is documented and tested
+  (`CustomStateGetsBestEffortCheck`).
+
+*Remaining gap, out of scope:* `WaitForApplyAsync(index)` verifies no term. A
+proposal whose entry was overwritten could in theory be reported as applied.
+The leader token cancellation on step-down prevents this in practice.
 
 **Known deviation.** Adopting a configuration on apply rather than on append
 is kept deliberately (option A for #18). Until a change is applied, the leader

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
@@ -95,6 +96,29 @@ public sealed class ConfigurationAppendBoundaryTests : RaftTest
         Equal(lastIndex + 1L, await node.Log.AppendAsync(configuration, TestToken));
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ConsensusOnlyStateFollowsClusterLifecycle()
+    {
+        var voters = new EndPoint[] { new DnsEndPoint("member-0", 0), new DnsEndPoint("member-1", 0) };
+        var storage = new InMemoryClusterConfigurationStorage(EqualityComparer<EndPoint>.Default);
+        var builder = storage.CreateInitialConfigurationBuilder();
+        builder.UnionWith(voters);
+        builder.Build();
+
+        using var state = new ConsensusOnlyState { ConfigurationStorage = storage };
+        await using var node = new ConsensusOnlyNode(new(), voters, state, storage);
+
+        var configuration = await ((IClusterConfigurationStorage<EndPoint>)storage).LoadConfigurationAsync(TestToken);
+        True(IClusterConfiguration<EndPoint>.TryRemove(ref configuration, voters[1]));
+
+        await node.StartAsync(TestToken);
+        await ThrowsAsync<InvalidOperationException>(async () => await state.AppendAsync(configuration, TestToken));
+        Equal(0L, state.LastEntryIndex);
+
+        await node.StopAsync(TestToken);
+        Equal(1L, await state.AppendAsync(configuration, TestToken));
+    }
+
     // Regression guard: a node out of its own configuration still follows the leader, and rejoins
     // when its uncommitted removal is overwritten by a new leader.
     [Fact(Timeout = TestTimeouts.Default)]
@@ -186,6 +210,16 @@ public sealed class ConfigurationAppendBoundaryTests : RaftTest
     {
         while (!condition())
             await Task.Delay(1, TestToken);
+    }
+
+    private sealed class ConsensusOnlyNode : InProcessCluster
+    {
+        [SetsRequiredMembers]
+        internal ConsensusOnlyNode(InProcessNetwork network, EndPoint[] voters, ConsensusOnlyState state, InMemoryClusterConfigurationStorage storage)
+            : base(network, "member-0", voters, state, new ManualTimeProvider(), TimeSpan.FromMilliseconds(100), startFollower: false)
+        {
+            UseLogConfiguration(storage, address => new InProcessClusterMember(this, network, address), static member => member.EndPoint);
+        }
     }
 
     private sealed class ConfigurationEntry(IClusterConfiguration<EndPoint> configuration, long term) : IRaftLogEntry

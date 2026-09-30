@@ -585,11 +585,17 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
         async Task StopAsync()
         {
-            transitionCancellation.Cancel(false);
-
-            // the lifecycle is over even if the shutdown below is canceled, and StopAsync is not repeated
-            if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
-                managedLog.IsConfigurationManaged = false;
+            try
+            {
+                transitionCancellation.Cancel(false);
+            }
+            finally
+            {
+                // the lifecycle is over even if the shutdown below is canceled or a cancellation callback fails,
+                // and StopAsync is not repeated
+                if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
+                    managedLog.IsConfigurationManaged = false;
+            }
 
             await CancelPendingRequestsAsync().ConfigureAwait(false);
             var lockTaken = false;

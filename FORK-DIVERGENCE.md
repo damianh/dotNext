@@ -131,6 +131,7 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 | `RaftCluster<TMember>.UseLogConfiguration` (protected) | absent | **added**: enables the log-derived active configuration (#49) |
 | `IClusterConfigurationStorage<TAddress>.ReadConfigurationAsync` | absent | **added** (required interface member: implementations must decode configuration log entries; a breaking change for custom storages) |
 | `RaftCluster<TMember>.ReplicateAsync` | accepts any entry | **throws `ArgumentException`** for an entry with `IsConfiguration == true` (#48) |
+| `RaftCluster<TMember>.ReplicateAsync` (term) | appends an entry of any term | **throws `NotLeaderException`** when the entry's `Term` is not the term of the appending leader (and of the log, checked under the append lock), before anything is written (#50). Raw `IAuditTrail` appends stay unguarded. See [Leader proposal term safety](RAFT-REVIEW.md#leader-proposal-term-safety-50) |
 | `ClusterConfigurationExtensions.AppendAsync(IPersistentState, IClusterConfiguration<TAddress>, CancellationToken)` | appends to any log | **throws `InvalidOperationException`** on the WAL or `ConsensusOnlyState` of a started cluster that uses `UseLogConfiguration` (#48) |
 
 ## Fork-only fixes
@@ -141,7 +142,7 @@ unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush 
 #40 (flusher failure), #41 (snapshot flush alignment), #42 (applied index regression), #43 (restore no-op snapshot
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
 configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
-#69 (configuration append boundary), #70 (follower term signal reset per request).
+#69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety).
 
 ## Upstream sync log
 

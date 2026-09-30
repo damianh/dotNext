@@ -17,11 +17,15 @@ public static class RaftClusterExtensions
         /// <summary>
         /// Appends binary log entry and ensures that it is replicated and committed.
         /// </summary>
+        /// <remarks>
+        /// The entry gets the current term of the log. If the leadership changes before the entry is appended, the call throws
+        /// <see cref="NotLeaderException"/>; see <see cref="RaftCluster{TMember}.ReplicateAsync{TEntry}(TEntry, CancellationToken)"/>.
+        /// </remarks>
         /// <param name="payload">The log entry payload.</param>
         /// <param name="context">The context to be passed to the state machine.</param>
         /// <param name="token">The token that can be used to cancel the operation.</param>
         /// <returns><see langword="true"/> if the appended log entry has been committed by the majority of nodes; <see langword="false"/> if retry is required.</returns>
-        /// <exception cref="InvalidOperationException">The current node is not a leader.</exception>
+        /// <exception cref="NotLeaderException">The current node is not a leader, or the leadership changed before the append.</exception>
         /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
         public ValueTask ReplicateAsync(ReadOnlyMemory<byte> payload, object? context = null,
             CancellationToken token = default)
@@ -30,12 +34,16 @@ public static class RaftClusterExtensions
         /// <summary>
         /// Appends binary log entry and ensures that it is replicated and committed.
         /// </summary>
+        /// <remarks>
+        /// The entry gets the current term of the log. If the leadership changes before the entry is appended, the call throws
+        /// <see cref="NotLeaderException"/>; see <see cref="RaftCluster{TMember}.ReplicateAsync{TEntry}(TEntry, CancellationToken)"/>.
+        /// </remarks>
         /// <typeparam name="T">The type of the binary formattable log entry.</typeparam>
         /// <param name="payload">The log entry payload.</param>
         /// <param name="context">The context to be passed to the state machine.</param>
         /// <param name="token">The token that can be used to cancel the operation.</param>
         /// <returns><see langword="true"/> if the appended log entry has been committed by the majority of nodes; <see langword="false"/> if retry is required.</returns>
-        /// <exception cref="InvalidOperationException">The current node is not a leader.</exception>
+        /// <exception cref="NotLeaderException">The current node is not a leader, or the leadership changed before the append.</exception>
         /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
         public ValueTask ReplicateAsync<T>(T payload, object? context = null, CancellationToken token = default)
             where T : IBinaryFormattable<T>
@@ -44,12 +52,16 @@ public static class RaftClusterExtensions
         /// <summary>
         /// Appends JSON log entry and ensures that it is replicated and committed.
         /// </summary>
+        /// <remarks>
+        /// The entry gets the current term of the log. If the leadership changes before the entry is appended, the call throws
+        /// <see cref="NotLeaderException"/>; see <see cref="RaftCluster{TMember}.ReplicateAsync{TEntry}(TEntry, CancellationToken)"/>.
+        /// </remarks>
         /// <typeparam name="T">The type of the JSON log entry.</typeparam>
         /// <param name="payload">The log entry payload.</param>
         /// <param name="context">The context to be passed to the state machine.</param>
         /// <param name="token">The token that can be used to cancel the operation.</param>
         /// <returns><see langword="true"/> if the appended log entry has been committed by the majority of nodes; <see langword="false"/> if retry is required.</returns>
-        /// <exception cref="InvalidOperationException">The current node is not a leader.</exception>
+        /// <exception cref="NotLeaderException">The current node is not a leader, or the leadership changed before the append.</exception>
         /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
         public ValueTask ReplicateJsonAsync<T>(T payload, object? context = null,
             CancellationToken token = default)

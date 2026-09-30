@@ -513,9 +513,10 @@ of a newer term. That is equivalent to append-then-step-down: the old leader
 state is stopped before this node votes or accepts newer-term entries, so a
 late entry that was not already replicated cannot be committed and is
 truncated by the next leader. Other `IPersistentState` implementations get a
-best-effort pre-check. The guard covers membership appends only; the
-internal storage-level `ClusterConfigurationExtensions.AppendAsync` overload
-and replication still accept a caller-supplied term.
+best-effort pre-check. The guard covers membership appends and, since #50,
+leader proposals (`ReplicateAsync`); the internal storage-level
+`ClusterConfigurationExtensions.AppendAsync` overload and the raw audit trail
+appends still accept a caller-supplied term (see [Leader proposal term safety](#leader-proposal-term-safety-50)).
 
 **Resolution of the OPEN QUESTION (#49): apply-time adoption does not preserve
 quorum overlap, and is replaced.**
@@ -690,7 +691,7 @@ an entry of the sender's term, every later non-empty request answered
   the term guard for configuration entries).
 - It is reachable when a sender puts no entry of its own term in a non-empty
   batch: a custom sender using the protected `AppendEntriesAsync`, or
-  `ReplicateAsync<TEntry>` called with an older-term entry.
+  `ReplicateAsync<TEntry>` called with an older-term entry (rejected since #50).
 - Catch-up and warm-up use `matchedIndex`, and lease and heartbeat consensus
   count `Touched` and `Replicated` alike, so neither is affected.
 
@@ -711,8 +712,88 @@ The local-member shortcuts in `RaftClusterMember` (core and HTTP) are never
 used to replicate, because the leader replicates to itself through the base
 `ReplicationProcess` and `AddMembers` asserts `IsRemote`.
 
-Not fixed here: `RaftCluster.ReplicateAsync<TEntry>` does not check that the
-entry's `Term` equals the leader's term.
+`RaftCluster.ReplicateAsync<TEntry>` did not check that the entry's `Term` equals
+the leader's term when #70 was fixed; #50 added that check (see below).
+
+## Leader proposal term safety (#50)
+
+Recorded for #50. Baseline `4dff766ed`.
+
+**Contract**
+
+| Surface | Term rule |
+|---|---|
+| `RaftCluster.ReplicateAsync<TEntry>` (also `IReplicationCluster<IRaftLogEntry>.ReplicateAsync`) and the `RaftClusterExtensions` helpers | Guarded. The entry's `Term` must equal the term of the leader state that appends it, and the log's current term under the append lock. Any mismatch, older or newer, throws `NotLeaderException` before anything is written. |
+| Membership appends (`AddMemberAsync`, `RemoveMemberAsync`, automatic removal) | Guarded since #18/#47, with the same log-term check. |
+| Raw `IAuditTrail`/`IPersistentState` appends (`AppendAsync` of an entry, the producer and start-index overloads, `AppendAndCommitAsync`) and the storage-level configuration append | Deliberately unguarded. Follower replication, snapshot installation, import and recovery legitimately store entries of older terms. |
+| Custom `IPersistentState` | Only the best-effort pre-check (`entry.Term == state.Term`) that is not synchronized with appends; the leader-state check applies as for any log. |
+
+**Why both checks.** The leader-state check proves that this node led
+`entry.Term`. It is immutable per leadership, so it also catches a caller that
+holds an old term. It cannot see a term update that happens after it. The
+log-term check under the append lock catches that update, but alone it is not
+enough: `UpdateTermAndStepDownAsync` writes the new term to the log before it
+disposes the old leader state, and the `RaftClusterExtensions` helpers read the
+term from the log. In that window a helper builds an entry of the new term while
+the node is still the leader of the old one. A log-term check accepts it, and the
+node would write an entry of a term it does not lead. Together the checks give the
+guarantee documented for the membership path: at append time the log term is the
+term this node led, and the entry is ordered before any newer-term entry. They are
+not atomic with term updates, and the append can land just after the local term
+advances. That is equivalent to append-then-step-down, and the next leader
+truncates the entry if it was not replicated.
+
+**Why `NotLeaderException`.** A mismatch is not a malformed argument that a caller
+can fix: the helpers sample the term without synchronizing with the leadership
+check, so a correct caller gets the mismatch during a transition and succeeds on
+retry. The check under the append lock already throws `NotLeaderException` for the
+same condition, so one condition maps to one exception. A caller that hard-codes a
+wrong term while it is the leader also gets `NotLeaderException`, which is the
+trade-off.
+
+**Outcome after the append.** Once the entry is in the log, `NotLeaderException`
+(leadership lost) and `OperationCanceledException` say nothing about whether the
+entry commits: a leader that has it may still replicate and commit it (see #53).
+Only an exception thrown before the append, including the term mismatch, means
+that nothing was written.
+
+**Red baseline.** At `4dff766ed`, `ProposalTermGuardTests` failed 4 of 7 tests:
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.ProposalTermGuardTests' --progress off
+```
+
+- `StaleTermProposalIsRejected`: node 1 is the term-2 leader; a term-1 entry was
+  appended at index 3 (the assertion expected `LastEntryIndex` 2, and got 3).
+- `ProposalWithFutureTermIsRejected`: a leader appended an entry of a term it
+  does not lead.
+- `TermAdvanceBetweenCaptureAndAppendIsRejected`: a proposal that passed the
+  leader check and waited for the append lock was appended after the log term
+  advanced. The test holds the append lock with an entry that blocks in
+  `WriteToAsync`, so the ordering needs no sleeps.
+- `ProposalBuiltAfterTermAdvanceIsRejected`: the extension helper sampled the
+  advanced log term and appended an entry of a term the node did not lead.
+
+Passing at baseline, and kept as controls: `CurrentTermProposalIsCommitted`,
+`FollowerReplicationOfOlderTermEntriesIsNotGuarded`, and
+`OverwrittenProposalNeverSucceeds`.
+
+**Appended versus committed.** In a probe at the baseline, the stale term-1 entry
+in the term-2 leader's log was appended at index 3 and replicated to both
+followers, but the commit index stayed at 2 and `ReplicateAsync` stayed pending
+for the 3 s that the probe pumped replication. The followers answered
+`Replicated` because the batch held no entry of the leader's term (#70). So the
+baseline showed an appended and replicated stale entry, not an acknowledged one.
+The probe is not kept as a test.
+
+**Overwrite of an awaited index.** `ReplicateAsync` waits for `WaitForApplyAsync(index)`,
+which does not compare terms. `OverwrittenProposalNeverSucceeds` appends at index
+2 on the term-1 leader, keeps it unreplicated, elects another leader whose no-op
+overwrites index 2, and waits until the old leader has applied the overwrite. The
+old `ReplicateAsync` throws `NotLeaderException`: the old leader steps down when it
+sees the newer term, which cancels its leader token before any AppendEntries of
+the new leader can overwrite or commit the index. The test passed at baseline, so
+no term check was added after the apply.
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,

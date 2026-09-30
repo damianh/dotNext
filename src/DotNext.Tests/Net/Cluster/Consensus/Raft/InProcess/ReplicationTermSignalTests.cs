@@ -12,7 +12,9 @@ public sealed class ReplicationTermSignalTests : RaftTest
     [InlineData(4L, 3L)] // later leader and term, only older-term entries
     public static async Task FlagFromPreviousRequestIsNotCarriedOver(long secondSenderTerm, long secondEntryTerm)
     {
-        var (follower, sender) = await CreateFollowerAsync();
+        using var followerState = new ConsensusOnlyState();
+        using var senderState = new ConsensusOnlyState();
+        var (follower, sender) = await CreateNodesAsync(followerState, senderState);
         await using (follower)
         await using (sender)
         {
@@ -36,13 +38,14 @@ public sealed class ReplicationTermSignalTests : RaftTest
             sender.Id, senderTerm, producer, 0L, 0L, 0L, ((ILocalMember)follower).Version, TestToken);
         return result.Value;
     }
-    private static async Task<(InProcessCluster, InProcessCluster)> CreateFollowerAsync()
+
+    private static async Task<(InProcessCluster, InProcessCluster)> CreateNodesAsync(IPersistentState followerState, IPersistentState senderState)
     {
         var timeProvider = new ManualTimeProvider();
         var network = new InProcessNetwork();
         EndPoint[] membership = [new DnsEndPoint("node-a", 0), new DnsEndPoint("node-b", 0)];
-        var follower = CreateNode(network, timeProvider, membership, 0, new ConsensusOnlyState());
-        var sender = CreateNode(network, timeProvider, membership, 1, new ConsensusOnlyState());
+        var follower = CreateNode(network, timeProvider, membership, 0, followerState);
+        var sender = CreateNode(network, timeProvider, membership, 1, senderState);
         await follower.StartAsync(TestToken);
         await sender.StartAsync(TestToken);
         return (follower, sender);

@@ -950,8 +950,12 @@ so RPCs do not keep acting on an older term. If that read fails, the next term/v
 operation first reads the record back under `stateLock`. If it differs from what
 was published, that operation fails with an `IOException` and the caller
 re-evaluates on fresh state; otherwise it proceeds. Without this, a later write
-derived from the stale published term could lower the durable term. If the read-back
-fails, the operation fails and nothing is written.
+derived from the stale published term could lower the durable term. If that read-back
+fails, the operation fails and nothing is written. Residual gap, not fixed: while
+the record is suspect (failed write that reached the disk, then a failed read of the
+same file), an `AppendEntries` at the old published term performs no write and can
+still be acknowledged. Making RPCs fail closed in that state was judged out of scope
+for an investigation PR; it needs broad storage failure to occur.
 
 
 **Alternatives rejected.** Poisoning the WAL on a `state` write failure (it

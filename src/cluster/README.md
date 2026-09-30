@@ -90,8 +90,13 @@ the whole record, serialized by a lock. The contract, guarded by
   the disk, the disk is ahead of memory. The failed operation reads the record back
   and publishes it (what is on disk is durable), so RPCs do not keep acting on an
   older term. If that read fails too, the record stays suspect and the next
-  term/vote operation reads it back first, failing if it differs from what the
-  request was decided on, so a stale term never overwrites a higher durable one.
+  term/vote write reads it back first, failing if it differs from what the
+  request was decided on, so a write never lowers a higher durable term. Known
+  residual gap: until that next write, an `AppendEntries` at the old published
+  term performs no write and can still be acknowledged. It needs a failed write
+  that reached the disk followed by a failed read of the same file, which means the
+  storage is failing broadly; RPCs are not made to fail closed while the record is
+  suspect.
 
 **Platform assumptions (documented, not tested).**
 

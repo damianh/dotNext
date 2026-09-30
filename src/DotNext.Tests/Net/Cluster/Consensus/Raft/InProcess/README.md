@@ -327,3 +327,66 @@ a read-only one (test-only reflection).
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.TermVoteDurabilityTests' --progress off --timeout 180s
 ```
+## Seeded simulation (#56 stage 1)
+
+`SimulationTests` runs a seeded, bounded schedule of faults and client proposals against a fixed cluster of 3 or 5
+voters (`Simulation.cs`, `SimulationHistory.cs`). It reuses `InProcessCluster` and `InProcessNetwork`; there is no
+second Raft implementation. Nodes are backed by `WriteAheadLog` (private memory, no compaction), each with its own
+directory, so a restart is meaningful: stop the node, dispose the WAL, reopen it at the same location.
+
+**What is simulated.** A fault phase of 150 weighted steps chosen from: deliver a pending message, deliver and lose
+the response, drop a message, advance the shared `ManualTimeProvider`, propose through
+`IRaftCluster.ReplicateAsync`, partition a pair of nodes, heal a pair, crash a node (at most 3 times per run) and
+recover a crashed node. All links start held, so messages move only when the schedule delivers them. There are no
+membership changes, reads, leases, snapshots or compaction, I/O faults, or real transports.
+
+**What is controlled.** The seed decides every step, the per-node election timeouts (fixed per node, so the
+production timer has no randomness), the order of deliveries, and the timing of crashes. Time is manual. Delays and
+drops go through `InProcessNetwork`'s hold, deliver and drop controls.
+
+**What is not controlled.** Thread-pool scheduling inside a step (continuations of a delivered handler), the wall-clock
+`SettleAsync` heuristic that decides when a step has gone quiet (it stops after two stable 1 ms windows, at most 50 ms), and the
+term read in the `LeaderChanged` handler, which can race with a concurrent term change. **A seed alone is therefore
+not a guarantee of replay.** The recorded trace of actual decisions is the record of what happened, and it is
+printed with the seed, the cluster size and the git revision on every failure.
+
+**Oracles** (`SimulationHistory`, checked at every checkpoint: every 10 steps, before a crash and at the end):
+
+1. Election safety: at most one leader per term, from `LeaderChanged` plus the term at that moment.
+2. Committed-prefix agreement: an index committed on two nodes (or twice on one node, over time) has the same term and payload.
+3. Acknowledged writes are preserved: every `ReplicateAsync` that returned success is at its index, with its payload,
+   in every committed log that covers that index, and in some node's committed log at the end. A client history has three
+   outcomes: acknowledged, rejected (`NotLeaderException` before the append), and unknown (cancelled, or a `NotLeaderException`
+   after the append). Only acknowledged writes are held to oracle 3.
+
+**Liveness is separate.** After the fault phase every link is healed, every node is up, pending messages are delivered
+and time advances. A leader must be elected and one new proposal must commit within 400 iterations. A failure is reported
+as `LIVENESS failure`, distinct from `SAFETY failure`.
+
+**Checking the checker.** Pure oracle tests (`SimulationTests`, the synchronous facts) feed each oracle a synthetic bad
+history and assert that it fails.
+
+**Replay.** The failure message contains the seed and the cluster size. Try it again with:
+
+```powershell
+$env:DOTNEXT_RAFT_SIM_SEED = '<seed>'; $env:DOTNEXT_RAFT_SIM_VOTERS = '<3 or 5>'
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-method '*SimulationTests.Campaign' --progress off
+```
+
+**CI set.** `FixedSeedKeepsSafetyAndRecoversLiveness` runs seeds 1 to 8 for each size (16 runs, about 10 seconds in Debug):
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.SimulationTests' --progress off
+```
+
+**Campaign.** `Campaign` is skipped unless an environment variable is set. `DOTNEXT_RAFT_SIM_SEEDS=N` runs N random
+seeds for each size (roughly 0.7 s per run); `DOTNEXT_RAFT_SIM_STEPS` changes the fault-phase length. The first
+failure stops the run and prints the seed and trace.
+
+```powershell
+$env:DOTNEXT_RAFT_SIM_SEEDS = '200'
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-method '*SimulationTests.Campaign' --progress off
+```
+
+Compaction is disabled on purpose (`IStateMachine.CreateNoOp` with a large threshold): a compacted prefix reads back
+as one empty term-0 snapshot entry, which does not map to log indexes.

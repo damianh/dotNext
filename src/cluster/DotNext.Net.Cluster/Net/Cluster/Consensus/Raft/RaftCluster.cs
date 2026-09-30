@@ -1578,13 +1578,29 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <see cref="AddMemberAsync{TAddress}(TMember, int, Membership.IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>
     /// or <see cref="RemoveMemberAsync{TAddress}(ClusterMemberId, Membership.IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>,
     /// which allow one change at a time and activate it on the leader.
+    /// <para>
+    /// The term of <paramref name="entry"/> must be the term of the leadership that appends it. A different term,
+    /// older or newer, is rejected with <see cref="NotLeaderException"/> and nothing is written, because the entry
+    /// claims a leadership that the local node does not hold. The term is checked against the leader state first,
+    /// and again against the log's current term while the append lock is held. That second check is serialized with
+    /// appends, not with term updates: an entry can land after the local term has advanced, but never after an entry
+    /// of a newer term, and the next leader truncates it if it was not replicated. A custom <see cref="IPersistentState"/>
+    /// gets a best-effort check before the append. This guard covers proposals only: the append methods of the
+    /// audit trail stay unguarded, because followers use them to store entries of older terms.
+    /// </para>
+    /// <para>
+    /// If this method throws after the entry has been appended, for example <see cref="NotLeaderException"/> because
+    /// the leadership was lost, or <see cref="OperationCanceledException"/>, the outcome is unknown: the entry may
+    /// still be replicated and committed by a leader that has it, or be overwritten. Do not treat it as a failure to
+    /// apply the command.
+    /// </para>
     /// </remarks>
     /// <typeparam name="TEntry">The type of the log entry.</typeparam>
     /// <param name="entry">The log entry to be added.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <exception cref="ObjectDisposedException">This object has been disposed.</exception>
     /// <exception cref="ArgumentException"><paramref name="entry"/> is a configuration entry (<see cref="IRaftLogEntry.IsConfiguration"/>).</exception>
-    /// <exception cref="NotLeaderException">The current node is not a leader.</exception>
+    /// <exception cref="NotLeaderException">The current node is not a leader, or the term of <paramref name="entry"/> is not the term of the leadership.</exception>
     /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask ReplicateAsync<TEntry>(TEntry entry, CancellationToken token)
@@ -1596,11 +1612,16 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             throw new ArgumentException(ExceptionMessages.ConfigurationEntryNotReplicable, nameof(entry));
 
         var leaderState = LeaderStateOrException;
+
+        // The entry must belong to this leadership. The log term is checked under the append lock below.
+        if (entry.Term != leaderState.Term)
+            throw new NotLeaderException();
+
         var tokenSource = CombineTokens(token, leaderState.Token);
         try
         {
             // 1 - append entry to the log
-            var index = await AuditTrail.AppendAsync(entry, tokenSource.Token).ConfigureAwait(false);
+            var index = await AuditTrail.AppendInCurrentTermAsync(entry, tokenSource.Token).ConfigureAwait(false);
 
             // 2 - force replication
             leaderState.ForceReplication();

@@ -122,6 +122,14 @@ internal sealed class SimulationHistory
                     $"'{write.Payload}' was acknowledged by node {write.Node} (index {write.Index}) but the longest committed prefix " +
                     $"observed at the end has {longest} entries and does not contain it");
             }
+
+            if (committed.TryGetValue(write.Index, out var observed) && observed.Entry.Payload != write.Payload)
+            {
+                throw new SafetyViolationException(
+                    "acknowledged writes",
+                    $"'{write.Payload}' was acknowledged by node {write.Node} at index {write.Index}, " +
+                    $"but '{observed.Entry.Payload}' (term {observed.Entry.Term}) was observed committed there on node {observed.Node}");
+            }
         }
     }
 

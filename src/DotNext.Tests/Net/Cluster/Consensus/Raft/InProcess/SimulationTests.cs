@@ -159,6 +159,17 @@ public sealed class SimulationTests : RaftTest
         history.RequireAcknowledgedWritesPreserved();
     }
     [Fact]
+    public static void AcknowledgedWriteRecordedAfterAnotherPayloadWasObservedAtItsIndexIsLost()
+    {
+        var history = new SimulationHistory();
+        history.ObserveCommittedPrefix(0, Prefix((1L, string.Empty), (2L, "b")));
+        history.RecordAcknowledged("a", node: 1, index: 2L);
+
+        var failure = Throws<SafetyViolationException>(history.RequireAcknowledgedWritesPreserved);
+        Equal("acknowledged writes", failure.Oracle);
+    }
+
+    [Fact]
     public static void AcknowledgedWriteMissingFromEveryCommittedLogIsLost()
     {
         var history = new SimulationHistory();

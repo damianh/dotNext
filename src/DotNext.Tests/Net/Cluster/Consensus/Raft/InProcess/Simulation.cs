@@ -294,17 +294,15 @@ internal sealed class Simulation : IAsyncDisposable
     private async Task DeliverAsync(PendingMessage message, bool loseResponse, int pendingCount)
     {
         Log($"#{stepNumber} {(loseResponse ? "deliver, lose response" : "deliver")} {Describe(message)} ({pendingCount} pending)");
-        Task delivery;
         try
         {
-            delivery = loseResponse ? network.DeliverAndLoseResponseAsync(message) : network.TryDeliverAsync(message);
+            var delivery = loseResponse ? network.DeliverAndLoseResponseAsync(message) : network.TryDeliverAsync(message);
+            await WaitForDeliveryAsync(delivery, Describe(message));
         }
         catch (InvalidOperationException)
         {
-            return;
+            // the message was removed between listing and delivery
         }
-
-        await WaitForDeliveryAsync(delivery, Describe(message));
     }
 
     // A handler may legitimately wait for something the scheduler holds, so a delivery is not awaited indefinitely.
@@ -512,6 +510,9 @@ internal sealed class Simulation : IAsyncDisposable
             }
 
             await ObserveAsync();
+            if (target is { Task.IsCompletedSuccessfully: true })
+                await ObserveAsync(); // the proposal may have completed after the first observation: record its outcome
+
             if (target is { Task.IsCompletedSuccessfully: true })
             {
                 Log($"liveness: {target.Payload} committed after {iteration} iterations ({elapsed.TotalMilliseconds:0}ms of virtual time)");

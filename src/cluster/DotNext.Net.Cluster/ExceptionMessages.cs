@@ -58,4 +58,6 @@ internal static class ExceptionMessages
     internal static string ConfigurationEntryNotReplicable => (string)Resources.Get();
 
     internal static string ConfigurationManagedByCluster => (string)Resources.Get();
+
+    internal static string SnapshotRestoreCanceled => (string)Resources.Get();
 }

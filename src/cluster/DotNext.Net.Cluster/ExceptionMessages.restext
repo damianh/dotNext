@@ -21,3 +21,4 @@ MissingWalPage=WAL page {0} doesn't exist on the disk
 StateMachineIsNotRestored=State machine is not restored. Call RestoreAsync first.
 ConfigurationEntryNotReplicable=A configuration entry cannot be replicated directly. Use AddMemberAsync or RemoveMemberAsync to change the cluster membership.
 ConfigurationManagedByCluster=The log belongs to a running cluster that derives its configuration from the log. Use AddMemberAsync or RemoveMemberAsync to change the cluster membership.
+SnapshotRestoreCanceled=Restoring the state machine from the snapshot was canceled after it started. The state machine can be partially restored.

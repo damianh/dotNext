@@ -573,19 +573,58 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         await AssertProgressAsync(recovered, 3L, "next after published prefix");
     }
 
-    [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task SnapshotApplicationFailurePoisonsLog()
+    public enum SnapshotFailure
+    {
+        // the state machine failed with an OCE that has nothing to do with the request token
+        UnrelatedCancellation,
+        // the request token was canceled and the state machine reported it
+        RequestCancellation,
+        Error,
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(SnapshotFailure.UnrelatedCancellation, false)]
+    [InlineData(SnapshotFailure.UnrelatedCancellation, true)]
+    [InlineData(SnapshotFailure.RequestCancellation, false)]
+    [InlineData(SnapshotFailure.Error, false)]
+    [InlineData(SnapshotFailure.Error, true)]
+    public static async Task SnapshotApplicationFailurePoisonsLog(SnapshotFailure kind, bool cancellationSafe)
     {
         var options = CreateOptions();
         await SeedAsync(options);
-        var failure = new OperationCanceledException();
-        var stateMachine = new FailingSnapshotStateMachine(failure);
+        using var request = new CancellationTokenSource();
+        Exception failure = kind switch
+        {
+            SnapshotFailure.UnrelatedCancellation => new OperationCanceledException(),
+            SnapshotFailure.RequestCancellation => new OperationCanceledException(request.Token),
+            _ => new IOException("Injected snapshot failure."),
+        };
+        var stateMachine = new FailingSnapshotStateMachine(
+            failure,
+            cancellationSafe,
+            kind is SnapshotFailure.RequestCancellation ? request : null);
+        await using var wal = new WriteAheadLog(options, stateMachine);
+        await wal.InitializeAsync(TestToken);
+        Same(failure, await ThrowsAnyAsync<Exception>(
+            () => wal.AppendAsync(new Entry { IsSnapshot = true }, 3L, request.Token).AsTask()));
+        True(stateMachine.SnapshotStarted);
+        await AssertPoisonedAsync(wal, failure);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task CancellationOfCancellationSafeSnapshotApplicationKeepsLogUsable()
+    {
+        var options = CreateOptions();
+        await SeedAsync(options);
+        using var request = new CancellationTokenSource();
+        var failure = new OperationCanceledException(request.Token);
+        var stateMachine = new FailingSnapshotStateMachine(failure, cancellationSafe: true, request);
         await using var wal = new WriteAheadLog(options, stateMachine);
         await wal.InitializeAsync(TestToken);
         Same(failure, await ThrowsAnyAsync<OperationCanceledException>(
-            () => wal.AppendAsync(new Entry { IsSnapshot = true }, 3L, TestToken).AsTask()));
+            () => wal.AppendAsync(new Entry { IsSnapshot = true }, 3L, request.Token).AsTask()));
         True(stateMachine.SnapshotStarted);
-        await AssertPoisonedAsync(wal, failure);
+        await AssertUsableAsync(wal);
     }
 
     [Theory(Timeout = TestTimeouts.Default)]
@@ -899,15 +938,21 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class FailingSnapshotStateMachine(Exception failure) : NoOpSnapshotManager, IStateMachine
+    private sealed class FailingSnapshotStateMachine(
+        Exception failure,
+        bool cancellationSafe = false,
+        CancellationTokenSource cancelOnSnapshot = null) : NoOpSnapshotManager, IStateMachine
     {
         internal bool SnapshotStarted { get; private set; }
+
+        public bool IsSnapshotInstallCancellationSafe => cancellationSafe;
 
         public ValueTask<long> ApplyAsync(LogEntry entry, CancellationToken token)
         {
             if (!entry.IsSnapshot)
                 return ValueTask.FromResult(entry.Index);
             SnapshotStarted = true;
+            cancelOnSnapshot?.Cancel();
             return ValueTask.FromException<long>(failure);
         }
     }

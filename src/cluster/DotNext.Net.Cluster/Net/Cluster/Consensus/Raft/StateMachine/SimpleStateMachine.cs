@@ -11,6 +11,12 @@ using Commands;
 /// Represents a state machine that keeps the entire state in the memory but periodically
 /// creates a persistent snapshot for recovery.
 /// </summary>
+/// <remarks>
+/// The state machine opts in to <see cref="IStateMachine.IsSnapshotInstallCancellationSafe"/>. Installing a snapshot
+/// received from the leader first transfers it to a temporary file, which observes the cancellation token of the request
+/// and leaves neither the state nor the published snapshot changed if canceled. The subsequent
+/// <see cref="RestoreAsync(FileInfo, CancellationToken)"/> is not affected by that token.
+/// </remarks>
 public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachine
 {
     private readonly CancellationToken lifetimeToken;
@@ -56,6 +62,13 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
     /// <param name="snapshotFile">The snapshot file.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <returns>The task representing asynchronous execution of the method.</returns>
+    /// <remarks>
+    /// When the snapshot is installed by the write-ahead log, the token is not the token of the request
+    /// that delivers the snapshot: it is canceled only when this state machine is disposed. Once the restoration
+    /// starts, the in-memory state can be partially rebuilt, and a canceled request must not interrupt it.
+    /// If the restoration throws <see cref="OperationCanceledException"/> in that case, the installation fails
+    /// with <see cref="InvalidOperationException"/> and the write-ahead log is faulted.
+    /// </remarks>
     /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     protected abstract ValueTask RestoreAsync(FileInfo snapshotFile, CancellationToken token);
 
@@ -136,6 +149,9 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
 
         return task;
     }
+
+    /// <inheritdoc/>
+    bool IStateMachine.IsSnapshotInstallCancellationSafe => true;
 
     /// <inheritdoc/>
     ValueTask<long> IStateMachine.ApplyAsync(LogEntry entry, CancellationToken token)
@@ -232,12 +248,26 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
 
     private async ValueTask<long> InstallSnapshotAsync(LogEntry entry, CancellationToken token)
     {
+        // Only a snapshot in progress on this node is dropped here, which doesn't change the application state.
+        // It is safe to repeat, because the rollback clears the process.
         await EndSnapshottingAsync(commit: false).ConfigureAwait(false);
 
+        // Transferring the snapshot to a file leaves the application state untouched and observes the request token.
         var newSnapshot = new Snapshot(location, entry.Index, entry.Term, writerFactory);
         await newSnapshot.ReadFromAsync(entry, token).ConfigureAwait(false);
-        await RestoreAsync(newSnapshot.File, token).ConfigureAwait(false);
-        
+
+        // Once the restore starts, the state can be partially rebuilt and there is no way back. Cancellation of the
+        // request, which is routine, must not interrupt it. Only the disposal of this object can.
+        try
+        {
+            await RestoreAsync(newSnapshot.File, lifetimeToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException e)
+        {
+            // Not a routine cancellation of the request: the state can be partial, so the caller must fail closed.
+            throw new InvalidOperationException(ExceptionMessages.SnapshotRestoreCanceled, e);
+        }
+
         snapshot = newSnapshot;
         return appliedIndex = entry.Index;
     }

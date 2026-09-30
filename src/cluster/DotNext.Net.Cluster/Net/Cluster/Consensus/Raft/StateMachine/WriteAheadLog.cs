@@ -37,7 +37,10 @@ using Threading.Tasks;
 /// A non-cancellation failure while an entry payload is being written, cancellation thrown from the payload while
 /// the request itself was not canceled, an error from the state machine while applying a snapshot, or a real
 /// storage/integrity failure may leave partially modified state, so it faults the WAL and requires reopening it
-/// for recovery.
+/// for recovery. The only exception to the snapshot rule is cancellation: if the token passed to
+/// <see cref="IStateMachine.ApplyAsync"/> is canceled and the state machine throws <see cref="OperationCanceledException"/>,
+/// and <see cref="IStateMachine.IsSnapshotInstallCancellationSafe"/> is <see langword="true"/>, the state machine
+/// is unchanged and the WAL stays usable, so the leader can retransmit the snapshot.
 /// </remarks>
 public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentState, ITermGuardedAuditTrail, IManagedConfigurationAuditTrail
 {
@@ -493,6 +496,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 
                 await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
                 var mutationStarted = false;
+                var applyCanceled = false;
                 try
                 {
                     ThrowOnInternalError();
@@ -500,7 +504,17 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                     var snapshot = new LogEntry(entry, startIndex);
                     token.ThrowIfCancellationRequested();
                     mutationStarted = true;
-                    LastAppliedIndex = await stateMachine.ApplyAsync(snapshot, token).ConfigureAwait(false);
+                    try
+                    {
+                        LastAppliedIndex = await stateMachine.ApplyAsync(snapshot, token).ConfigureAwait(false);
+                    }
+                    catch (Exception e) when (stateMachine.IsSnapshotInstallCancellationSafe && IsRoutinePayloadCancellation(e, token))
+                    {
+                        // The state machine guarantees it is unchanged, and the WAL has not modified anything yet.
+                        applyCanceled = true;
+                        throw;
+                    }
+
                     var snapshotIndex = stateMachine.Snapshot?.Index ?? startIndex;
                     if (snapshotIndex > tailIndex)
                         WriteSnapshotBoundary(snapshotIndex, entry.Term);
@@ -510,7 +524,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                     await PersistAppendAsync(snapshotIndex).ConfigureAwait(false);
                     OnSnapshotInstalled(snapshotIndex);
                 }
-                catch (Exception e) when (mutationStarted)
+                catch (Exception e) when (mutationStarted && !applyCanceled)
                 {
                     OnBackgroundTaskFailure(e);
                     throw;

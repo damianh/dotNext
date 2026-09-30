@@ -573,6 +573,15 @@ The removed-node side is unchanged: a node outside its own configuration still
 accepts AppendEntries, and returns to the configuration when a new leader
 overwrites its uncommitted removal.
 
+The guard on the public extension is a misuse tripwire, not a lock. It reads the
+managed marker before the append, so it is not atomic with the append itself: a
+call that was admitted just before `StartAsync` set the marker can still land
+behind the startup scan. Appending to a log directly while its cluster is
+starting is outside the membership contract, like the raw appends above. Making
+the check atomic would need a storage primitive that tests the marker under the
+write-ahead log's append lock; that is a larger storage change and is not part
+of #48.
+
 ## Leader lease timing model
 
 Recorded for #20. A leader that completes a heartbeat round acknowledged by a

@@ -19,7 +19,9 @@ public static class ClusterConfigurationExtensions
     /// <remarks>
     /// This is a storage-level operation: it neither activates the configuration nor serializes it with other
     /// membership changes. It cannot be used on the log of a running cluster that derives its configuration
-    /// from the log; use <c>AddMemberAsync</c> or <c>RemoveMemberAsync</c> of the cluster instead.
+    /// from the log; use <c>AddMemberAsync</c> or <c>RemoveMemberAsync</c> of the cluster instead. The check is a
+    /// best-effort guard against misuse and is not synchronized with the append: do not call this method
+    /// concurrently with the start of the cluster that owns the log.
     /// </remarks>
     /// <param name="state">The persistent state.</param>
     /// <param name="configuration">The configuration to append.</param>

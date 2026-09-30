@@ -81,16 +81,14 @@ public sealed class TermVoteDurabilityTests : RaftTest
     public static async Task FailedWriteThatReachedTheDiskIsNotOverwrittenByLowerTerm()
     {
         await using var fixture = await Fixture.CreateAsync(seedTerm: 1L);
-        fixture.Fault.Break();
-        await ThrowsAnyAsync<Exception>(() => fixture.State.UpdateTermAsync(2L, resetLastVote: true, TestToken).AsTask());
+        await fixture.FailWriteAfterItReachedTheDiskAsync(term: 2L);
 
-        // The error was ambiguous: the record reached the disk anyway.
-        fixture.WriteRecordBehindTheLog(term: 2L);
-        fixture.Fault.Restore();
-
-        // The next write must not derive from the stale published term (1) and lower the durable one.
-        await ThrowsAnyAsync<IOException>(() => fixture.State.UpdateVotedForAsync(fixture.First.Id, TestToken).AsTask());
+        // The ambiguous failure was reconciled: the published term is the durable one, so a stale term-1
+        // leader is not acknowledged, and a later write cannot lower the durable term.
         Equal(2L, fixture.State.Term);
+        var stale = await fixture.AppendAsync(fixture.First, term: 1L, entryTerm: 1L);
+        NotEqual(HeartbeatResult.ReplicatedWithLeaderTerm, stale.Value.Result);
+        Equal(0L, fixture.Log.LastEntryIndex);
 
         await fixture.State.UpdateVotedForAsync(fixture.First.Id, TestToken);
         await fixture.RestartTargetAsync();
@@ -259,6 +257,28 @@ public sealed class TermVoteDurabilityTests : RaftTest
             var record = new byte[1 + ClusterMemberId.Size + sizeof(long)];
             System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(record.AsSpan(1 + ClusterMemberId.Size), term);
             Fault.WriteRecord(record);
+        }
+        /// <summary>
+        /// A term update whose write fails while the record, as far as the disk is concerned, was already stored.
+        /// The update waits on the state lock, the record is stored meanwhile, then the write fails.
+        /// </summary>
+        internal async Task FailWriteAfterItReachedTheDiskAsync(long term)
+        {
+            Fault.Break();
+            Task update;
+            await StateLock.AcquireAsync(TestToken);
+            try
+            {
+                update = State.UpdateTermAsync(term, resetLastVote: true, TestToken).AsTask();
+                WriteRecordBehindTheLog(term);
+            }
+            finally
+            {
+                StateLock.Release();
+            }
+
+            await ThrowsAnyAsync<Exception>(() => update);
+            Fault.Restore();
         }
         internal Task<Result<bool>> VoteAsync(InProcessCluster candidate, long term, CancellationToken token = default)
             => candidate.GetMember(target.EndPoint).As<IRaftClusterMember>()

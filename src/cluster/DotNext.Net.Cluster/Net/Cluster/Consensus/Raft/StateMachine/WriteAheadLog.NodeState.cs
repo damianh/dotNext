@@ -163,6 +163,20 @@ partial class WriteAheadLog
             throw new IOException("The term/vote record was changed by an interrupted write");
     }
 
+    // Best effort right after a failed write, so that RPCs do not keep reading a term older than the durable one.
+    // If the read-back fails too, the record stays suspect and the next term/vote operation fails closed.
+    private async ValueTask TryReconcileAsync()
+    {
+        try
+        {
+            state.Reconcile(await state.ReadRecordAsync(CancellationToken.None).ConfigureAwait(false));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // stays suspect
+        }
+    }
+
     private async ValueTask FlushStateAsync(CancellationToken token)
     {
         try
@@ -172,6 +186,7 @@ partial class WriteAheadLog
         catch
         {
             state.MarkSuspect();
+            await TryReconcileAsync().ConfigureAwait(false);
             throw;
         }
 

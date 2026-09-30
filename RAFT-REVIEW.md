@@ -945,8 +945,9 @@ method awaits `FlushAsync` under `stateLock`, and only then does `Publish()` set
 the in-memory term and vote. A failed or cancelled flush leaves the published
 state equal to what was last acknowledged. If the bytes did reach the disk
 anyway (an ambiguous failure), the disk is ahead of memory. A failed write marks the
-record suspect, and the next term/vote operation first reads the record back under
-`stateLock` and publishes it (what is on disk is durable). If it differs from what
+record suspect and immediately reads it back and publishes it (what is on disk is durable),
+so RPCs do not keep acting on an older term. If that read fails, the next term/vote
+operation first reads the record back under `stateLock`. If it differs from what
 was published, that operation fails with an `IOException` and the caller
 re-evaluates on fresh state; otherwise it proceeds. Without this, a later write
 derived from the stale published term could lower the durable term. If the read-back

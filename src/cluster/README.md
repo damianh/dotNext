@@ -79,16 +79,19 @@ the whole record, serialized by a lock. The contract, guarded by
 `TermVoteDurabilityTests`:
 
 - A vote is never granted, and a reply never carries `Value = true`, before the
-  vote is durable. A failed or cancelled write leaves the node free to vote
-  again; nothing was granted.
+  vote is durable. A failed or cancelled write reports no grant. After an
+  ambiguous failure (the bytes reached the disk anyway) the candidate may be
+  durably recorded although no grant was reported; the node then honours that
+  record and refuses other candidates in that term, which costs availability only.
 - The in-memory (published) term and vote are updated only after the write has
   completed. Because the published term is the one acknowledged in RPC replies,
   a term is never advertised before it is durable, so a restart cannot revert to
   a term the node already acknowledged. If a write fails after the bytes reached
-  the disk, the disk is ahead of memory. The next term/vote operation reads the record
-  back and publishes it; if it differs from what the request was decided on, that
-  request fails and is re-evaluated, so a stale in-memory term never overwrites a
-  higher durable one.
+  the disk, the disk is ahead of memory. The failed operation reads the record back
+  and publishes it (what is on disk is durable), so RPCs do not keep acting on an
+  older term. If that read fails too, the record stays suspect and the next
+  term/vote operation reads it back first, failing if it differs from what the
+  request was decided on, so a stale term never overwrites a higher durable one.
 
 **Platform assumptions (documented, not tested).**
 

@@ -826,11 +826,12 @@ restored state that the WAL treats as routine.
   `{index}-{term}` snapshot file is created only by `Commit()`, so a cancelled
   transfer never becomes the snapshot and is never picked up on restart.
 - `EndSnapshottingAsync(commit: false)` only rolls back a local snapshot in
-  progress and clears it, so repeating it on the retransmission is a no-op. If
-  that local snapshot has itself failed with a cancellation (for example on
-  disposal), the failed task is never cleared and every later install would
-  rethrow it, so the cancellation is rethrown as `InvalidOperationException` and
-  the WAL fails closed instead of treating it as routine.
+  progress and clears it, so repeating it on the retransmission is a no-op. A
+  local snapshot that has itself failed is dropped (see
+  [Failed background snapshot](#failed-background-snapshot-75)). If it was
+  canceled by disposal, the cancellation is rethrown as
+  `InvalidOperationException` and the WAL fails closed instead of treating it as
+  routine.
 - `RestoreAsync` runs under the state machine's lifetime token, not the request
   token. Once it starts the state can be partially rebuilt, so a cancelled request
   must not interrupt it. An `OperationCanceledException` from the restore (only
@@ -853,6 +854,48 @@ cases) and `SnapshotInstallCancellationTests` (the production path in the
 in-process harness). The in-process test sends the snapshot with a token it owns
 through the network to `RaftCluster.InstallSnapshotAsync`, because the token of a
 request dispatched by the leader's worker cannot be cancelled deterministically.
+## Failed background snapshot (#75)
+
+**Defect.** `SimpleStateMachine` runs a snapshot in the background
+(`BeginSnapshottingAsync`) and keeps its task in `snapshottingProcess`. When the
+snapshot failed (a persist or serialization error, or a cancellation), the task
+stayed faulted or cancelled in that field. The next apply, and every incoming
+snapshot install, awaited it before clearing the field, so the await threw first
+and the field was never cleared. The WAL applier turned that into a background
+failure, so one failed snapshot made the node fail closed until it was reopened.
+
+**Fix.** `InstallSnapshotAsync(Task)` and `RollbackSnapshotAsync` catch a failure
+of the snapshot task, clear the field with a compare-exchange against that same
+task, and do not rethrow it. The writer is already disposed and rolled back by
+`BeginSnapshottingAsync`, so there is nothing to publish. The previous snapshot
+stays the current one, and the next persist point starts a new attempt. The
+failure is not swallowed: the compare-exchange winner calls the new protected
+virtual `OnSnapshotFailed(Exception)` once (a new public-surface member; it is a
+no-op by default, and `SimpleStateMachine` has no logger to use instead). An
+exception thrown by the hook propagates like any other apply failure.
+
+**Not dropped.**
+
+- Cancellation by disposal. The filter `!lifetimeToken.IsCancellationRequested`
+  keeps today behaviour: the failure is rethrown, and nothing is reported.
+- A failure of `writer.Commit()`. The field is cleared before it runs and the
+  failure is rethrown, so it stays fail-closed. Commit renames the temporary file
+  into place, so a failure can mean a half-renamed or unverifiable snapshot
+  file, and continuing over it would hide that. A failed `Rollback()` is also
+  unchanged.
+
+**Alternatives.** Retrying the snapshot inside the state machine would change the
+snapshot trigger policy, which is out of scope. Dropping the failure with no hook
+would make it unobservable.
+
+**Tests.** `SimpleStateMachineSnapshotFailureTests` (faulted and cancelled
+failures: applies continue, a later snapshot is published, an incoming snapshot
+installs through the WAL, a restart restores the last good snapshot, and the hook
+reports each failure once; plus a guard that disposal in flight is unchanged).
+Two tests that asserted the old poisoned behaviour were updated:
+`SimpleStateMachineSnapshotTests.FailedOutgoingSnapshotIsRolledBack` and
+`WriteAheadLogSnapshotCancellationTests.CancelledBackgroundSnapshotDoesNotBlockSnapshotInstall`.
+
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,

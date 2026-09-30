@@ -114,9 +114,21 @@ public sealed class SimpleStateMachineSnapshotTests : Test
             takeSnapshot: true);
 
         await machine.As<IStateMachine>().ApplyAsync(new LogEntry(term: 1L, index: 5L), TestToken);
-        await ThrowsAsync<IOException>(
-            machine.As<IStateMachine>().ApplyAsync(new LogEntry(term: 1L, index: 6L), TestToken).AsTask());
+        var next = machine.As<IStateMachine>().ApplyAsync(new LogEntry(term: 1L, index: 6L), TestToken);
 
+        if (failureMode is FailureMode.Serialization)
+        {
+            // a failed background snapshot is dropped, see #75
+            Equal(6L, await next);
+        }
+        else
+        {
+            // a failure to publish the snapshot stays fail-closed
+            await ThrowsAsync<IOException>(next.AsTask());
+        }
+
+        // Applying 6 can start another background snapshot, so wait for it to be rolled back on disposal
+        await machine.DisposeAsync();
         False(File.Exists(Path.Combine(location.FullName, "5-1")));
         Empty(location.EnumerateFiles("*.tmp"));
     }

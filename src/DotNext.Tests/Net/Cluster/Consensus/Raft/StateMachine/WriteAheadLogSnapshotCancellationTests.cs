@@ -165,11 +165,10 @@ public sealed class WriteAheadLogSnapshotCancellationTests : Test
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task CancellationFromFailedBackgroundSnapshotFaultsLog()
+    public static async Task CancelledBackgroundSnapshotDoesNotBlockSnapshotInstall()
     {
         // The install first waits for the local background snapshot. Its cancellation is not the request's, and the
-        // faulted snapshot is never cleared, so it must not be mistaken for routine cancellation of the request.
-        using var request = new CancellationTokenSource();
+        // cancelled snapshot is dropped (#75), so the install succeeds and the WAL stays usable.
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var options = CreateOptions();
         await using var machine = new ByteStateMachine(new(GetTempPath()))
@@ -182,19 +181,15 @@ public sealed class WriteAheadLogSnapshotCancellationTests : Test
             },
         };
         await machine.RestoreAsync(TestToken);
-        var probe = new SnapshotApplyProbe(machine, () =>
-        {
-            request.Cancel();
-            release.SetResult();
-        });
+        var probe = new SnapshotApplyProbe(machine, () => release.SetResult());
         await using var wal = new WriteAheadLog(options, probe);
         await wal.InitializeAsync(TestToken);
         await SeedAsync(wal);
 
-        var error = await ThrowsAsync<InvalidOperationException>(
-            () => wal.AppendAsync(new ByteSnapshotEntry(SnapshotState, SnapshotTerm), SnapshotIndex, request.Token).AsTask());
-        IsType<OperationCanceledException>(error.InnerException);
-        await AssertFaultedAsync(wal, error);
+        await wal.AppendAsync(new ByteSnapshotEntry(SnapshotState, SnapshotTerm), SnapshotIndex, TestToken);
+
+        AssertInstalled(wal, machine);
+        await AssertProgressAsync(wal, SnapshotIndex + 1L, "after snapshot");
     }
 
     private static WriteAheadLog.Options CreateOptions()

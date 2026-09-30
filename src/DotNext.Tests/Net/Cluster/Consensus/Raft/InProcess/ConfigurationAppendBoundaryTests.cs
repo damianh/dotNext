@@ -84,9 +84,10 @@ public sealed class ConfigurationAppendBoundaryTests : RaftTest
 
         if (cancelStop)
         {
-            // a canceled shutdown still ends the lifecycle, and a second StopAsync returns immediately
+            // an unfinished shutdown may leave the state active, so the log stays guarded until the node is disposed
             await ThrowsAnyAsync<OperationCanceledException>(() => node.StopAsync(new CancellationToken(canceled: true)));
-            await node.StopAsync(TestToken);
+            await ThrowsAsync<InvalidOperationException>(async () => await node.Log.AppendAsync(configuration, TestToken));
+            await node.DisposeAsync();
         }
         else
         {

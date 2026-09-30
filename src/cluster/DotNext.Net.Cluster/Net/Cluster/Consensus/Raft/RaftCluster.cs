@@ -599,6 +599,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         async Task StopAsync()
         {
             var lockTaken = false;
+            var stopped = false;
             try
             {
                 transitionCancellation.Cancel(false);
@@ -609,16 +610,17 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
                 await MoveToStandbyState(resumable: false).ConfigureAwait(false);
                 LocalMemberGone();
+                stopped = true;
             }
             finally
             {
                 if (lockTaken)
                     transitionLock.Release();
 
-                // keep the log guarded while the node may still lead, but release it on any exit,
-                // because a repeated StopAsync returns early once the lifecycle token is canceled
-                if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
-                    managedLog.IsConfigurationManaged = false;
+                // If the shutdown did not complete, the state may still be active and a repeated StopAsync returns
+                // early, so the log stays guarded until the cluster is disposed.
+                if (stopped)
+                    ReleaseConfigurationGuard();
             }
         }
 
@@ -1638,6 +1640,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <inheritdoc />
     IReadOnlySet<EndPoint> IPeerMesh.Peers => new HashSet<EndPoint>(members.Values.Select(static m => m.EndPoint), EndPointComparer);
 
+    private void ReleaseConfigurationGuard()
+    {
+        if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
+            managedLog.IsConfigurationManaged = false;
+    }
+
     /// <inheritdoc />
     protected override void Dispose(bool disposing)
     {
@@ -1651,6 +1659,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             membershipLock.Dispose();
             transitionLock.Dispose();
             state.Dispose();
+            ReleaseConfigurationGuard();
             TrySetDisposedException(Volatile.Read(in readinessProbe));
 
             memberAddedHandlers = memberRemovedHandlers = default;

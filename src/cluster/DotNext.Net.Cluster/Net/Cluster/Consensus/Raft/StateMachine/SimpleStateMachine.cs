@@ -16,6 +16,20 @@ using Commands;
 /// received from the leader first transfers it to a temporary file, which observes the cancellation token of the request
 /// and leaves neither the state nor the published snapshot changed if canceled. The subsequent
 /// <see cref="RestoreAsync(FileInfo, CancellationToken)"/> is not affected by that token.
+/// <para>
+/// A snapshot is taken in the background when <see cref="ApplyAsync(LogEntry, CancellationToken)"/> returns
+/// <see langword="true"/>, and is published before the next entry is applied or replaced by a snapshot received from
+/// the leader. If creating it fails or is canceled for any reason other than the disposal of this object, the failed
+/// snapshot is dropped: its temporary file is deleted, nothing is published, and the previous snapshot stays in place.
+/// The failure is reported to <see cref="OnSnapshotFailed(Exception)"/> and does not fault the write-ahead log.
+/// The next entry is applied as usual, and the next time <see cref="ApplyAsync(LogEntry, CancellationToken)"/> returns
+/// <see langword="true"/> a new attempt starts. There is no retry on its own. Until a snapshot succeeds,
+/// recovery after a restart starts from the last good snapshot.
+/// </para>
+/// <para>
+/// A failure to publish an already written snapshot (the final rename) is not dropped. It is rethrown to the caller,
+/// because the published file can be in an unknown state.
+/// </para>
 /// </remarks>
 public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachine
 {
@@ -190,7 +204,17 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
 
     private async Task InstallSnapshotAsync(Task<SnapshotWriter> task)
     {
-        var writer = await task.ConfigureAwait(false);
+        SnapshotWriter writer;
+        try
+        {
+            writer = await task.ConfigureAwait(false);
+        }
+        catch (Exception e) when (!lifetimeToken.IsCancellationRequested)
+        {
+            DropFailedSnapshot(task, e);
+            return;
+        }
+
         writer.Dispose();
 
         if (ReferenceEquals(Interlocked.CompareExchange(ref snapshottingProcess, null, task), task))
@@ -211,10 +235,43 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
 
     private async Task RollbackSnapshotAsync(Task<SnapshotWriter> task)
     {
-        var writer = await task.ConfigureAwait(false);
+        SnapshotWriter writer;
+        try
+        {
+            writer = await task.ConfigureAwait(false);
+        }
+        catch (Exception e) when (!lifetimeToken.IsCancellationRequested)
+        {
+            DropFailedSnapshot(task, e);
+            return;
+        }
+
         writer.Dispose();
         writer.Rollback();
         Interlocked.CompareExchange(ref snapshottingProcess, null, task);
+    }
+
+    // BeginSnapshottingAsync has already disposed the writer and deleted its temporary file, so nothing is left to publish.
+    // Only the caller that clears the process reports the failure.
+    private void DropFailedSnapshot(Task<SnapshotWriter> task, Exception failure)
+    {
+        if (ReferenceEquals(Interlocked.CompareExchange(ref snapshottingProcess, null, task), task))
+            OnSnapshotFailed(failure);
+    }
+
+    /// <summary>
+    /// Called when a background snapshot has failed and was dropped.
+    /// </summary>
+    /// <remarks>
+    /// The failure is observed when the state machine is about to apply the next entry or to install a snapshot
+    /// received from the leader, not at the moment it happens. It is not called when the state machine is being disposed.
+    /// The default implementation does nothing. An exception thrown by this method is propagated to that caller,
+    /// which makes the write-ahead log fail.
+    /// </remarks>
+    /// <param name="failure">The exception thrown by <see cref="PersistAsync"/> or by writing the snapshot to the disk.
+    /// It is <see cref="OperationCanceledException"/> if the snapshot was canceled.</param>
+    protected virtual void OnSnapshotFailed(Exception failure)
+    {
     }
 
     [AsyncMethodBuilder(typeof(SpawningAsyncTaskMethodBuilder<>))]
@@ -256,8 +313,8 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
         }
         catch (OperationCanceledException e)
         {
-            // The local snapshot failed on its own and stays in place, so the same snapshot cannot be applied again.
-            // The cancellation doesn't belong to the request: fail closed.
+            // A failed local snapshot is dropped, so this is only the disposal of the state machine. The cancellation
+            // doesn't belong to the request: fail closed.
             throw new InvalidOperationException(ExceptionMessages.SnapshotInProgressCanceled, e);
         }
 

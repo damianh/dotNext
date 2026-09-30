@@ -118,6 +118,12 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
   exception from `IStateMachine.ApplyAsync` of a snapshot, including cancellation. `SimpleStateMachine` restores under
   its lifetime token instead of the request token. Other errors stay fail-closed. See
   [Snapshot install cancellation](RAFT-REVIEW.md#snapshot-install-cancellation-73).
+* **A failed background snapshot no longer poisons `SimpleStateMachine`** (#75). Upstream keeps the faulted or cancelled
+  `BeginSnapshottingAsync` task, so every later apply and snapshot install rethrows it and the WAL fails closed until it
+  is reopened. The fork drops the failed attempt, keeps the previous snapshot, reports the failure through
+  `SimpleStateMachine.OnSnapshotFailed`, and lets the next persist point start a new attempt. A failure of the final
+  publish step (`writer.Commit()`) and cancellation by disposal are unchanged. See
+  [Failed background snapshot](RAFT-REVIEW.md#failed-background-snapshot-75).
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
@@ -139,6 +145,7 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 | `RaftCluster<TMember>.ReplicateAsync` (term) | appends an entry of any term | **throws `NotLeaderException`** when the entry's `Term` is not the term of the appending leader (and of the log, checked under the append lock), before anything is written (#50). Raw `IAuditTrail` appends stay unguarded. See [Leader proposal term safety](RAFT-REVIEW.md#leader-proposal-term-safety-50) |
 | `ClusterConfigurationExtensions.AppendAsync(IPersistentState, IClusterConfiguration<TAddress>, CancellationToken)` | appends to any log | **throws `InvalidOperationException`** on the WAL or `ConsensusOnlyState` of a started cluster that uses `UseLogConfiguration` (#48) |
 | `IStateMachine.IsSnapshotInstallCancellationSafe` | absent | **added** (default interface member, default `false`; `SimpleStateMachine` returns `true`): opts in to a snapshot `ApplyAsync` cancellation leaving the WAL usable (#73) |
+| `SimpleStateMachine.OnSnapshotFailed(Exception)` (protected virtual) | absent | **added** (default: no-op): reports a failed background snapshot that was dropped instead of poisoning the state machine (#75) |
 
 ## Fork-only fixes
 All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests are in `damianh/dotNext`:
@@ -149,7 +156,7 @@ unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush 
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
 configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
-#73 (cancelled snapshot install).
+#73 (cancelled snapshot install), #75 (failed background snapshot).
 
 ## Upstream sync log
 

@@ -124,6 +124,13 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
   `SimpleStateMachine.OnSnapshotFailed`, and lets the next persist point start a new attempt. A failure of the final
   publish step (`writer.Commit()`) and cancellation by disposal are unchanged. See
   [Failed background snapshot](RAFT-REVIEW.md#failed-background-snapshot-75).
+### Term and vote publication (#24)
+
+`WriteAheadLog` no longer updates its in-memory term or vote before the `state`
+record is durable. A failed or cancelled write leaves the published term and
+vote unchanged, so a term is never acknowledged in an RPC reply before it
+survives a restart. The persisted format is unchanged. See the "Supported
+storage and crash model" section of `src\cluster\README.md`.
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
@@ -156,7 +163,7 @@ unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush 
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
 configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
-#73 (cancelled snapshot install), #75 (failed background snapshot).
+#73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable).
 
 ## Upstream sync log
 

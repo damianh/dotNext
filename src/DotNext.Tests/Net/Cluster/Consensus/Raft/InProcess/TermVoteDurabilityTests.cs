@@ -56,31 +56,27 @@ public sealed class TermVoteDurabilityTests : RaftTest
     public static async Task FailedVoteWriteNeverYieldsTwoGrantsInOneTerm()
     {
         await using var fixture = await Fixture.CreateAsync(seedTerm: 1L);
+        var grants = new HashSet<string>();
         fixture.Fault.Break();
-        var grants = new List<string>();
 
-        // First is never told that it was granted.
-        await ThrowsAnyAsync<Exception>(() => fixture.VoteAsync(fixture.First, 1L));
+        // A request that fails with an error was never told that it was granted.
+        await fixture.TryVoteAsync(fixture.First, grants);
+        await fixture.TryVoteAsync(fixture.Second, grants);
+        await fixture.TryVoteAsync(fixture.First, grants);
+        Empty(grants);
 
-        // Before the restart the node decides with its in-memory vote, which never became durable. That is conservative:
-        // it can only refuse, so the cost is availability within the term.
-        False((await fixture.VoteAsync(fixture.Second, 1L)).Value);
-        await ThrowsAnyAsync<Exception>(() => fixture.VoteAsync(fixture.First, 1L));
-
+        // Whatever the node decides before the restart (it may still refuse the candidate that was tried first),
+        // it must not grant a second candidate in the same term after it.
+        fixture.Fault.Restore();
+        await fixture.TryVoteAsync(fixture.Second, grants);
+        await fixture.TryVoteAsync(fixture.First, grants);
         await fixture.RestartTargetAsync();
         Equal(1L, fixture.State.Term);
-        NoDurableVote(fixture);
+        await fixture.TryVoteAsync(fixture.First, grants);
+        await fixture.TryVoteAsync(fixture.Second, grants);
 
-        if ((await fixture.VoteAsync(fixture.Second, 1L)).Value)
-            grants.Add("second");
-        if ((await fixture.VoteAsync(fixture.First, 1L)).Value)
-            grants.Add("first");
-
-        // Only what was observed counts: the earlier failed vote for First was never a grant.
-        Equal(["second"], grants);
-        Equal(1L, fixture.State.Term);
+        Single(grants);
     }
-
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RecoveredVoteWriteKeepsTheGrantAcrossRestart()
     {
@@ -237,6 +233,19 @@ public sealed class TermVoteDurabilityTests : RaftTest
         internal Task<Result<bool>> VoteAsync(InProcessCluster candidate, long term, CancellationToken token = default)
             => candidate.GetMember(target.EndPoint).As<IRaftClusterMember>()
                 .VoteAsync(term, 0L, 0L, token.CanBeCanceled ? token : TestToken);
+
+        internal async Task TryVoteAsync(InProcessCluster candidate, HashSet<string> grants)
+        {
+            try
+            {
+                if ((await VoteAsync(candidate, 1L)).Value)
+                    grants.Add(candidate.EndPoint.ToString());
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // the vote was not granted
+            }
+        }
 
         internal Task<Result<ReplicationStatus>> AppendAsync(InProcessCluster leader, long term, long entryTerm)
             => leader.GetMember(target.EndPoint).As<IRaftClusterMember>()

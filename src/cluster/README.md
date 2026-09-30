@@ -63,6 +63,53 @@ tests recovery, not a physical power failure or a device that lies about flushes
 Custom `IPersistentState` implementations remain responsible for their own
 persistence guarantees; `ConsensusOnlyState` is intentionally in-memory.
 
+## Supported storage and crash model
+
+**Crash model.** The guarantees above are for *process* failure: the process is
+killed or disposed at any point and the files are reopened, with the operating
+system and storage still intact. Power loss, kernel panic and device faults are
+**not** simulated or tested. They are supported only to the extent that the
+platform honours the assumptions listed below.
+
+**Term and vote record.** `WriteAheadLog` keeps `currentTerm` and `votedFor` in
+the file `state`: one 37-byte in-place record at offset 0 (presence byte,
+`ClusterMemberId`, term). It has no checksum. The file is opened with
+`FileOptions.WriteThrough` and every update is one `RandomAccess.WriteAsync` of
+the whole record, serialized by a lock. The contract, guarded by
+`TermVoteDurabilityTests`:
+
+- A vote is never granted, and a reply never carries `Value = true`, before the
+  vote is durable. A failed or cancelled write leaves the node free to vote
+  again; nothing was granted.
+- The in-memory (published) term and vote are updated only after the write has
+  completed. Because the published term is the one acknowledged in RPC replies,
+  a term is never advertised before it is durable, so a restart cannot revert to
+  a term the node already acknowledged. If a write fails after the bytes reached
+  the disk, the disk is ahead of memory, which is safe: the durable term only
+  rises and a grant still needs a successful write.
+
+**Platform assumptions (documented, not tested).**
+
+- *Sector atomicity.* The 37-byte write is assumed not to tear. A 37-byte write
+  at offset 0 normally lands in one 512 B or 4 KiB sector, but no universal
+  atomicity guarantee is asserted and no checksum detects a torn record.
+- *Directory fsync on first creation.* The `state` file is created with
+  `FileMode.CreateNew`; the directory entry is not fsynced. On Linux, a power
+  loss right after the first boot could lose the file, and a vote granted in
+  that window would be forgotten (reset to term 0, no vote). Process termination
+  is not affected.
+- *`WriteThrough` per platform.* .NET maps `FileOptions.WriteThrough` to
+  `FILE_FLAG_WRITE_THROUGH` on Windows and to `O_SYNC` on Unix
+  (`SafeFileHandle.Unix.cs` in dotnet/runtime). `O_SYNC` makes each write
+  durable on Linux with a filesystem and device that honour it. On macOS
+  `O_SYNC` does not imply `F_FULLFSYNC`, so the data can still be in the drive
+  cache: macOS is not a supported platform for power-loss durability.
+- *Short `state` file.* When `state` exists but is shorter than 37 bytes, the
+  constructor zeroes the buffer and rewrites it, which silently resets the node
+  to term 0 with no vote. Within the process-crash model only a length of 0 is
+  reachable (a crash inside the very first creation, before any vote was
+  possible). Lengths of 1 to 36 need power loss or external damage. Failing
+  closed on those lengths is a possible hardening and is not implemented.
 # HyParView
 List of supported features:
 * Network transport: HTTP 1.1, HTTP/2, HTTP/3

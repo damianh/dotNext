@@ -310,3 +310,20 @@ has applied the current-term write barrier.
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.LeaderLeaseActivationTests' --progress off --timeout 180s
 ```
+
+## Term and vote durability
+
+`TermVoteDurabilityTests` covers issue #24. The target node is WAL-backed, and
+a "crash" is a dispose and reopen of the WAL followed by a node restart.
+`NodeStateFault` makes the `state` write fail by swapping the file handle for
+a read-only one (test-only reflection).
+
+- H1 and H2: a failed or cancelled vote write grants nothing, and a failed write
+  never leads to two grants in one term across a restart.
+- H3: a term acknowledged in an `AppendEntries` reply survives a restart, so a
+  stale leader cannot overwrite an acknowledged entry. Triggered by a failed
+  term update from `AppendEntries` and from a `Vote` request.
+
+```powershell
+dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.TermVoteDurabilityTests' --progress off --timeout 180s
+```

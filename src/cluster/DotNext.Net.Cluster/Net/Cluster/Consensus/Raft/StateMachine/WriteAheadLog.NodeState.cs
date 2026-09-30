@@ -29,6 +29,7 @@ partial class WriteAheadLog
         private readonly byte[] buffer;
         private volatile BoxedClusterMemberId? votedFor;
         private long term; // volatile
+        private (long Term, BoxedClusterMemberId? Vote) staged;
 
         public NodeState(DirectoryInfo location)
         {
@@ -65,31 +66,43 @@ partial class WriteAheadLog
         
         public readonly bool IsVotedFor(in ClusterMemberId expected) => IPersistentState.IsVotedFor(votedFor, expected);
         
-        public void UpdateTerm(long value, bool resetLastVote)
-        {
-            WriteInt64LittleEndian(buffer.AsSpan(TermOffset), value);
-            if (resetLastVote)
-            {
-                votedFor = null;
-                buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(false);
-            }
+        // Staging fills the write buffer with the complete next record but leaves the published term and vote
+        // untouched. The published values change only after FlushAsync succeeds, so a failed or cancelled write
+        // never lets the node act on a term or vote that is not durable.
+        public void StageTerm(long value, bool resetLastVote)
+            => Stage(value, resetLastVote ? null : votedFor);
 
-            Atomic.Write(ref term, value);
-        }
-        
-        public long IncrementTerm(ClusterMemberId id)
+        public long StageIncrementedTerm(ClusterMemberId id)
         {
-            var result = Interlocked.Increment(ref term);
-            WriteInt64LittleEndian(buffer.AsSpan(TermOffset), result);
-            UpdateVotedFor(id);
+            var result = Term + 1L;
+            Stage(result, BoxedClusterMemberId.Box(id));
             return result;
         }
-        
-        public void UpdateVotedFor(ClusterMemberId id)
+
+        public void StageVote(ClusterMemberId id)
+            => Stage(Term, BoxedClusterMemberId.Box(id));
+
+        private void Stage(long newTerm, BoxedClusterMemberId? newVote)
         {
-            votedFor = BoxedClusterMemberId.Box(id);
-            buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(true);
-            id.Format(buffer.AsSpan(LastVoteOffset));
+            WriteInt64LittleEndian(buffer.AsSpan(TermOffset), newTerm);
+            if (newVote is null)
+            {
+                buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(false);
+            }
+            else
+            {
+                buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(true);
+                newVote.Value.Format(buffer.AsSpan(LastVoteOffset));
+            }
+
+            staged = (newTerm, newVote);
+        }
+
+        public void Publish()
+        {
+            var (newTerm, newVote) = staged;
+            votedFor = newVote;
+            Atomic.Write(ref term, newTerm);
         }
 
         public readonly ValueTask FlushAsync(CancellationToken token = default)
@@ -115,8 +128,9 @@ partial class WriteAheadLog
         long term;
         try
         {
-            term = state.IncrementTerm(member);
+            term = state.StageIncrementedTerm(member);
             await state.FlushAsync(token).ConfigureAwait(false);
+            state.Publish();
         }
         finally
         {
@@ -132,8 +146,9 @@ partial class WriteAheadLog
         await stateLock.AcquireAsync(token).ConfigureAwait(false);
         try
         {
-            state.UpdateTerm(term, resetLastVote);
+            state.StageTerm(term, resetLastVote);
             await state.FlushAsync(token).ConfigureAwait(false);
+            state.Publish();
         }
         finally
         {
@@ -147,8 +162,9 @@ partial class WriteAheadLog
         await stateLock.AcquireAsync(token).ConfigureAwait(false);
         try
         {
-            state.UpdateVotedFor(member);
+            state.StageVote(member);
             await state.FlushAsync(token).ConfigureAwait(false);
+            state.Publish();
         }
         finally
         {

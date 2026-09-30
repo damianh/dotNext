@@ -64,10 +64,14 @@ file sealed class ReplicationWithSenderTermDetector<TEntry> : ILogEntryProducer<
     {
         this.entries = entries;
         this.expectedTerm = expectedTerm;
-        configurationDetected = false;
+        replicatedWithExpectedTerm = configurationDetected = false;
     }
 
-    public void Reset() => entries = ILogEntryProducer<TEntry>.Empty;
+    public void Reset()
+    {
+        entries = ILogEntryProducer<TEntry>.Empty;
+        replicatedWithExpectedTerm = configurationDetected = false;
+    }
 
     TEntry IAsyncEnumerator<TEntry>.Current
     {

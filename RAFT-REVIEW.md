@@ -663,6 +663,56 @@ still answer a retransmitted snapshot with a same-term `Rejected` that the
 leader counts. Do not rely on lease reads while such members are in the
 cluster, for example during a rolling upgrade.
 
+## Follower term signal (#70)
+
+Recorded for #70. The follower answers AppendEntries with
+`HeartbeatResult.ReplicatedWithLeaderTerm` only when the request's batch holds an
+entry of the sender's term (`RaftCluster.TermTracking.cs`). The leader turns that
+answer into `MemberResult.Replicated(index)`, and `LeaderState.GetCommitIndex`
+takes the majority of those indices. The commit path has no independent check
+that the entry at the candidate index is from the current term, so the rule
+against committing earlier-term entries by counting replicas (§5.4.2, Figure 8)
+depends on this signal alone.
+
+**Defect.** The follower reuses one cached `ReplicationWithSenderTermDetector`.
+`Initialize` cleared only `configurationDetected`; `replicatedWithExpectedTerm`
+was only ever OR-ed, and `Reset()` never cleared it. After one request contained
+an entry of the sender's term, every later non-empty request answered
+`ReplicatedWithLeaderTerm`, whatever its terms and whichever leader sent it.
+
+**Impact.** Not reachable from a conforming dotNext leader:
+
+- The candidate appends a no-op in its own term before it starts leading, and
+  every barrier replicates up to `LastEntryIndex`, so each non-empty batch ends
+  with an entry of the leader's term. The honest answer is already
+  `ReplicatedWithLeaderTerm`. Empty batches skip the detector.
+- Entries appended later carry the leader's term (`RaftClusterExtensions`, and
+  the term guard for configuration entries).
+- It is reachable when a sender puts no entry of its own term in a non-empty
+  batch: a custom sender using the protected `AppendEntriesAsync`, or
+  `ReplicateAsync<TEntry>` called with an older-term entry.
+- Catch-up and warm-up use `matchedIndex`, and lease and heartbeat consensus
+  count `Touched` and `Replicated` alike, so neither is affected.
+
+The defect is a protocol-contract violation by the follower, not a commit-safety
+break reachable from a stock leader. No leader-side scenario test exists for the
+same reason.
+
+**Status: fixed (#70).** `Initialize` and `Reset()` clear both flags, so a cached
+detector holds no per-request state. `ReplicationTermSignalTests` sends
+consecutive AppendEntries requests to a follower: a batch with an entry of the
+sender's term, then one with only older-term entries (same sender term, and a
+later one). The second must answer `Replicated`, and a following batch with an
+entry of the sender's term must answer `ReplicatedWithLeaderTerm` again.
+
+The other sites that return `ReplicatedWithLeaderTerm` were checked and left
+unchanged. The snapshot path compares `senderTerm == snapshot.Term` per request.
+The local-member shortcuts in `RaftClusterMember` (core and HTTP) are never
+used to replicate, because the leader replicates to itself through the base
+`ReplicationProcess` and `AddMembers` asserts `IsRemote`.
+
+Not fixed here: `RaftCluster.ReplicateAsync<TEntry>` does not check that the
+entry's `Term` equals the leader's term.
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,

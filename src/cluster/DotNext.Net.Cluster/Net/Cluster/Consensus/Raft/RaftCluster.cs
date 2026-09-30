@@ -373,18 +373,30 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         // the active configuration is the latest configuration in the log, or the applied one
         if (activeConfiguration is not null)
         {
-            await transitionLock.AcquireAsync(token).ConfigureAwait(false);
+            // guard the log before scanning it, otherwise a concurrent configuration append can slip past the scan
+            var managedLog = AuditTrail as IManagedConfigurationAuditTrail;
+            if (managedLog is not null)
+                managedLog.IsConfigurationManaged = true;
+
             try
             {
-                await LoadConfigurationAsync(token).ConfigureAwait(false);
+                await transitionLock.AcquireAsync(token).ConfigureAwait(false);
+                try
+                {
+                    await LoadConfigurationAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    transitionLock.Release();
+                }
             }
-            finally
+            catch
             {
-                transitionLock.Release();
-            }
+                if (managedLog is not null)
+                    managedLog.IsConfigurationManaged = false;
 
-            if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
-                managedLog.IsConfigurationManaged = true;
+                throw;
+            }
         }
 
         // A restarted voter may have acknowledged a leader lease just before the crash. Leader stickiness

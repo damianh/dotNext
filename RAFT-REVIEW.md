@@ -794,6 +794,65 @@ old `ReplicateAsync` throws `NotLeaderException`: the old leader steps down when
 sees the newer term, which cancels its leader token before any AppendEntries of
 the new leader can overwrite or commit the index. The test passed at baseline, so
 no term check was added after the apply.
+
+## Snapshot install cancellation (#73)
+
+PR #62 (#53) made routine cancellation of a normal append leave the WAL usable
+and explicitly left the snapshot path open. This closes that gap.
+
+**Defect.** `RaftCluster.InstallSnapshotAsync` passes a token that combines the
+transport request token with the cluster lifetime to
+`WriteAheadLog.AppendAsync(snapshot, ...)`. The WAL set `mutationStarted` before
+`IStateMachine.ApplyAsync(snapshot, token)` and faulted itself on any exception
+from it, including `OperationCanceledException`. A leader that dropped a slow
+request therefore poisoned the follower's WAL until it was reopened, although the
+WAL itself changes nothing before `ApplyAsync` returns (`WriteSnapshotBoundary`,
+`LastCommittedEntryIndex` and `PersistAppendAsync` all follow it).
+
+**Contract.** `IStateMachine.IsSnapshotInstallCancellationSafe` is an opt-in
+default interface member (default `false`). When it is `true`, an
+`OperationCanceledException` from `ApplyAsync` of a snapshot entry, thrown while
+the passed token is canceled, means the state machine made no observable change.
+The WAL then leaves itself untouched, does not fault, and rethrows. Anything else
+stays fail-closed: any other exception, an `OperationCanceledException` while the
+token is not canceled, and any state machine that has not opted in.
+Implementations that opt in but restore under the request token risk a partially
+restored state that the WAL treats as routine.
+
+**`SimpleStateMachine`** opts in.
+
+- The transfer (`Snapshot.ReadFromAsync`) writes to a temporary file and observes
+  the request token. On failure the temporary file is deleted, and the
+  `{index}-{term}` snapshot file is created only by `Commit()`, so a cancelled
+  transfer never becomes the snapshot and is never picked up on restart.
+- `EndSnapshottingAsync(commit: false)` only rolls back a local snapshot in
+  progress and clears it, so repeating it on the retransmission is a no-op. If
+  that local snapshot has itself failed with a cancellation (for example on
+  disposal), the failed task is never cleared and every later install would
+  rethrow it, so the cancellation is rethrown as `InvalidOperationException` and
+  the WAL fails closed instead of treating it as routine.
+- `RestoreAsync` runs under the state machine's lifetime token, not the request
+  token. Once it starts the state can be partially rebuilt, so a cancelled request
+  must not interrupt it. An `OperationCanceledException` from the restore (only
+  possible on disposal or from user code) is rethrown as
+  `InvalidOperationException`, so the WAL sees it as a real failure and fails
+  closed rather than as a routine cancellation.
+
+**Not changed.** A restore failure still faults the WAL. A transport error
+(non-cancellation) during the transfer still faults it, because the WAL cannot
+tell it apart from a state machine error.
+
+**Alternatives.** A WAL-owned staging area for the snapshot would remove the
+contract, but it is a larger change to the state machine interface. Dropping the
+caller token would stop cancellation of a stuck transfer.
+
+**Tests.** `WriteAheadLogSnapshotCancellationTests` (transfer cancelled, cancelled
+after restore started, restore failure, and OCE from restore),
+`WriteAheadLogAppendFailureTests` (the WAL-level contract and the fail-closed
+cases) and `SnapshotInstallCancellationTests` (the production path in the
+in-process harness). The in-process test sends the snapshot with a token it owns
+through the network to `RaftCluster.InstallSnapshotAsync`, because the token of a
+request dispatched by the leader's worker cannot be cancelled deterministically.
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,

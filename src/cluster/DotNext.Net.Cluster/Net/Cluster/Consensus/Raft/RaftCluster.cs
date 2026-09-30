@@ -372,6 +372,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         // configuration is scanned. Otherwise a concurrent configuration append can land behind the scan
         // and never be activated.
         var managedLog = activeConfiguration is not null ? AuditTrail as IManagedConfigurationAuditTrail : null;
+        var wasManaged = managedLog?.IsConfigurationManaged ?? false;
         if (managedLog is not null)
             managedLog.IsConfigurationManaged = true;
 
@@ -403,8 +404,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         }
         catch
         {
+            // a repeated start must not release the guard of a node that is already running
             if (managedLog is not null)
-                managedLog.IsConfigurationManaged = false;
+                managedLog.IsConfigurationManaged = wasManaged;
 
             throw;
         }

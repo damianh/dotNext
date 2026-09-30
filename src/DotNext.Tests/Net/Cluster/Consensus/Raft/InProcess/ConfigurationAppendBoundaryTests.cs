@@ -98,6 +98,19 @@ public sealed class ConfigurationAppendBoundaryTests : RaftTest
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task FailedRepeatedStartKeepsLogGuarded()
+    {
+        await using var cluster = new MembershipClusterFixture();
+        await cluster.StartAsync();
+        var node = cluster.Nodes[0];
+        var configuration = await BuildRemovalAsync(node, cluster.Voters[4]);
+
+        await ThrowsAnyAsync<OperationCanceledException>(() => node.StartAsync(new CancellationToken(canceled: true)));
+
+        await ThrowsAsync<InvalidOperationException>(async () => await node.Log.AppendAsync(configuration, TestToken));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConsensusOnlyStateFollowsClusterLifecycle()
     {
         var voters = new EndPoint[] { new DnsEndPoint("member-0", 0), new DnsEndPoint("member-1", 0) };

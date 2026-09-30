@@ -78,6 +78,27 @@ public sealed class TermVoteDurabilityTests : RaftTest
         Single(grants);
     }
     [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task FailedWriteThatReachedTheDiskIsNotOverwrittenByLowerTerm()
+    {
+        await using var fixture = await Fixture.CreateAsync(seedTerm: 1L);
+        fixture.Fault.Break();
+        await ThrowsAnyAsync<Exception>(() => fixture.State.UpdateTermAsync(2L, resetLastVote: true, TestToken).AsTask());
+
+        // The error was ambiguous: the record reached the disk anyway.
+        fixture.WriteRecordBehindTheLog(term: 2L);
+        fixture.Fault.Restore();
+
+        // The next write must not derive from the stale published term (1) and lower the durable one.
+        await ThrowsAnyAsync<IOException>(() => fixture.State.UpdateVotedForAsync(fixture.First.Id, TestToken).AsTask());
+        Equal(2L, fixture.State.Term);
+
+        await fixture.State.UpdateVotedForAsync(fixture.First.Id, TestToken);
+        await fixture.RestartTargetAsync();
+        Equal(2L, fixture.State.Term);
+        True(fixture.State.IsVotedFor(fixture.First.Id));
+        False(fixture.State.IsVotedFor(fixture.Second.Id));
+    }
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task RecoveredVoteWriteKeepsTheGrantAcrossRestart()
     {
         await using var fixture = await Fixture.CreateAsync(seedTerm: 1L);
@@ -230,6 +251,15 @@ public sealed class TermVoteDurabilityTests : RaftTest
             retired.Add(previous);
         }
 
+        /// <summary>
+        /// Stores a record with no vote, as if a write reported as failed had reached the disk.
+        /// </summary>
+        internal void WriteRecordBehindTheLog(long term)
+        {
+            var record = new byte[1 + ClusterMemberId.Size + sizeof(long)];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(record.AsSpan(1 + ClusterMemberId.Size), term);
+            Fault.WriteRecord(record);
+        }
         internal Task<Result<bool>> VoteAsync(InProcessCluster candidate, long term, CancellationToken token = default)
             => candidate.GetMember(target.EndPoint).As<IRaftClusterMember>()
                 .VoteAsync(term, 0L, 0L, token.CanBeCanceled ? token : TestToken);

@@ -30,6 +30,7 @@ partial class WriteAheadLog
         private volatile BoxedClusterMemberId? votedFor;
         private long term; // volatile
         private (long Term, BoxedClusterMemberId? Vote) staged;
+        private bool suspect;
 
         public NodeState(DirectoryInfo location)
         {
@@ -108,6 +109,38 @@ partial class WriteAheadLog
         public readonly ValueTask FlushAsync(CancellationToken token = default)
             => RandomAccess.WriteAsync(handle, buffer, fileOffset: 0L, token);
 
+        public readonly bool IsSuspect => suspect;
+
+        // A failed or cancelled write may still have reached the file, so the file, not memory, is the truth.
+        public void MarkSuspect() => suspect = true;
+
+        // Publishes the record read back from the file. Whatever is on disk is durable, so publishing it is safe.
+        // Returns true if the record differs from what was published before the failed write.
+        public readonly async ValueTask<byte[]> ReadRecordAsync(CancellationToken token)
+        {
+            var actual = new byte[Size];
+            if (await RandomAccess.ReadAsync(handle, actual, fileOffset: 0L, token).ConfigureAwait(false) < actual.Length)
+                throw new IOException("The term/vote record cannot be read back after a failed write");
+
+            return actual;
+        }
+
+        public bool Reconcile(byte[] actual)
+        {
+            var diskTerm = ReadInt64LittleEndian(actual.AsSpan(TermOffset));
+            var diskVote = Unsafe.BitCast<byte, bool>(actual[LastVotePresenceOffset])
+                ? BoxedClusterMemberId.Box(new ClusterMemberId(actual.AsSpan(LastVoteOffset)))
+                : null;
+
+            var changed = diskTerm != Term || !SameVote(diskVote, votedFor);
+            votedFor = diskVote;
+            Atomic.Write(ref term, diskTerm);
+            suspect = false;
+            return changed;
+
+            static bool SameVote(BoxedClusterMemberId? x, BoxedClusterMemberId? y)
+                => x is null ? y is null : y is not null && x.Value == y.Value;
+        }
         public void Dispose()
         {
             handle?.Dispose();
@@ -121,6 +154,30 @@ partial class WriteAheadLog
     /// <inheritdoc/>
     long IPersistentState.Term => state.Term;
 
+    // A failed write may have persisted the record anyway. Until the record is read back, nothing may be staged:
+    // the next write would derive from the published term and could lower the durable one. When the disk turns out
+    // to differ from what this request was decided on, the request fails and the caller re-evaluates.
+    private async ValueTask ReconcileStateAsync(CancellationToken token)
+    {
+        if (state.IsSuspect && state.Reconcile(await state.ReadRecordAsync(token).ConfigureAwait(false)))
+            throw new IOException("The term/vote record was changed by an interrupted write");
+    }
+
+    private async ValueTask FlushStateAsync(CancellationToken token)
+    {
+        try
+        {
+            await state.FlushAsync(token).ConfigureAwait(false);
+        }
+        catch
+        {
+            state.MarkSuspect();
+            throw;
+        }
+
+        state.Publish();
+    }
+
     /// <inheritdoc/>
     async ValueTask<long> IPersistentState.IncrementTermAsync(ClusterMemberId member, CancellationToken token)
     {
@@ -128,9 +185,9 @@ partial class WriteAheadLog
         long term;
         try
         {
+            await ReconcileStateAsync(token).ConfigureAwait(false);
             term = state.StageIncrementedTerm(member);
-            await state.FlushAsync(token).ConfigureAwait(false);
-            state.Publish();
+            await FlushStateAsync(token).ConfigureAwait(false);
         }
         finally
         {
@@ -146,9 +203,9 @@ partial class WriteAheadLog
         await stateLock.AcquireAsync(token).ConfigureAwait(false);
         try
         {
+            await ReconcileStateAsync(token).ConfigureAwait(false);
             state.StageTerm(term, resetLastVote);
-            await state.FlushAsync(token).ConfigureAwait(false);
-            state.Publish();
+            await FlushStateAsync(token).ConfigureAwait(false);
         }
         finally
         {
@@ -162,9 +219,9 @@ partial class WriteAheadLog
         await stateLock.AcquireAsync(token).ConfigureAwait(false);
         try
         {
+            await ReconcileStateAsync(token).ConfigureAwait(false);
             state.StageVote(member);
-            await state.FlushAsync(token).ConfigureAwait(false);
-            state.Publish();
+            await FlushStateAsync(token).ConfigureAwait(false);
         }
         finally
         {

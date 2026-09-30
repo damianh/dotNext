@@ -424,7 +424,7 @@ confirmed core defects; overlapping consequences are not counted twice.
 | S2: plaintext/TLS defaults | Host transport-security choice | TLS is optional and supplied options use platform certificate validation. Absence of built-in mTLS or pinning is not disabled certificate validation. |
 | S3: custom-message dispatch | Downstream consequence of S1 | Host/handler authorization must protect dispatch; do not count it as an independent authentication defect. |
 | S4: leader open redirect | Rejected as stated | The implementation replaces host and port with the leader destination. Probes retained that destination despite attacker-controlled input. Forwarded-scheme trust is a separate deployment concern. |
-| S5: torn term/vote/checkpoint records | Unproven; platform-dependent durability assumption. #24: the crash model is documented, and a related process-crash defect (term published before it was durable) is fixed, see "Term/vote durability (#24)" | Missing CRC/double buffering alone does not demonstrate tearing or double voting. The records are 37 and 12 bytes, written with `WriteThrough`; filesystem/device guarantees and an explicit crash model are needed. No universal atomicity guarantee is asserted. |
+| S5: torn term/vote/checkpoint records | Unproven; platform-dependent durability assumption. #24: the crash model is documented, and a related process-crash defect (term published before it was durable) is fixed, see "Term/vote durability (#24)" | Missing CRC/double buffering alone does not demonstrate tearing or double voting. The term/vote record is 37 bytes, unchecksummed, in place, written with `WriteThrough`. (The checkpoint is no longer a small record: it is three checksummed 64 KiB generational slots plus sidecars, see FORK-DIVERGENCE.md.) Filesystem/device guarantees and an explicit crash model are needed. No universal atomicity guarantee is asserted. |
 | S6: replay protection | Bounded deduplication, not an established security promise | The cache is expiring, evictable, and process-local. Qualify the internal "exactly-once" wording; no cryptographic replay-protection contract was established. |
 | O1: heartbeat exceptions | Confirmed new finding 16 | The task faults without invalidating leadership. The second review's election-timeout duration bound is unsupported. |
 | O2: failure-induced standby | Behavior confirmed; remedy overstated | Manual recovery is available and transition failure already logs at Critical. Automatically retrying after an unknown failure is not necessarily safe. |
@@ -912,7 +912,7 @@ runtime seam was added). Power loss is out of scope and is documented in
 | # | Hypothesis | Result |
 |---|---|---|
 | H1 | A vote is granted, or a reply carries `Value = true`, before it is durable | Not reproduced. The handler sets `Value = true` only after `UpdateVotedForAsync` returns. Guards: `FailedVoteWriteGrantsNothing`, `CancelledVoteRequestGrantsNothing`. |
-| H2 | After a failed flush, memory is ahead of disk and the node grants X, then Y in the same term after a restart | Not reproduced. A failed request was never granted; a retry rewrites the whole record; before a restart the node only refuses the other candidate (availability, not safety). Guards: `FailedVoteWriteNeverYieldsTwoGrantsInOneTerm`, `RecoveredVoteWriteKeepsTheGrantAcrossRestart`. |
+| H2 | After a failed flush, memory is ahead of disk and the node grants X, then Y in the same term after a restart | Not reproduced. A failed request was never granted; a retry rewrites the whole record; before a restart the node only refuses the other candidate (availability, not safety). Guards: `FailedVoteWriteNeverYieldsTwoGrantsInOneTerm`, `RecoveredVoteWriteKeepsTheGrantAcrossRestart`. `FailedWriteThatReachedTheDiskIsNotOverwrittenByLowerTerm` guards the ambiguous-failure path. |
 | H3 | A term is advertised in an RPC reply before it is durable | **Reproduced.** See below. |
 | H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | Documented only (power-loss assumptions). |
 
@@ -936,7 +936,7 @@ from a `Vote` request of a higher term.
   overwrite the acknowledged entry (`StaleLeaderCannotOverwriteAcknowledgedEntry`).
 - Observed on baseline: 9 tests, 5 passed, 4 failed (both H3 tests, each for the
   `AppendEntries` and `Vote` triggers). H1, H2 and the no-fault control passed.
-- Observed with the fix: 9 tests, 9 passed.
+- Observed with the fix: 10 tests (9 plus the ambiguous-failure guard), 10 passed.
 
 **Fix (persisted format unchanged).** Publish after durable. `StageTerm`,
 `StageIncrementedTerm` and `StageVote` fill the 37-byte buffer with the complete
@@ -944,8 +944,14 @@ next record without touching the published fields; the `IPersistentState`
 method awaits `FlushAsync` under `stateLock`, and only then does `Publish()` set
 the in-memory term and vote. A failed or cancelled flush leaves the published
 state equal to what was last acknowledged. If the bytes did reach the disk
-anyway, the disk is ahead of memory, which is safe because the durable term only
-rises and a grant still needs a successful flush.
+anyway (an ambiguous failure), the disk is ahead of memory. A failed write marks the
+record suspect, and the next term/vote operation first reads the record back under
+`stateLock` and publishes it (what is on disk is durable). If it differs from what
+was published, that operation fails with an `IOException` and the caller
+re-evaluates on fresh state; otherwise it proceeds. Without this, a later write
+derived from the stale published term could lower the durable term. If the read-back
+fails, the operation fails and nothing is written.
+
 
 **Alternatives rejected.** Poisoning the WAL on a `state` write failure (it
 conflicts with the cancellation handling of #53). Raising the term from the last

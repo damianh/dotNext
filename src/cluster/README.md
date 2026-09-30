@@ -85,8 +85,10 @@ the whole record, serialized by a lock. The contract, guarded by
   completed. Because the published term is the one acknowledged in RPC replies,
   a term is never advertised before it is durable, so a restart cannot revert to
   a term the node already acknowledged. If a write fails after the bytes reached
-  the disk, the disk is ahead of memory, which is safe: the durable term only
-  rises and a grant still needs a successful write.
+  the disk, the disk is ahead of memory. The next term/vote operation reads the record
+  back and publishes it; if it differs from what the request was decided on, that
+  request fails and is re-evaluated, so a stale in-memory term never overwrites a
+  higher durable one.
 
 **Platform assumptions (documented, not tested).**
 

@@ -11,8 +11,8 @@ using StateMachine;
 /// <remarks>
 /// <c>WriteAheadLog.NodeState</c> is a private struct, so the tests reach its handle by reflection.
 /// While broken, the record is written through a read-only handle to the same file: the write call fails
-/// after the in-memory term/vote were already updated and before any byte reaches the file. This models a
-/// transient storage error. Switch the handle only while the WAL is quiescent.
+/// before any byte reaches the file. This models a transient storage error. <see cref="WriteRecord"/> stores a record
+/// through the original handle to model a failed write that reached the file anyway. Switch the handle only while the WAL is quiescent.
 /// </remarks>
 internal sealed class NodeStateFault : IDisposable
 {
@@ -35,7 +35,12 @@ internal sealed class NodeStateFault : IDisposable
 
     internal void Break() => Install(readOnly);
 
-    internal void Restore() => Install(original);
+    internal void Restore() => Install(original);
+
+    /// <summary>
+    /// Writes the record through the original handle, as if a write reported as failed had reached the file.
+    /// </summary>
+    internal void WriteRecord(ReadOnlySpan<byte> record) => RandomAccess.Write(original, record, fileOffset: 0L);
 
     private void Install(SafeFileHandle handle)
     {

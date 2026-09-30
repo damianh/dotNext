@@ -117,6 +117,7 @@ internal sealed class Simulation : IAsyncDisposable
         try
         {
             await LivenessAsync();
+            await ObserveAsync(); // collect proposals that completed while the handlers drained
             await CheckpointAsync();
             history.RequireAcknowledgedWritesPreserved();
         }

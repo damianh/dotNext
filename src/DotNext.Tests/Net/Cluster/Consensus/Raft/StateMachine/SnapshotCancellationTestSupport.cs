@@ -22,11 +22,47 @@ internal sealed class ByteStateMachine(DirectoryInfo location) : SimpleStateMach
         State = await File.ReadAllBytesAsync(snapshotFile.FullName, token);
     }
 
-    protected override ValueTask PersistAsync(IAsyncBinaryWriter writer, CancellationToken token)
-        => writer.Invoke(State, token);
+    /// <summary>
+    /// Runs inside <c>PersistAsync</c>, which is the background snapshotting of the state.
+    /// </summary>
+    internal Func<CancellationToken, ValueTask> BeforePersist { get; set; }
+
+    /// <summary>
+    /// Makes applying a regular entry start a background snapshot.
+    /// </summary>
+    internal bool SnapshotOnApply { get; set; }
+
+    protected override async ValueTask PersistAsync(IAsyncBinaryWriter writer, CancellationToken token)
+    {
+        if (BeforePersist is { } hook)
+            await hook(token);
+
+        await writer.Invoke(State, token);
+    }
 
     protected override ValueTask<bool> ApplyAsync(LogEntry entry, CancellationToken token)
-        => ValueTask.FromResult(false);
+        => ValueTask.FromResult(SnapshotOnApply);
+}
+
+/// <summary>
+/// Lets the test act at the moment the WAL hands a snapshot to the state machine.
+/// </summary>
+internal sealed class SnapshotApplyProbe(ByteStateMachine machine, Action onSnapshotApply) : IStateMachine
+{
+    public bool IsSnapshotInstallCancellationSafe => machine.As<IStateMachine>().IsSnapshotInstallCancellationSafe;
+
+    public ISnapshot Snapshot => machine.As<IStateMachine>().Snapshot;
+
+    public ValueTask<long> ApplyAsync(LogEntry entry, CancellationToken token)
+    {
+        if (entry.IsSnapshot)
+            onSnapshotApply();
+
+        return machine.As<IStateMachine>().ApplyAsync(entry, token);
+    }
+
+    public ValueTask ReclaimGarbageAsync(long watermark, CancellationToken token)
+        => machine.As<IStateMachine>().ReclaimGarbageAsync(watermark, token);
 }
 
 /// <summary>

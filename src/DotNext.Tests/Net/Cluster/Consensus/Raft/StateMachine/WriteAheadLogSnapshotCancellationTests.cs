@@ -164,6 +164,39 @@ public sealed class WriteAheadLogSnapshotCancellationTests : Test
         await AssertFaultedAsync(wal, error);
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task CancellationFromFailedBackgroundSnapshotFaultsLog()
+    {
+        // The install first waits for the local background snapshot. Its cancellation is not the request's, and the
+        // faulted snapshot is never cleared, so it must not be mistaken for routine cancellation of the request.
+        using var request = new CancellationTokenSource();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var options = CreateOptions();
+        await using var machine = new ByteStateMachine(new(GetTempPath()))
+        {
+            SnapshotOnApply = true,
+            BeforePersist = async _ =>
+            {
+                await release.Task;
+                throw new OperationCanceledException();
+            },
+        };
+        await machine.RestoreAsync(TestToken);
+        var probe = new SnapshotApplyProbe(machine, () =>
+        {
+            request.Cancel();
+            release.SetResult();
+        });
+        await using var wal = new WriteAheadLog(options, probe);
+        await wal.InitializeAsync(TestToken);
+        await SeedAsync(wal);
+
+        var error = await ThrowsAsync<InvalidOperationException>(
+            () => wal.AppendAsync(new ByteSnapshotEntry(SnapshotState, SnapshotTerm), SnapshotIndex, request.Token).AsTask());
+        IsType<OperationCanceledException>(error.InnerException);
+        await AssertFaultedAsync(wal, error);
+    }
+
     private static WriteAheadLog.Options CreateOptions()
         => WriteAheadLogDurabilityTests.CreateOptions(GetTempPath(),
             WriteAheadLog.MemoryManagementStrategy.PrivateMemory, false, 0, WriteAheadLog.IntegrityHashAlgorithm.Crc64);

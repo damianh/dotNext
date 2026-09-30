@@ -250,7 +250,16 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
     {
         // Only a snapshot in progress on this node is dropped here, which doesn't change the application state.
         // It is safe to repeat, because the rollback clears the process.
-        await EndSnapshottingAsync(commit: false).ConfigureAwait(false);
+        try
+        {
+            await EndSnapshottingAsync(commit: false).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException e)
+        {
+            // The local snapshot failed on its own and stays in place, so the same snapshot cannot be applied again.
+            // The cancellation doesn't belong to the request: fail closed.
+            throw new InvalidOperationException(ExceptionMessages.SnapshotInProgressCanceled, e);
+        }
 
         // Transferring the snapshot to a file leaves the application state untouched and observes the request token.
         var newSnapshot = new Snapshot(location, entry.Index, entry.Term, writerFactory);

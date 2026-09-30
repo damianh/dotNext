@@ -826,7 +826,11 @@ restored state that the WAL treats as routine.
   `{index}-{term}` snapshot file is created only by `Commit()`, so a cancelled
   transfer never becomes the snapshot and is never picked up on restart.
 - `EndSnapshottingAsync(commit: false)` only rolls back a local snapshot in
-  progress and clears it, so repeating it on the retransmission is a no-op.
+  progress and clears it, so repeating it on the retransmission is a no-op. If
+  that local snapshot has itself failed with a cancellation (for example on
+  disposal), the failed task is never cleared and every later install would
+  rethrow it, so the cancellation is rethrown as `InvalidOperationException` and
+  the WAL fails closed instead of treating it as routine.
 - `RestoreAsync` runs under the state machine's lifetime token, not the request
   token. Once it starts the state can be partially rebuilt, so a cancelled request
   must not interrupt it. An `OperationCanceledException` from the restore (only

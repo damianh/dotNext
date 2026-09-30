@@ -16,7 +16,7 @@ using BoxedClusterMemberId = Runtime.BoxedValue<ClusterMemberId>;
 /// The actual state doesn't persist on disk and exists only in memory, cannot append non-empty log entries
 /// and skips any configuration log entries.
 /// </remarks>
-public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuardedAuditTrail
+public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuardedAuditTrail, IManagedConfigurationAuditTrail
 {
     [StructLayout(LayoutKind.Auto)]
     private readonly struct EntryList : IReadOnlyList<EmptyLogEntry>
@@ -87,6 +87,7 @@ public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuar
     // boxed ClusterMemberId or null if there is no last vote stored
     private volatile BoxedClusterMemberId? lastVote;
     private volatile long[] log = [];    // log of uncommitted entries
+    private volatile bool configurationManaged;
 
     /// <inheritdoc cref="IPersistentState.Term"/>
     public long Term
@@ -380,6 +381,13 @@ public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuar
     
     /// <inheritdoc/>
     public IClusterConfigurationStorage? ConfigurationStorage { get; set; }
+
+    /// <inheritdoc/>
+    bool IManagedConfigurationAuditTrail.IsConfigurationManaged
+    {
+        get => configurationManaged;
+        set => configurationManaged = value;
+    }
 
     /// <inheritdoc/>
     ValueTask IAuditTrail.WaitForApplyAsync(CancellationToken token)

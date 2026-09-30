@@ -198,11 +198,17 @@ Nothing progresses on its own:
   changes the cluster size.
 - `DetectAsync` invokes the production unavailable-member callback (under
   `membershipLock`). `AppendRemovalAsync` appends an unreplicated removal
-  directly, to model a change that reached only part of the cluster.
+  directly, through the internal storage-level append, to model a change that
+  reached only part of the cluster. The public
+  `ClusterConfigurationExtensions.AppendAsync` rejects a running node's log.
 
 `MembershipConfigurationTests` covers issue #18: a manual add/remove, a second
 detection, and a change by a new leader must each preserve an unapplied removal.
 It also covers the stale-term detection and single-entry appends.
+`ConfigurationAppendBoundaryTests` covers #48: `ReplicateAsync` and the public
+`AppendAsync` extension cannot put a configuration into a running leader's log
+behind the membership API, and a node rejoins when its uncommitted removal is
+overwritten.
 `TermGuardedAppendTests` covers the log-level term guard for the WAL and
 `ConsensusOnlyState`.
 

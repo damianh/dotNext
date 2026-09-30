@@ -453,7 +453,7 @@ rules from Ongaro's thesis, chapter 4.
 
 | Rule | Status |
 |---|---|
-| R1: one change at a time | Holds. On one leader, `membershipLock` serializes changes. Since #49, a leader builds a change only after the latest configuration in its log and an entry of its own term are committed and applied locally (`LoadLatestConfigurationAsync` waits for `max(configuration index, write barrier)`). A change inherited from a previous leader, or appended by the failure detector, is therefore committed before the next change is appended. The whole-log apply barrier from #18 is kept only for a cluster that does not derive its configuration from the log (see below). |
+| R1: one change at a time | Holds. On one leader, `membershipLock` serializes changes. Since #49, a leader builds a change only after the latest configuration in its log and an entry of its own term are committed and applied locally (`LoadLatestConfigurationAsync` waits for `max(configuration index, write barrier)`). A change inherited from a previous leader, or appended by the failure detector, is therefore committed before the next change is appended. The whole-log apply barrier from #18 is kept only for a cluster that does not derive its configuration from the log (see below). Since #48, the rule is also enforced at the public append boundary; see [Configuration append paths](#configuration-append-paths). |
 | R2: a server uses the latest configuration in its log | Holds since #49 for the TCP/UDP and HTTP hosts. The latest configuration entry in the log becomes active as soon as it is appended, committed or not, on leaders and followers. Votes, pre-votes, commit and lease quorums, and replication targets are all counted against it. See [Log-derived configuration](#log-derived-configuration). Before #49 a configuration took effect only when it was applied and `ConfigurationPollingLoop` swapped `members`, which allowed two leaders in one term (#49, CE-2). |
 | R3: a new leader commits an entry of its term before changing configuration | Holds. `CandidateState` appends the election no-op; membership changes wait for it to be committed and applied (the leader's write barrier). |
 | R4: catch up new servers first | Holds (`ReplicationProcess.CatchUpAsync`). Since #54, warm-up accepts any matching-prefix acknowledgment (`Replicated` or `ReplicatedWithLeaderTerm`, from AppendEntries or InstallSnapshot) that reaches the leader's commit index captured at the start of warm-up. Before, it required an entry of the leader's term, so a node that was already caught up, for example a removed node being re-added, got only empty heartbeats and was never accepted. Since #52, an actual acknowledgment is always required: a round that is rejected or reports an unsupported version never catches the member up, even when the watermark is 0. Before, `ReplicatedIndex` was 0 for such a round, so it satisfied a watermark of 0. Higher-term responses still do not count. Commit and lease quorum counting are unchanged: they still treat such acknowledgments as `Touched`. |
@@ -513,9 +513,9 @@ of a newer term. That is equivalent to append-then-step-down: the old leader
 state is stopped before this node votes or accepts newer-term entries, so a
 late entry that was not already replicated cannot be committed and is
 truncated by the next leader. Other `IPersistentState` implementations get a
-best-effort pre-check. The guard covers membership appends only;
-`ClusterConfigurationExtensions.AppendAsync` and replication still accept a
-caller-supplied term.
+best-effort pre-check. The guard covers membership appends only; the
+internal storage-level `ClusterConfigurationExtensions.AppendAsync` overload
+and replication still accept a caller-supplied term.
 
 **Resolution of the OPEN QUESTION (#49): apply-time adoption does not preserve
 quorum overlap, and is replaced.**
@@ -544,6 +544,43 @@ adoption with the fork's earlier stages remains an open follow-up.
 when the host applies it through `ChangeConfigurationAsync`, and changes wait
 for the whole log to be applied. That mode is still exposed to #49 and is kept
 only for compatibility.
+
+### Configuration append paths
+
+Recorded for #48. The single-change rule (R1) holds for a configuration entry
+that enters a leader's log through a path that takes `membershipLock`, waits
+for the commit barrier, uses the term guard and activates the entry on the
+leader. Before #48, `ReplicateAsync` and the public
+`ClusterConfigurationExtensions.AppendAsync` put a configuration entry into a
+running leader's log with none of these. The leader kept counting over the
+previous member set while followers activated the entry on append (a CE-1
+style divergence). The next `AddMemberAsync` or `RemoveMemberAsync` was then
+built from the stale active configuration and silently reverted the bypassed
+change (`ConfigurationAppendBoundaryTests`).
+
+| Path | Status |
+|---|---|
+| `AddMemberAsync`, `RemoveMemberAsync` and the hosts' add and remove APIs | Supported. |
+| `UnavailableMemberDetected` and the protected `UnavailableMemberDetected<TAddress>` helper | Supported. The helper must be called from the failure-detection callback, which holds `membershipLock`. |
+| `RaftCluster.ReplicateAsync` (also `IReplicationCluster<IRaftLogEntry>.ReplicateAsync`, which the HTTP host registers in DI) | Rejects an entry with `IsConfiguration == true` (`ArgumentException`), in every mode. The `RaftClusterExtensions.ReplicateAsync` helpers never produce configuration entries. |
+| Public `ClusterConfigurationExtensions.AppendAsync(IPersistentState, ...)` | Throws `InvalidOperationException` on the log of a started cluster that derives its configuration from the log (WAL and `ConsensusOnlyState`). On a standalone log, or one whose cluster completed `StopAsync` or was disposed, it is a plain storage-level append, as before. If `StopAsync` is canceled before the shutdown transition finishes, the log stays guarded until the cluster is disposed. |
+| Raw `IPersistentState`/`IAuditTrail` appends on `AuditTrail` (`AppendAsync` of a custom entry, the producer and start-index overloads, `AppendAndCommitAsync`) | Not guarded. Followers use them for replication and snapshot installation, so they cannot reject configuration entries. Calling them on a running cluster's log is outside the membership contract. |
+| Custom `IPersistentState` implementations | Not guarded; the public extension cannot tell that the log is attached to a cluster. |
+| A cluster that does not call `UseLogConfiguration` | Only `ReplicateAsync` is guarded; the public extension is not blocked in that compatibility mode. |
+| Candidate no-op; protected `ChangeConfigurationAsync` | Not configuration appends. `ChangeConfigurationAsync` edits `members` directly and serves only the compatibility mode. |
+
+The removed-node side is unchanged: a node outside its own configuration still
+accepts AppendEntries, and returns to the configuration when a new leader
+overwrites its uncommitted removal.
+
+The guard on the public extension is a misuse tripwire, not a lock. It reads the
+managed marker before the append, so it is not atomic with the append itself: a
+call that was admitted just before `StartAsync` set the marker can still land
+behind the startup scan. Appending to a log directly while its cluster is
+starting is outside the membership contract, like the raw appends above. Making
+the check atomic would need a storage primitive that tests the marker under the
+write-ahead log's append lock; that is a larger storage change and is not part
+of #48.
 
 ## Leader lease timing model
 

@@ -54,4 +54,8 @@ internal static class ExceptionMessages
     internal static string MissingWalPage(uint pageIndex) => Resources.Get().Format(pageIndex);
 
     internal static string StateMachineIsNotRestored => (string)Resources.Get();
+
+    internal static string ConfigurationEntryNotReplicable => (string)Resources.Get();
+
+    internal static string ConfigurationManagedByCluster => (string)Resources.Get();
 }

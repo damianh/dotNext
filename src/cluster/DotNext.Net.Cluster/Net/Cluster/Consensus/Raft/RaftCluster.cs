@@ -368,31 +368,49 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <seealso cref="StartFollowing"/>
     public virtual async Task StartAsync(CancellationToken token = default)
     {
-        await AuditTrail.InitializeAsync(token).ConfigureAwait(false);
+        // Guard the log before initialization, which is an append barrier, and keep it guarded while the active
+        // configuration is scanned. Otherwise a concurrent configuration append can land behind the scan
+        // and never be activated.
+        var managedLog = activeConfiguration is not null ? AuditTrail as IManagedConfigurationAuditTrail : null;
+        var wasManaged = managedLog?.IsConfigurationManaged ?? false;
+        if (managedLog is not null)
+            managedLog.IsConfigurationManaged = true;
 
-        // the active configuration is the latest configuration in the log, or the applied one
-        if (activeConfiguration is not null)
+        try
         {
-            await transitionLock.AcquireAsync(token).ConfigureAwait(false);
-            try
+            await AuditTrail.InitializeAsync(token).ConfigureAwait(false);
+
+            // the active configuration is the latest configuration in the log, or the applied one
+            if (activeConfiguration is not null)
             {
-                await LoadConfigurationAsync(token).ConfigureAwait(false);
+                await transitionLock.AcquireAsync(token).ConfigureAwait(false);
+                try
+                {
+                    await LoadConfigurationAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    transitionLock.Release();
+                }
             }
-            finally
-            {
-                transitionLock.Release();
-            }
+
+            // A restarted voter may have acknowledged a leader lease just before the crash. Leader stickiness
+            // is not persisted, so the node treats startup as leader activity and refuses to vote for one
+            // election timeout, which is not shorter than any lease issued by a leader with the same settings.
+            if (leaseEnabled)
+                Timestamp.Refresh(ref lastUpdated, TimeProvider);
+
+            InitializeState();
         }
+        catch
+        {
+            // a repeated start must not release the guard of a node that is already running
+            if (managedLog is not null)
+                managedLog.IsConfigurationManaged = wasManaged;
 
-        // A restarted voter may have acknowledged a leader lease just before the crash. Leader stickiness
-        // is not persisted, so the node treats startup as leader activity and refuses to vote for one
-        // election timeout, which is not shorter than any lease issued by a leader with the same settings.
-        if (leaseEnabled)
-            Timestamp.Refresh(ref lastUpdated, TimeProvider);
-
-        InitializeState();
+            throw;
+        }
     }
-
     private void InitializeState()
     {
         if (members.LocalMember is not { } member)
@@ -582,21 +600,29 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
 
         async Task StopAsync()
         {
-            transitionCancellation.Cancel(false);
-            await CancelPendingRequestsAsync().ConfigureAwait(false);
             var lockTaken = false;
+            var stopped = false;
             try
             {
+                transitionCancellation.Cancel(false);
+                await CancelPendingRequestsAsync().ConfigureAwait(false);
+
                 await transitionLock.AcquireAsync(token).ConfigureAwait(false);
                 lockTaken = true;
 
                 await MoveToStandbyState(resumable: false).ConfigureAwait(false);
                 LocalMemberGone();
+                stopped = true;
             }
             finally
             {
                 if (lockTaken)
                     transitionLock.Release();
+
+                // If the shutdown did not complete, the state may still be active and a repeated StopAsync returns
+                // early, so the log stays guarded until the cluster is disposed.
+                if (stopped)
+                    ReleaseConfigurationGuard();
             }
         }
 
@@ -1547,10 +1573,17 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <summary>
     /// Appends a new log entry and ensures that it is replicated and committed.
     /// </summary>
+    /// <remarks>
+    /// Configuration entries are rejected: a membership change must go through
+    /// <see cref="AddMemberAsync{TAddress}(TMember, int, Membership.IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>
+    /// or <see cref="RemoveMemberAsync{TAddress}(ClusterMemberId, Membership.IClusterConfigurationStorage{TAddress}, Func{TMember, TAddress}, CancellationToken)"/>,
+    /// which allow one change at a time and activate it on the leader.
+    /// </remarks>
     /// <typeparam name="TEntry">The type of the log entry.</typeparam>
     /// <param name="entry">The log entry to be added.</param>
     /// <param name="token">The token that can be used to cancel the operation.</param>
     /// <exception cref="ObjectDisposedException">This object has been disposed.</exception>
+    /// <exception cref="ArgumentException"><paramref name="entry"/> is a configuration entry (<see cref="IRaftLogEntry.IsConfiguration"/>).</exception>
     /// <exception cref="NotLeaderException">The current node is not a leader.</exception>
     /// <exception cref="OperationCanceledException">The operation has been canceled.</exception>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -1558,6 +1591,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         where TEntry : IRaftLogEntry
     {
         ObjectDisposedException.ThrowIf(IsDisposed, this);
+
+        if (entry.IsConfiguration)
+            throw new ArgumentException(ExceptionMessages.ConfigurationEntryNotReplicable, nameof(entry));
 
         var leaderState = LeaderStateOrException;
         var tokenSource = CombineTokens(token, leaderState.Token);
@@ -1606,6 +1642,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <inheritdoc />
     IReadOnlySet<EndPoint> IPeerMesh.Peers => new HashSet<EndPoint>(members.Values.Select(static m => m.EndPoint), EndPointComparer);
 
+    private void ReleaseConfigurationGuard()
+    {
+        if (AuditTrail is IManagedConfigurationAuditTrail managedLog)
+            managedLog.IsConfigurationManaged = false;
+    }
+
     /// <inheritdoc />
     protected override void Dispose(bool disposing)
     {
@@ -1619,6 +1661,7 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
             membershipLock.Dispose();
             transitionLock.Dispose();
             state.Dispose();
+            ReleaseConfigurationGuard();
             TrySetDisposedException(Volatile.Read(in readinessProbe));
 
             memberAddedHandlers = memberRemovedHandlers = default;

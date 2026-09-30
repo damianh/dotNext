@@ -107,6 +107,11 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
   reject its vote requests.
 * **Warm-up (`CatchUpAsync`) needs an actual acknowledgment** (#52). A rejected or unsupported-version response no
   longer catches a new member up when the leader's commit index is 0.
+* **A configuration entry enters a running leader's log only through the membership API** (#48). `ReplicateAsync`
+  rejects configuration entries, and the public `ClusterConfigurationExtensions.AppendAsync` rejects the log of a
+  started cluster that derives its configuration from the log. Upstream accepts both, and the leader then counts over a
+  different member set than its followers. See
+  [Configuration append paths](RAFT-REVIEW.md#configuration-append-paths).
 * A `RaftCluster<TMember>` subclass that does not call `UseLogConfiguration` keeps the apply-time behaviour.
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
@@ -125,6 +130,8 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 | `DotNext.IO.Log.ILogCompactionSupport` | removed in 6.8.0 (breaking change in a minor release) | removed too (follows upstream) |
 | `RaftCluster<TMember>.UseLogConfiguration` (protected) | absent | **added**: enables the log-derived active configuration (#49) |
 | `IClusterConfigurationStorage<TAddress>.ReadConfigurationAsync` | absent | **added** (required interface member: implementations must decode configuration log entries; a breaking change for custom storages) |
+| `RaftCluster<TMember>.ReplicateAsync` | accepts any entry | **throws `ArgumentException`** for an entry with `IsConfiguration == true` (#48) |
+| `ClusterConfigurationExtensions.AppendAsync(IPersistentState, IClusterConfiguration<TAddress>, CancellationToken)` | appends to any log | **throws `InvalidOperationException`** on the WAL or `ConsensusOnlyState` of a started cluster that uses `UseLogConfiguration` (#48) |
 
 ## Fork-only fixes
 All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests are in `damianh/dotNext`:
@@ -133,7 +140,8 @@ All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests ar
 unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush target), #39 (test hangs/flakes),
 #40 (flusher failure), #41 (snapshot flush alignment), #42 (applied index regression), #43 (restore no-op snapshot
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
-configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration).
+configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
+#69 (configuration append boundary).
 
 ## Upstream sync log
 

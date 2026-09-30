@@ -424,7 +424,7 @@ confirmed core defects; overlapping consequences are not counted twice.
 | S2: plaintext/TLS defaults | Host transport-security choice | TLS is optional and supplied options use platform certificate validation. Absence of built-in mTLS or pinning is not disabled certificate validation. |
 | S3: custom-message dispatch | Downstream consequence of S1 | Host/handler authorization must protect dispatch; do not count it as an independent authentication defect. |
 | S4: leader open redirect | Rejected as stated | The implementation replaces host and port with the leader destination. Probes retained that destination despite attacker-controlled input. Forwarded-scheme trust is a separate deployment concern. |
-| S5: torn term/vote/checkpoint records | Unproven; platform-dependent durability assumption | Missing CRC/double buffering alone does not demonstrate tearing or double voting. The records are 37 and 12 bytes, written with `WriteThrough`; filesystem/device guarantees and an explicit crash model are needed. No universal atomicity guarantee is asserted. |
+| S5: torn term/vote/checkpoint records | Unproven; platform-dependent durability assumption. #24: the crash model is documented, and a related process-crash defect (term published before it was durable) is fixed, see "Term/vote durability (#24)" | Missing CRC/double buffering alone does not demonstrate tearing or double voting. The term/vote record is 37 bytes, unchecksummed, in place, written with `WriteThrough`. (The checkpoint is no longer a small record: it is three checksummed 64 KiB generational slots plus sidecars, see FORK-DIVERGENCE.md.) Filesystem/device guarantees and an explicit crash model are needed. No universal atomicity guarantee is asserted. |
 | S6: replay protection | Bounded deduplication, not an established security promise | The cache is expiring, evictable, and process-local. Qualify the internal "exactly-once" wording; no cryptographic replay-protection contract was established. |
 | O1: heartbeat exceptions | Confirmed new finding 16 | The task faults without invalidating leadership. The second review's election-timeout duration bound is unsupported. |
 | O2: failure-induced standby | Behavior confirmed; remedy overstated | Manual recovery is available and transition failure already logs at Critical. Automatically retrying after an unknown failure is not necessarily safe. |
@@ -896,6 +896,76 @@ Two tests that asserted the old poisoned behaviour were updated:
 `SimpleStateMachineSnapshotTests.FailedOutgoingSnapshotIsRolledBack` and
 `WriteAheadLogSnapshotCancellationTests.CancelledBackgroundSnapshotDoesNotBlockSnapshotInstall`.
 
+## Term/vote durability (#24)
+
+**Question.** Is the term/vote record (`WriteAheadLog.NodeState`, S5) durable
+before it is acted on, within the process-crash model?
+
+**Crash model used.** A dispose and reopen of the WAL at the same location, then
+a restart of the node. Fault injection swaps the private `state` file handle for
+a read-only handle to the same file (`NodeStateFault`, test-only reflection; no
+runtime seam was added). Power loss is out of scope and is documented in
+`src\cluster\README.md` (Supported storage and crash model).
+
+**Hypotheses.**
+
+| # | Hypothesis | Result |
+|---|---|---|
+| H1 | A vote is granted, or a reply carries `Value = true`, before it is durable | Not reproduced. The handler sets `Value = true` only after `UpdateVotedForAsync` returns. Guards: `FailedVoteWriteGrantsNothing`, `CancelledVoteRequestGrantsNothing`. |
+| H2 | After a failed flush, memory is ahead of disk and the node grants X, then Y in the same term after a restart | Not reproduced. A failed request was never granted; a retry rewrites the whole record; before a restart the node only refuses the other candidate (availability, not safety). Guards: `FailedVoteWriteNeverYieldsTwoGrantsInOneTerm`, `RecoveredVoteWriteKeepsTheGrantAcrossRestart`. `FailedWriteThatReachedTheDiskIsNotOverwrittenByLowerTerm` guards the ambiguous-failure path. |
+| H3 | A term is advertised in an RPC reply before it is durable | **Reproduced.** See below. |
+| H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | Documented only (power-loss assumptions). |
+
+**Defect (H3).** `IncrementTerm`, `UpdateTerm` and `UpdateVotedFor` changed the
+in-memory term and vote before `FlushAsync`. When the flush failed, memory stayed
+ahead of disk. A steady follower does not rewrite `state` (`StepDownAsync`
+persists only when the new term is higher than the current one), so after the
+error cleared, the next `AppendEntries` in the new term was acknowledged at a
+term that was never persisted. After a restart the node came back at the old
+term, and a stale leader of that term could overwrite an entry the node had
+acknowledged. Triggers: a failed `UpdateTermAsync` from an `AppendEntries` or
+from a `Vote` request of a higher term.
+
+**Evidence.**
+
+- Baseline SHA: `b7f39ab4085963e425a24bfe017119ca1d611e2f` (`origin/fork`), with
+  only the new tests applied.
+- Command: `dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.TermVoteDurabilityTests' --progress off`
+- Expected: after a restart the durable term equals the acknowledged term
+  (`AcknowledgedTermSurvivesRestart`), and a stale-term `AppendEntries` does not
+  overwrite the acknowledged entry (`StaleLeaderCannotOverwriteAcknowledgedEntry`).
+- Observed on baseline: 9 tests, 5 passed, 4 failed (both H3 tests, each for the
+  `AppendEntries` and `Vote` triggers). H1, H2 and the no-fault control passed.
+- Observed with the fix: 10 tests (9 plus the ambiguous-failure guard), 10 passed.
+
+**Fix (persisted format unchanged).** Publish after durable. `StageTerm`,
+`StageIncrementedTerm` and `StageVote` fill the 37-byte buffer with the complete
+next record without touching the published fields; the `IPersistentState`
+method awaits `FlushAsync` under `stateLock`, and only then does `Publish()` set
+the in-memory term and vote. A failed or cancelled flush leaves the published
+state equal to what was last acknowledged. If the bytes did reach the disk
+anyway (an ambiguous failure), the disk is ahead of memory. A failed write marks the
+record suspect and immediately reads it back and publishes it (what is on disk is durable),
+so RPCs do not keep acting on an older term. If that read fails, the next term/vote
+operation first reads the record back under `stateLock`. If it differs from what
+was published, that operation fails with an `IOException` and the caller
+re-evaluates on fresh state; otherwise it proceeds. Without this, a later write
+derived from the stale published term could lower the durable term. If that read-back
+fails, the operation fails and nothing is written. Residual gap, not fixed: while
+the record is suspect (failed write that reached the disk, then a failed read of the
+same file), an `AppendEntries` at the old published term performs no write and can
+still be acknowledged. Making RPCs fail closed in that state was judged out of scope
+for an investigation PR; it needs broad storage failure to occur.
+
+
+**Alternatives rejected.** Poisoning the WAL on a `state` write failure (it
+conflicts with the cancellation handling of #53). Raising the term from the last
+log term at startup (changes recovery semantics and does not cover replies that
+were already sent).
+
+**Not implemented (proposals).** A directory fsync after the first creation of
+`state` (H5), and failing closed on a `state` file of 1 to 36 bytes (H7). Neither
+has a red test in the process-crash model.
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,

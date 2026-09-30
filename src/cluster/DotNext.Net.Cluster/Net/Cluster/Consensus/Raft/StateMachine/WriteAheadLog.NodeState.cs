@@ -29,6 +29,8 @@ partial class WriteAheadLog
         private readonly byte[] buffer;
         private volatile BoxedClusterMemberId? votedFor;
         private long term; // volatile
+        private (long Term, BoxedClusterMemberId? Vote) staged;
+        private bool suspect;
 
         public NodeState(DirectoryInfo location)
         {
@@ -65,36 +67,80 @@ partial class WriteAheadLog
         
         public readonly bool IsVotedFor(in ClusterMemberId expected) => IPersistentState.IsVotedFor(votedFor, expected);
         
-        public void UpdateTerm(long value, bool resetLastVote)
-        {
-            WriteInt64LittleEndian(buffer.AsSpan(TermOffset), value);
-            if (resetLastVote)
-            {
-                votedFor = null;
-                buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(false);
-            }
+        // Staging fills the write buffer with the complete next record but leaves the published term and vote
+        // untouched. The published values change only after FlushAsync succeeds, so a failed or cancelled write
+        // never lets the node act on a term or vote that is not durable.
+        public void StageTerm(long value, bool resetLastVote)
+            => Stage(value, resetLastVote ? null : votedFor);
 
-            Atomic.Write(ref term, value);
-        }
-        
-        public long IncrementTerm(ClusterMemberId id)
+        public long StageIncrementedTerm(ClusterMemberId id)
         {
-            var result = Interlocked.Increment(ref term);
-            WriteInt64LittleEndian(buffer.AsSpan(TermOffset), result);
-            UpdateVotedFor(id);
+            var result = Term + 1L;
+            Stage(result, BoxedClusterMemberId.Box(id));
             return result;
         }
-        
-        public void UpdateVotedFor(ClusterMemberId id)
+
+        public void StageVote(ClusterMemberId id)
+            => Stage(Term, BoxedClusterMemberId.Box(id));
+
+        private void Stage(long newTerm, BoxedClusterMemberId? newVote)
         {
-            votedFor = BoxedClusterMemberId.Box(id);
-            buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(true);
-            id.Format(buffer.AsSpan(LastVoteOffset));
+            WriteInt64LittleEndian(buffer.AsSpan(TermOffset), newTerm);
+            if (newVote is null)
+            {
+                buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(false);
+            }
+            else
+            {
+                buffer[LastVotePresenceOffset] = Unsafe.BitCast<bool, byte>(true);
+                newVote.Value.Format(buffer.AsSpan(LastVoteOffset));
+            }
+
+            staged = (newTerm, newVote);
+        }
+
+        public void Publish()
+        {
+            var (newTerm, newVote) = staged;
+            votedFor = newVote;
+            Atomic.Write(ref term, newTerm);
         }
 
         public readonly ValueTask FlushAsync(CancellationToken token = default)
             => RandomAccess.WriteAsync(handle, buffer, fileOffset: 0L, token);
 
+        public readonly bool IsSuspect => suspect;
+
+        // A failed or cancelled write may still have reached the file, so the file, not memory, is the truth.
+        public void MarkSuspect() => suspect = true;
+
+        // Publishes the record read back from the file. Whatever is on disk is durable, so publishing it is safe.
+        // Returns true if the record differs from what was published before the failed write.
+        public readonly async ValueTask<byte[]> ReadRecordAsync(CancellationToken token)
+        {
+            var actual = new byte[Size];
+            if (await RandomAccess.ReadAsync(handle, actual, fileOffset: 0L, token).ConfigureAwait(false) < actual.Length)
+                throw new IOException("The term/vote record cannot be read back after a failed write");
+
+            return actual;
+        }
+
+        public bool Reconcile(byte[] actual)
+        {
+            var diskTerm = ReadInt64LittleEndian(actual.AsSpan(TermOffset));
+            var diskVote = Unsafe.BitCast<byte, bool>(actual[LastVotePresenceOffset])
+                ? BoxedClusterMemberId.Box(new ClusterMemberId(actual.AsSpan(LastVoteOffset)))
+                : null;
+
+            var changed = diskTerm != Term || !SameVote(diskVote, votedFor);
+            votedFor = diskVote;
+            Atomic.Write(ref term, diskTerm);
+            suspect = false;
+            return changed;
+
+            static bool SameVote(BoxedClusterMemberId? x, BoxedClusterMemberId? y)
+                => x is null ? y is null : y is not null && x.Value == y.Value;
+        }
         public void Dispose()
         {
             handle?.Dispose();
@@ -108,6 +154,45 @@ partial class WriteAheadLog
     /// <inheritdoc/>
     long IPersistentState.Term => state.Term;
 
+    // A failed write may have persisted the record anyway. Until the record is read back, nothing may be staged:
+    // the next write would derive from the published term and could lower the durable one. When the disk turns out
+    // to differ from what this request was decided on, the request fails and the caller re-evaluates.
+    private async ValueTask ReconcileStateAsync(CancellationToken token)
+    {
+        if (state.IsSuspect && state.Reconcile(await state.ReadRecordAsync(token).ConfigureAwait(false)))
+            throw new IOException("The term/vote record was changed by an interrupted write");
+    }
+
+    // Best effort right after a failed write, so that RPCs do not keep reading a term older than the durable one.
+    // If the read-back fails too, the record stays suspect and the next term/vote operation fails closed.
+    private async ValueTask TryReconcileAsync()
+    {
+        try
+        {
+            state.Reconcile(await state.ReadRecordAsync(CancellationToken.None).ConfigureAwait(false));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // stays suspect
+        }
+    }
+
+    private async ValueTask FlushStateAsync(CancellationToken token)
+    {
+        try
+        {
+            await state.FlushAsync(token).ConfigureAwait(false);
+        }
+        catch
+        {
+            state.MarkSuspect();
+            await TryReconcileAsync().ConfigureAwait(false);
+            throw;
+        }
+
+        state.Publish();
+    }
+
     /// <inheritdoc/>
     async ValueTask<long> IPersistentState.IncrementTermAsync(ClusterMemberId member, CancellationToken token)
     {
@@ -115,8 +200,9 @@ partial class WriteAheadLog
         long term;
         try
         {
-            term = state.IncrementTerm(member);
-            await state.FlushAsync(token).ConfigureAwait(false);
+            await ReconcileStateAsync(token).ConfigureAwait(false);
+            term = state.StageIncrementedTerm(member);
+            await FlushStateAsync(token).ConfigureAwait(false);
         }
         finally
         {
@@ -132,8 +218,9 @@ partial class WriteAheadLog
         await stateLock.AcquireAsync(token).ConfigureAwait(false);
         try
         {
-            state.UpdateTerm(term, resetLastVote);
-            await state.FlushAsync(token).ConfigureAwait(false);
+            await ReconcileStateAsync(token).ConfigureAwait(false);
+            state.StageTerm(term, resetLastVote);
+            await FlushStateAsync(token).ConfigureAwait(false);
         }
         finally
         {
@@ -147,8 +234,9 @@ partial class WriteAheadLog
         await stateLock.AcquireAsync(token).ConfigureAwait(false);
         try
         {
-            state.UpdateVotedFor(member);
-            await state.FlushAsync(token).ConfigureAwait(false);
+            await ReconcileStateAsync(token).ConfigureAwait(false);
+            state.StageVote(member);
+            await FlushStateAsync(token).ConfigureAwait(false);
         }
         finally
         {

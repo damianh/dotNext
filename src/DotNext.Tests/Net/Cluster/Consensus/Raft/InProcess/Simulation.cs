@@ -117,7 +117,11 @@ internal sealed class Simulation : IAsyncDisposable
         try
         {
             await LivenessAsync();
-            await ObserveAsync(); // collect proposals that completed while the handlers drained
+
+            // quiesce the clients: after this no proposal can change its outcome, so the final observation is complete
+            await lifetime.CancelAsync();
+            await Task.WhenAll(proposals.Select(static p => p.Task.ContinueWith(static _ => { }, TaskScheduler.Default))).WaitAsync(Guard, token);
+            await ObserveAsync();
             await CheckpointAsync();
             history.RequireAcknowledgedWritesPreserved();
         }

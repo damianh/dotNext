@@ -12,4 +12,11 @@ internal static class TestCollections
     internal const string AdvancedSynchronization = "AdvancedAsync";
 
     internal const string WriteAheadLog = "WAL";
+
+    // GC.GetTotalAllocatedBytes is process-wide, so allocation budgets are measured without parallel tests
+    internal const string AllocationBudget = "AllocationBudget";
 }
+
+[ExcludeFromCodeCoverage]
+[CollectionDefinition(TestCollections.AllocationBudget, DisableParallelization = true)]
+public sealed class AllocationBudgetCollection;

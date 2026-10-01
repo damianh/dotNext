@@ -54,6 +54,12 @@ public class HttpClusterMemberConfiguration : ClusterMemberConfiguration, IClust
     /// <summary>
     /// Gets or sets request timeout used to communicate with cluster members.
     /// </summary>
+    /// <remarks>
+    /// The timeout also bounds the processing of incoming AppendEntries, InstallSnapshot and Synchronize requests,
+    /// so that a peer that stalls in the middle of the request body cannot hold the node for longer than that.
+    /// The connection of a request that exceeds the timeout is aborted. The leader gives up on the request after its own
+    /// request timeout, so all members of the cluster should use the same value.
+    /// </remarks>
     /// <value>HTTP request timeout; default is <see cref="ClusterMemberConfiguration.UpperElectionTimeout"/>.</value>
     public TimeSpan RequestTimeout
     {

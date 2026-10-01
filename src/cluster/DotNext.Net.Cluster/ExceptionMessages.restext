@@ -23,3 +23,4 @@ ConfigurationEntryNotReplicable=A configuration entry cannot be replicated direc
 ConfigurationManagedByCluster=The log belongs to a running cluster that derives its configuration from the log. Use AddMemberAsync or RemoveMemberAsync to change the cluster membership.
 SnapshotRestoreCanceled=Restoring the state machine from the snapshot was canceled after it started. The state machine can be partially restored.
 SnapshotInProgressCanceled=The snapshot that is being created by the state machine was canceled, so the snapshot received from the leader cannot be installed without reopening the state machine.
+PayloadLengthMismatch=The payload has {0} bytes but its declared length is {1} bytes

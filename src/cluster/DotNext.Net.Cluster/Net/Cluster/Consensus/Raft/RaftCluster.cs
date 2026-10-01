@@ -682,7 +682,10 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         if (activeConfiguration is null)
             return await configurationStorage.SaveConfigurationAsync(configuration, configurationVersion, token).ConfigureAwait(false);
 
-        StageSnapshotConfiguration(senderTerm, await configuration.ToByteArrayAsync(token: token).ConfigureAwait(false), configurationVersion);
+        // the staged payload is persisted later, so an invalid payload must be rejected now, before the snapshot is installed
+        var payload = await configuration.ToByteArrayAsync(token: token).ConfigureAwait(false);
+        await activeConfiguration.ValidateAsync(payload, token).ConfigureAwait(false);
+        StageSnapshotConfiguration(senderTerm, payload, configurationVersion);
         return true;
     }
 

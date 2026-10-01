@@ -1016,30 +1016,30 @@ each follow-up adds its own red test.
 | Candidate | Contract | Test | Result | Follow-up |
 |---|---|---|---|---|
 | C1 TCP stall | A stalled AppendEntries or InstallSnapshot body releases `transitionLock` within `RequestTimeout`, and the log stays usable | `ProtocolInputBudgetTcpTests.Stalled*BodyReleasesTransitionLock` | GREEN: released after about 1.0-1.1 s with `RequestTimeout` = 1 s | - |
-| C1 HTTP stall | Same, for the HTTP endpoint | not committed | **RED (R3)**: no server-side deadline. Without `MinRequestBodyDataRate` the lock was held for more than 15.3 s; with the Kestrel default it was released after about 5.75 s, and then R2 applies | R3 |
-| C1 disconnect (TCP, HTTP) | A peer that disconnects or times out mid-body costs that request only; the log stays usable | not committed | **RED (R2)**: a TCP reset, an HTTP FIN or reset, and a Kestrel minimum data rate failure all reach `OnBackgroundTaskFailure`; every later append and heartbeat fails until the WAL is reopened | R2 |
-| C1 truncation (TCP) | An entry or snapshot whose received payload is shorter than its declared length is never persisted | not committed | **RED (R1, critical)**: a FIN mid-body persists entry 1 with 16 of 1024 bytes, and a complete retransmission at the same index and term does not repair it; an InstallSnapshot installs index 10 from 16 of 1024 bytes; a final frame shorter than the entry metadata length is persisted without any disconnect. HTTP rejects these cases | R1 |
+| C1 HTTP stall | Same, for the HTTP endpoint | not committed | **RED (R3)**: no server-side deadline. Without `MinRequestBodyDataRate` the lock was held for more than 15.3 s; with the Kestrel default it was released after about 5.75 s, and then R2 applies | R3 (#91) |
+| C1 disconnect (TCP, HTTP) | A peer that disconnects or times out mid-body costs that request only; the log stays usable | not committed | **RED (R2)**: a TCP reset, an HTTP FIN or reset, and a Kestrel minimum data rate failure all reach `OnBackgroundTaskFailure`; every later append and heartbeat fails until the WAL is reopened | R2 (#90) |
+| C1 truncation (TCP) | An entry or snapshot whose received payload is shorter than its declared length is never persisted | not committed | **RED (R1, critical)**: a FIN mid-body persists entry 1 with 16 of 1024 bytes, and a complete retransmission at the same index and term does not repair it; an InstallSnapshot installs index 10 from 16 of 1024 bytes; a final frame shorter than the entry metadata length is persisted without any disconnect. HTTP rejects these cases | R1 (#97) |
 | C2a config length | A negative `X-Raft-Config-Length`, or one larger than the known `Content-Length`, is rejected; nothing is installed and the node stays available. Chunked requests are accepted | `ProtocolInputBudgetHttpTests.InconsistentConfigurationLengthIsRejected`, `ChunkedInstallSnapshotIsAccepted` | GREEN: -1, `int.MinValue` and 1024 (with 16 bytes sent) are rejected with 500 | - |
-| C2b config member count | An invalid configuration payload (negative member count, or more members than the payload holds) is rejected without replacing the applied or stored configuration | not committed | **RED (R4)**: a count of -1 decodes as an empty member set (HTTP 200, members 2 to 0); a count of 1000 is persisted before decoding and later loads throw | R4 |
-| C3a staged config | Memory reserved for the staged snapshot configuration is proportional to the bytes received | not committed | **RED (R5)**: 128 MiB declared with `Content-Length` 8 allocated 134 MB; 256 MiB declared over chunked allocated 268 MB | R5 |
-| C3b entry count | A declared entry count beyond the entries delivered drives no allocation, and the follower commits or acknowledges only what it received | `ProtocolInputBudgetTcpTests.DeclaredEntryCountDoesNotDriveAllocation`, `ProtocolInputBudgetHttpTests.EntryCountBeyondDeliveredEntriesIsNotAcknowledged` | GREEN for the WAL (rejected, nothing committed); **RED (R6)** for `ConsensusOnlyState`: 2^25 declared over TCP allocated 268 MB, and HTTP multipart with fewer sections than declared committed a stale tail and a phantom entry (200, `X-Raft-Last-Index` 4) | R6 |
+| C2b config member count | An invalid configuration payload (negative member count, or more members than the payload holds) is rejected without replacing the applied or stored configuration | not committed | **RED (R4)**: a count of -1 decodes as an empty member set (HTTP 200, members 2 to 0); a count of 1000 is persisted before decoding and later loads throw | R4 (#92) |
+| C3a staged config | Memory reserved for the staged snapshot configuration is proportional to the bytes received | not committed | **RED (R5)**: 128 MiB declared with `Content-Length` 8 allocated 134 MB; 256 MiB declared over chunked allocated 268 MB | R5 (#94) |
+| C3b entry count | A declared entry count beyond the entries delivered drives no allocation, and the follower commits or acknowledges only what it received | `ProtocolInputBudgetTcpTests.DeclaredEntryCountDoesNotDriveAllocation`, `ProtocolInputBudgetHttpTests.EntryCountBeyondDeliveredEntriesIsNotAcknowledged` | GREEN for the WAL (rejected, nothing committed); **RED (R6)** for `ConsensusOnlyState`: 2^25 declared over TCP allocated 268 MB, and HTTP multipart with fewer sections than declared committed a stale tail and a phantom entry (200, `X-Raft-Last-Index` 4) | R6 (#96) |
 | C3c entry length | A declared entry length beyond the delivered payload drives no allocation | `ProtocolInputBudgetTcpTests.DeclaredEntryLengthDoesNotDriveAllocation`, `ProtocolInputBudgetHttpTests.DeclaredEntryLengthDoesNotDriveAllocation` | GREEN: under 1 MB for 2^30 and `long.MaxValue`. Persistence of the short entry over TCP is R1 | - |
-| C3d metadata count | A declared metadata pair count drives no allocation before the pairs arrive | `MetadataPayloadBudgetTests.DeclaredPairCountDoesNotDriveAllocation` | GREEN for -1 and `int.MaxValue`; **RED (R7)** for 2^23: 235 MB allocated, then `EndOfStreamException` (TCP client reading a peer's metadata reply) | R7 |
-| C4 duplicate headers | A repeated singleton `X-Raft-*` header (or multipart section header) is rejected without a state change, even with identical values | not committed | **RED (R8)**: 12 of 12 cases accepted with 200; the first parseable value wins (`HttpMessage.TryParseHeader`) | R8 |
+| C3d metadata count | A declared metadata pair count drives no allocation before the pairs arrive | `MetadataPayloadBudgetTests.DeclaredPairCountDoesNotDriveAllocation` | GREEN for -1 and `int.MaxValue`; **RED (R7)** for 2^23: 235 MB allocated, then `EndOfStreamException` (TCP client reading a peer's metadata reply) | R7 (#93) |
+| C4 duplicate headers | A repeated singleton `X-Raft-*` header (or multipart section header) is rejected without a state change, even with identical values | not committed | **RED (R8)**: 12 of 12 cases accepted with 200; the first parseable value wins (`HttpMessage.TryParseHeader`) | R8 (#95) |
 
 **Proposed fixes (one issue and pull request each).**
 
-- R1: `ProtocolStream` throws `EndOfStreamException` at transport EOF inside a frame, and received entries and
+- R1 (#97): `ProtocolStream` throws `EndOfStreamException` at transport EOF inside a frame, and received entries and
   snapshots compare the copied bytes with the declared length. No wire change.
-- R2: the server readers turn transport read failures into cancellation of the request, so the rollback of #53 and #73 applies.
+- R2 (#90): the server readers turn transport read failures into cancellation of the request, so the rollback of #53 and #73 applies.
   Storage I/O errors stay fail-closed.
-- R3: the HTTP handler token includes the node's `RequestTimeout`, as on TCP. Depends on R2.
-- R4: `ClusterConfigurationStorage` rejects a negative count and decodes the payload before persisting it.
-- R5: the staged configuration buffer grows as data arrives; a declared length above a known `Content-Length` is rejected.
-- R6: the multipart reader rejects a section count that differs from `X-Raft-Entries-Count`; `ConsensusOnlyState`
+- R3 (#91): the HTTP handler token includes the node's `RequestTimeout`, as on TCP. Depends on R2.
+- R4 (#92): `ClusterConfigurationStorage` rejects a negative count and decodes the payload before persisting it.
+- R5 (#94): the staged configuration buffer grows as data arrives; a declared length above a known `Content-Length` is rejected.
+- R6 (#96): the multipart reader rejects a section count that differs from `X-Raft-Entries-Count`; `ConsensusOnlyState`
   allocates for the entries enumerated, not the declared count.
-- R7: `MetadataTransferObject` reads without a capacity hint taken from the count.
-- R8: `TryParseHeader` requires exactly one value for singleton headers (request and response).
+- R7 (#93): `MetadataTransferObject` reads without a capacity hint taken from the count.
+- R8 (#95): `TryParseHeader` requires exactly one value for singleton headers (request and response).
 
 **Informational.** `ConsensusOnlyState` accepts an HTTP octet-stream entry whose payload is shorter than its
 declared length; it discards payloads by design, so nothing is persisted.

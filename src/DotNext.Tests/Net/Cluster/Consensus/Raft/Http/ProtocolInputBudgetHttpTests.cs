@@ -33,14 +33,83 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(1);
 
-    // Bounds every request of a test. The slack absorbs scheduling delays on a loaded CI agent.
+    // Longer than Kestrel's MinRequestBodyDataRate grace period (5 seconds by default), so that Kestrel cuts off a stalled body first.
+    private static readonly TimeSpan LongRequestTimeout = TimeSpan.FromSeconds(10);
+
+    // Bounds every request of a test. The node's own request timeout bounds a stalled request (#91).
+    // The slack absorbs scheduling delays on a loaded CI agent, and the deadline stays below Kestrel's
+    // 5 second MinRequestBodyDataRate grace period.
     private static readonly TimeSpan ReleaseDeadline = RequestTimeout + TimeSpan.FromSeconds(2);
 
-    // Bounds a request that only Kestrel's MinRequestBodyDataRate (5 second grace period by default) releases.
+    // Bounds a request that only Kestrel's MinRequestBodyDataRate releases, and how long a test watches a request
+    // that is not released, to report the actual release time.
     private static readonly TimeSpan ObservationLimit = TimeSpan.FromSeconds(15);
 
-    // Gives the server time to parse the headers and enter the handler before the peer disconnects.
+    // Gives the server time to parse the headers and enter the handler before the peer disconnects or the probe is sent.
     private static readonly TimeSpan StallLeadTime = TimeSpan.FromMilliseconds(300);
+
+    // The node's own RequestTimeout must bound how long a request that stalls in the body holds the transition lock,
+    // as the TCP server does with its receive timeout (#91). This must hold without Kestrel's MinRequestBodyDataRate.
+    // The partially received entry or snapshot is rolled back, the log stays usable, and the stalled request
+    // does not get a 2xx response.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public static async Task StalledBodyReleasesTransitionLockWithinRequestTimeout(bool snapshot, bool kestrelMinDataRate)
+    {
+        using var host = CreateHost(kestrelMinDataRate: kestrelMinDataRate);
+        await host.StartAsync(TestToken);
+        var sender = new ClusterMemberId(Random.Shared);
+        var peer = await ConnectAsync();
+        Task<string> probe = null;
+        try
+        {
+            await peer.SendAsync(PartialRequest(sender, snapshot), SocketFlags.None, TestToken);
+            await Task.Delay(StallLeadTime, TestToken);
+
+            // a heartbeat always acquires the transition lock
+            var timer = Stopwatch.StartNew();
+            probe = SendAsync(HeartbeatRequest(sender));
+            string response;
+            try
+            {
+                response = await probe.WaitAsync(ObservationLimit, TestToken);
+            }
+            catch (TimeoutException)
+            {
+                Fail($"The transition lock was not released within {ObservationLimit + StallLeadTime}, RequestTimeout is {RequestTimeout}");
+                throw;
+            }
+
+            timer.Stop();
+            TestContext.Current.TestOutputHelper?.WriteLine($"Probe acquired the transition lock after {timer.Elapsed}: {StatusLine(response)}");
+
+            // the stalled request held the lock, otherwise the probe would not test anything
+            True(timer.Elapsed >= TimeSpan.FromMilliseconds(250), $"The probe was not blocked ({timer.Elapsed})");
+            True(timer.Elapsed <= ReleaseDeadline, $"The transition lock was held for {timer.Elapsed + StallLeadTime}, RequestTimeout is {RequestTimeout}");
+            StartsWith("HTTP/1.1 200", response);
+
+            var stalled = await ReceiveOutcomeAsync(peer).WaitAsync(ReleaseDeadline, TestToken);
+            var log = AuditTrail(host);
+            TestContext.Current.TestOutputHelper?.WriteLine($"Stalled request: {stalled}, last entry index: {log.LastEntryIndex}");
+
+            DoesNotMatch(@"^HTTP/1\.1 2\d\d", stalled);
+            Equal(0L, log.LastEntryIndex);
+            True(await IsLogUsableAsync(log), "The log rejects appends");
+            StartsWith("HTTP/1.1 200", await SendAsync(HeartbeatRequest(sender)).WaitAsync(ReleaseDeadline, TestToken));
+        }
+        finally
+        {
+            // reset the stalled connection so that the host can stop
+            Reset(peer);
+            if (probe is not null)
+                await probe.ContinueWith(static _ => { }, TestToken);
+
+            await host.StopAsync(TestToken);
+        }
+    }
 
     // A peer that disconnects in the middle of the body causes a transport failure, not a cancellation.
     // The follower must stay available, and the partially received entry or snapshot must not be in the log (#90).
@@ -87,14 +156,14 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
     }
 
     // A peer that stalls in the middle of the body is cut off by Kestrel's MinRequestBodyDataRate.
-    // That timeout must cost the request only, as a disconnect does (#90). How soon the request is released
-    // is not covered here (#91).
+    // That timeout must cost the request only, as a disconnect does (#90). The node's RequestTimeout is longer
+    // than Kestrel's grace period here, so that Kestrel cuts off the request before the node's own deadline (#91) does.
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]
     [InlineData(true)]
     public static async Task MinRequestBodyDataRateMidBodyLeavesLogUsable(bool snapshot)
     {
-        using var host = CreateHost();
+        using var host = CreateHost(requestTimeout: LongRequestTimeout);
         await host.StartAsync(TestToken);
         var peer = await ConnectAsync();
         try
@@ -330,10 +399,15 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         socket.Close();
     }
 
-    private static IHost CreateHost(bool useWal = true) => new HostBuilder()
+    private static IHost CreateHost(bool useWal = true, bool kestrelMinDataRate = true, TimeSpan? requestTimeout = null) => new HostBuilder()
         .ConfigureWebHost(webHost =>
         {
-            webHost.UseKestrel(static options => options.ListenLocalhost(Port));
+            webHost.UseKestrel(options =>
+            {
+                options.ListenLocalhost(Port);
+                if (!kestrelMinDataRate)
+                    options.Limits.MinRequestBodyDataRate = null;
+            });
 
             if (useWal)
                 webHost.UseStartup<DrainingStartup>();
@@ -348,7 +422,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
 
             // a standby node never starts elections, so its term stays below the term of the requests in the tests
             ["standby"] = "true",
-            ["requestTimeout"] = RequestTimeout.ToString(),
+            ["requestTimeout"] = (requestTimeout ?? RequestTimeout).ToString(),
         }))
         .JoinCluster()
         .Build();
@@ -430,6 +504,23 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         }
 
         return Encoding.ASCII.GetString(buffer, 0, received);
+    }
+
+    // the status line that the server sends on a connection, or how the server closed the connection
+    private static async Task<string> ReceiveOutcomeAsync(Socket socket)
+    {
+        var buffer = new byte[4096];
+        int count;
+        try
+        {
+            count = await socket.ReceiveAsync(buffer, SocketFlags.None, TestToken);
+        }
+        catch (SocketException e)
+        {
+            return $"connection {e.SocketErrorCode}";
+        }
+
+        return count is 0 ? "connection closed" : StatusLine(Encoding.ASCII.GetString(buffer, 0, count));
     }
 
     private class ConsensusOnlyStartup

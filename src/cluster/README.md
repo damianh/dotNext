@@ -115,11 +115,12 @@ the whole record, serialized by a lock. The contract, guarded by
   `O_SYNC` does not imply `F_FULLFSYNC`, so the data can still be in the drive
   cache: macOS is not a supported platform for power-loss durability.
 - *Short `state` file.* When `state` exists but is shorter than 37 bytes, the
-  constructor zeroes the buffer and rewrites it, which silently resets the node
+  constructor used to zero the buffer and rewrite it, silently resetting the node
   to term 0 with no vote. Within the process-crash model only a length of 0 is
   reachable (a crash inside the very first creation, before any vote was
-  possible). Lengths of 1 to 36 need power loss or external damage. Failing
-  closed on those lengths is a possible hardening and is not implemented.
+  possible), and that is still initialized. Lengths of 1 to 36 need power loss or
+  external damage, and now fail closed (#83): the WAL does not open and throws
+  `IntegrityException` naming the file.
 # HyParView
 List of supported features:
 * Network transport: HTTP 1.1, HTTP/2, HTTP/3

@@ -162,6 +162,7 @@ power-loss durability remains unsupported as documented in
 | `ClusterConfigurationExtensions.AppendAsync(IPersistentState, IClusterConfiguration<TAddress>, CancellationToken)` | appends to any log | **throws `InvalidOperationException`** on the WAL or `ConsensusOnlyState` of a started cluster that uses `UseLogConfiguration` (#48) |
 | `IStateMachine.IsSnapshotInstallCancellationSafe` | absent | **added** (default interface member, default `false`; `SimpleStateMachine` returns `true`): opts in to a snapshot `ApplyAsync` cancellation leaving the WAL usable (#73) |
 | `SimpleStateMachine.OnSnapshotFailed(Exception)` (protected virtual) | absent | **added** (default: no-op): reports a failed background snapshot that was dropped instead of poisoning the state machine (#75) |
+| `WriteAheadLog` constructor, existing `state` file of 1 to 36 bytes | zeroes the record: the node silently restarts at term 0 with no vote | **throws `IntegrityException`** naming the file; length 0 is still initialized and 37 or more is unchanged (#83) |
 
 ## Fork-only fixes
 All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests are in `damianh/dotNext`:

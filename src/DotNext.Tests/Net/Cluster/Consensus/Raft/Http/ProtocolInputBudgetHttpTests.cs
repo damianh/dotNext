@@ -238,6 +238,68 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         }
     }
 
+    // A valid configuration of unknown length (chunked) that is actually delivered is staged and applied with the snapshot.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ChunkedInstallSnapshotWithConfigurationIsAccepted()
+    {
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var storage = host.Services.GetRequiredService<IClusterConfigurationStorage<UriEndPoint>>();
+            var (current, _) = await ((IClusterConfigurationStorage)storage).LoadConfigurationAsync(TestToken);
+            var configuration = await current.ToByteArrayAsync(token: TestToken);
+            True(configuration.Length > EmptyConfiguration.Length);
+
+            var sender = new ClusterMemberId(Random.Shared);
+            var response = await SendAsync(FormatRequest(InstallSnapshotHeaders(sender, configuration.Length.ToString(), configVersion: "5"), "application/octet-stream",
+                contentLength: null, Chunked([.. configuration, .. new byte[DeliveredPayloadLength]]))).WaitAsync(ReleaseDeadline, TestToken);
+            TestContext.Current.TestOutputHelper?.WriteLine($"InstallSnapshot: {StatusLine(response)}, configuration {configuration.Length} bytes");
+
+            StartsWith("HTTP/1.1 200", response);
+            Equal(10L, AuditTrail(host).LastEntryIndex);
+            Equal(2, (await storage.LoadConfigurationAsync(TestToken)).Members.Count);
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // The memory reserved for the received configuration must be proportional to the bytes received,
+    // not to the declared X-Raft-Config-Length. The claims use distinct power-of-two sizes,
+    // so a buffer returned to ArrayPool.Shared by one case cannot hide the allocation of another.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, 1 << 27)]
+    [InlineData(true, 1 << 28)]
+    public static async Task DeclaredConfigurationLengthDoesNotDriveAllocation(bool chunked, int declaredLength)
+    {
+        const long AllocationBudget = 32L << 20;
+
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var sender = new ClusterMemberId(Random.Shared);
+            var delivered = new byte[8];
+            var request = FormatRequest(InstallSnapshotHeaders(sender, declaredLength.ToString()), "application/octet-stream",
+                chunked ? null : delivered.Length, chunked ? Chunked(delivered) : delivered);
+
+            var before = GC.GetTotalAllocatedBytes(precise: true);
+            var response = await SendAsync(request).WaitAsync(ReleaseDeadline, TestToken);
+            var allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+            TestContext.Current.TestOutputHelper?.WriteLine($"InstallSnapshot: {StatusLine(response)}, declared {declaredLength} bytes, delivered {delivered.Length} bytes, allocated {allocated} bytes");
+
+            DoesNotMatch(@"^HTTP/1\.1 2\d\d", response);
+            True(allocated < AllocationBudget, $"Allocated {allocated} bytes for {delivered.Length} delivered bytes");
+
+            await AssertAvailableAsync(host, sender);
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
     // A snapshot configuration whose member count is negative or exceeds the payload is not a valid configuration.
     // It must not replace the applied configuration, which stays decodable, and the node keeps serving requests.
     [Theory(Timeout = TestTimeouts.Default)]

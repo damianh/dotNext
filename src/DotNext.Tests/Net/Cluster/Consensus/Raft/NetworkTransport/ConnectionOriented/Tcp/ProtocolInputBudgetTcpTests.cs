@@ -89,9 +89,12 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
 
     // A peer that disconnects in the middle of the body causes a transport failure, not a cancellation.
     // The follower must stay available: the transition lock is released, the partial write is rolled back
-    // and the log accepts further appends (#90). A graceful close (FIN) mid-body is covered by #97.
+    // and the log accepts further appends (#90). A graceful close (FIN) mid-body must not persist
+    // the truncated entry or snapshot (#97).
     [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, false)]
     [InlineData(false, true)]
+    [InlineData(true, false)]
     [InlineData(true, true)]
     public static async Task PeerDisconnectMidBodyLeavesLogUsable(bool snapshot, bool reset)
     {
@@ -120,6 +123,44 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
             // an entry or snapshot whose declared payload was not fully received is not in the log
             Equal(0L, state.LastEntryIndex);
             await AssertLogUsableAsync(state);
+        }
+        finally
+        {
+            await DisposeAsync(state);
+        }
+    }
+
+    // After a graceful close (FIN) mid-entry, the leader retransmits the complete entry at the same index and term.
+    // The follower must store it in full (#97).
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task RetransmissionAfterGracefulCloseMidEntryIsStoredInFull()
+    {
+        var state = CreateWal(IStateMachine.CreateNoOp());
+        try
+        {
+            await using var cluster = new RaftCluster(CreateConfiguration()) { AuditTrail = state };
+            await cluster.StartAsync(TestToken);
+
+            var sender = new ClusterMemberId(Random.Shared);
+            using (var peer = await ConnectAsync())
+            {
+                await peer.SendAsync(PartialAppendEntriesRequest(sender), SocketFlags.None, TestToken);
+                await Task.Delay(StallLeadTime, TestToken);
+                peer.Shutdown(SocketShutdown.Send);
+                peer.Close();
+            }
+
+            await ProbeAsync(cluster, sender, expectBlocked: false);
+
+            await using var retransmission = new LogEntryProducer<IRaftLogEntry>(new TestLogEntry(new string('x', DeclaredPayloadLength)) { Term = SenderTerm });
+            await ((ILocalMember)cluster).AppendEntriesAsync(sender, SenderTerm, retransmission, 0L, 0L, 0L, 0, TestToken);
+
+            Equal(1L, state.LastEntryIndex);
+            Func<IReadOnlyList<IRaftLogEntry>, long?, CancellationToken, ValueTask<long>> reader = static (entries, _, _)
+                => ValueTask.FromResult(entries[^1].Length ?? -1L);
+            var length = await state.ReadAsync(new LogEntryConsumer<IRaftLogEntry, long>(reader), 1L, 1L, TestToken);
+            TestContext.Current.TestOutputHelper?.WriteLine($"Entry 1 after a complete retransmission: stored {length} bytes");
+            True(length >= DeclaredPayloadLength, $"Entry 1 stored {length} bytes after a complete retransmission");
         }
         finally
         {
@@ -171,8 +212,9 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         }
     }
 
-    // A declared entry length beyond the delivered payload must not drive allocation. The final frame carries 16 bytes
-    // and the connection stays open. Whether such an entry is persisted is not covered here (see RAFT-REVIEW.md, #22).
+    // A declared entry length beyond the delivered payload must not drive allocation, and an entry whose payload
+    // does not match its declared length must not be persisted (#97). The final frame carries 16 bytes and the
+    // connection stays open, so the mismatch is the only defect of the request.
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(1L << 30)]
     [InlineData(long.MaxValue)]
@@ -198,6 +240,7 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
             var allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
             TestContext.Current.TestOutputHelper?.WriteLine($"Declared {declaredLength} bytes, delivered {DeliveredPayloadLength}, allocated {allocated} bytes, last entry index {state.LastEntryIndex}");
             True(allocated < AllocationBudget, $"Allocated {allocated} bytes for {DeliveredPayloadLength} delivered bytes");
+            Equal(0L, state.LastEntryIndex);
             await AssertLogUsableAsync(state);
         }
         finally

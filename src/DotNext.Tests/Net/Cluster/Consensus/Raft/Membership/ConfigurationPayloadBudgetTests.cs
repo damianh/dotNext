@@ -80,6 +80,34 @@ public sealed class ConfigurationPayloadBudgetTests : Test
         }
     }
 
+    // Control: an empty configuration (a zero member count) is valid and replaces the applied configuration, as before.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task EmptyConfigurationIsApplied(bool persistent)
+    {
+        var path = GetTempPath();
+        byte[] payload = [0, 0, 0, 0];
+
+        using (var storage = await CreateSeededStorageAsync(persistent, path))
+        {
+            True(await ((IClusterConfigurationStorage)storage).SaveConfigurationAsync(new BinaryTransferObject(payload), 2L, TestToken));
+            await AssertEmptyAsync(storage);
+        }
+
+        if (persistent)
+        {
+            using var reopened = new PersistentStorage(path);
+            await AssertEmptyAsync(reopened);
+        }
+
+        static async Task AssertEmptyAsync(IClusterConfigurationStorage<HttpEndPoint> storage)
+        {
+            Empty((await storage.LoadConfigurationAsync(TestToken)).Members);
+            Equal(2L, (await ((IClusterConfigurationStorage)storage).LoadConfigurationAsync(TestToken)).Version);
+        }
+    }
+
     private static async Task<ClusterConfigurationStorage<HttpEndPoint>> CreateSeededStorageAsync(bool persistent, string path)
     {
         ClusterConfigurationStorage<HttpEndPoint> storage = persistent ? new PersistentStorage(path) : new InMemoryStorage();

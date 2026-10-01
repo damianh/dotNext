@@ -65,4 +65,8 @@ internal static class ExceptionMessages
 
     internal static string PayloadLengthMismatch(long actualLength, long declaredLength)
         => Resources.Get().Format(actualLength, declaredLength);
+
+    internal static string InvalidMemberCount(int count) => Resources.Get().Format(count);
+
+    internal static string TruncatedConfiguration => (string)Resources.Get();
 }

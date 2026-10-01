@@ -161,6 +161,32 @@ public sealed class SimpleStateMachineSnapshotFailureTests : Test
         Empty(machine.Failures);
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task RollbackFailureIsReportedAndRolledBackWriterIsNotCommitted()
+    {
+        var location = new DirectoryInfo(GetTempPath());
+        var writers = 0;
+        await using var machine = new CountingStateMachine(
+            location,
+            beforePersist: null,
+            (size, destination) => new RollbackFailingWriter(size, destination, Interlocked.Increment(ref writers) is 1));
+
+        // entry 2 starts a snapshot that completes in the background; the leader's snapshot then supersedes it
+        // and rolling it back fails
+        await machine.As<IStateMachine>().ApplyAsync(new LogEntry(term: 1L, index: 2L), TestToken);
+        await machine.As<IStateMachine>().ApplyAsync(
+            new LogEntry(new ByteSnapshotEntry(BitConverter.GetBytes(IncomingIndex), IncomingTerm), IncomingIndex),
+            TestToken);
+
+        // the next apply must not commit the writer that was rolled back
+        await machine.As<IStateMachine>().ApplyAsync(new LogEntry(term: IncomingTerm, index: IncomingIndex + 1L), TestToken);
+
+        NotNull(Single(machine.Failures));
+        Equal(IncomingIndex, machine.As<IStateMachine>().Snapshot.Index);
+        False(File.Exists(Path.Combine(location.FullName, "2-1")));
+        Empty(location.EnumerateFiles("*.tmp"));
+    }
+
     private static void AssertReported(CountingStateMachine machine, FailureKind kind)
     {
         var failure = Single(machine.Failures);
@@ -193,11 +219,40 @@ public sealed class SimpleStateMachineSnapshotFailureTests : Test
         await wal.WaitForApplyAsync(index, TestToken);
     }
 
+    // When it is disposed, replaces its temporary file with a directory, so that Rollback() cannot delete it
+    private sealed class RollbackFailingWriter : SimpleStateMachine.SnapshotWriter
+    {
+        private readonly string directory;
+        private readonly bool failRollback;
+
+        internal RollbackFailingWriter(long preallocationSize, FileInfo destination, bool failRollback)
+            : base(preallocationSize, destination)
+        {
+            directory = destination.DirectoryName;
+            this.failRollback = failRollback;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+
+            if (disposing && failRollback)
+            {
+                foreach (var temporary in new DirectoryInfo(directory).EnumerateFiles("*.tmp"))
+                {
+                    temporary.Delete();
+                    Directory.CreateDirectory(temporary.FullName);
+                }
+            }
+        }
+    }
+
     // counts applied entries, and takes a snapshot at every even index
     private sealed class CountingStateMachine(
         DirectoryInfo location,
-        Func<int, CancellationToken, ValueTask> beforePersist)
-        : SimpleStateMachine(location)
+        Func<int, CancellationToken, ValueTask> beforePersist,
+        Func<long, FileInfo, SimpleStateMachine.SnapshotWriter> writerFactory = null)
+        : SimpleStateMachine(location, writerFactory ?? SnapshotWriter.CreateDefault)
     {
         private int persistCalls;
 

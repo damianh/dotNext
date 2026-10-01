@@ -966,6 +966,28 @@ were already sent).
 **Not implemented (proposals).** A directory fsync after the first creation of
 `state` (H5), and failing closed on a `state` file of 1 to 36 bytes (H7). Neither
 has a red test in the process-crash model.
+## Seeded simulation, #56 stage 1
+
+Part of #56. `SimulationTests` (see the in-process README) adds a seeded schedule runner over the existing in-process
+harness with WAL-backed nodes, restarts, and three safety oracles plus a separate liveness check.
+It is test-only; no production code changed.
+
+**Scope.** 3 and 5 voters, no membership changes. Faults: message drop, hold/deliver, lost responses, partitions, manual
+time, node crash and recovery. Oracles: election safety, committed-prefix agreement, acknowledged writes preserved.
+
+**Checker validation.** Each oracle has a synthetic bad-history test. Mutation runs, local only and not committed:
+skipping the state flush when a vote is granted was found by the campaign in 3 of 3 runs (150 seeds each, election
+safety, after 40 to 130 s), and by none of the 16 fixed seeds. The #24 publish-after-durable change could not be
+mutated meaningfully: it only differs when the state write fails, which needs I/O fault injection (out of scope);
+a publish-before-flush approximation was not detected by the simulation or by `TermVoteDurabilityTests`.
+
+**Residual blind spots.** Membership changes, linearizable reads and read barriers (#65), leases, snapshots and compaction,
+I/O faults (#24), real transports, and process kill. Thread-pool scheduling and the wall-clock settle heuristic are not controlled,
+so a seed does not guarantee replay: a seed that failed in a campaign passed on three replays. Election timeouts are fixed per node,
+the schedules are short, and the fixed CI seeds find little alone; the campaign is where faults are found.
+Interleavings that need many elections (#49, #70) depend on the campaign reaching them.
+Crash points are between steps only, never inside a write.
+
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,

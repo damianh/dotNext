@@ -881,8 +881,17 @@ exception thrown by the hook propagates like any other apply failure.
 - A failure of `writer.Commit()`. The field is cleared before it runs and the
   failure is rethrown, so it stays fail-closed. Commit renames the temporary file
   into place, so a failure can mean a half-renamed or unverifiable snapshot
-  file, and continuing over it would hide that. A failed `Rollback()` is also
-  unchanged.
+  file, and continuing over it would hide that.
+- A failed `Rollback()` (#81). It runs only when a snapshot from the leader
+  supersedes an unpublished local one, so nothing was published and a failure
+  leaves at most a stray `*.tmp` file or an unflushed delete. Before #81 the
+  failure was rethrown and `snapshottingProcess` stayed set, so a later apply
+  could commit the writer that was already rolled back. Now the field is cleared
+  and the failure is reported through `OnSnapshotFailed` once, like any other
+  dropped snapshot, and the incoming snapshot installs. Failing the WAL over a
+  failed cleanup was judged disproportionate; a subclass that wants that can
+  throw from `OnSnapshotFailed`. Guard:
+  `RollbackFailureIsReportedAndRolledBackWriterIsNotCommitted`.
 
 **Alternatives.** Retrying the snapshot inside the state machine would change the
 snapshot trigger policy, which is out of scope. Dropping the failure with no hook

@@ -247,7 +247,17 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
         }
 
         writer.Dispose();
-        writer.Rollback();
+        try
+        {
+            writer.Rollback();
+        }
+        catch (Exception e) when (!lifetimeToken.IsCancellationRequested)
+        {
+            // Nothing was published; a failed cleanup leaves at most a temporary file. Drop it like any failed snapshot.
+            DropFailedSnapshot(task, e);
+            return;
+        }
+
         Interlocked.CompareExchange(ref snapshottingProcess, null, task);
     }
 
@@ -269,7 +279,8 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
     /// which makes the write-ahead log fail.
     /// </remarks>
     /// <param name="failure">The exception thrown by <see cref="PersistAsync"/> or by writing the snapshot to the disk.
-    /// It is <see cref="OperationCanceledException"/> if the snapshot was canceled.</param>
+    /// It is <see cref="OperationCanceledException"/> if the snapshot was canceled. It can also be the failure to
+    /// clean up a snapshot that was superseded by a snapshot received from the leader.</param>
     protected virtual void OnSnapshotFailed(Exception failure)
     {
     }

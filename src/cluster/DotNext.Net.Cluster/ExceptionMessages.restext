@@ -26,3 +26,4 @@ SnapshotInProgressCanceled=The snapshot that is being created by the state machi
 PayloadLengthMismatch=The payload has {0} bytes but its declared length is {1} bytes
 InvalidMemberCount=The cluster configuration declares an invalid number of members: {0}
 TruncatedConfiguration=The cluster configuration contains fewer members than it declares
+EntriesCountMismatch=The request declares {0} log entries but only {1} were received

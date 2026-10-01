@@ -5,3 +5,5 @@ UnsupportedRedirection=Redirection is not supported because the underlying netwo
 ReadLogEntryTwice=Attempt to read the log entry twice while it's not reusable
 UnknownLocalNodeAddress=The address of the local node is not defined
 AbsoluteUriExpected={0} is not absolute URI
+MissingLogEntries=The request declares {0} log entries but the multipart body contains fewer sections
+UnexpectedLogEntry=The request declares {0} log entries but the multipart body contains more sections

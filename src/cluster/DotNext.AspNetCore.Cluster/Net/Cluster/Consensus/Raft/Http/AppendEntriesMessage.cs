@@ -140,11 +140,15 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
 
     private sealed class MultipartLogEntriesReader : MultipartReader, ILogEntryProducer<MultipartLogEntry>, IDisposable
     {
+        private readonly long declaredCount;
         private long count;
         private MultipartLogEntry? current;
 
         internal MultipartLogEntriesReader(string boundary, Stream body, long count)
-            : base(boundary, body) => this.count = count;
+            : base(boundary, body)
+        {
+            declaredCount = this.count = count;
+        }
 
         long ILogEntryProducer<MultipartLogEntry>.RemainingCount => count;
 
@@ -155,8 +159,15 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
             if (current is not null)
                 await current.DisposeAsync().ConfigureAwait(false);
 
-            if (await ReadNextSectionAsync().ConfigureAwait(false) is not { } section)
-                return false;
+            var section = await ReadNextSectionAsync().ConfigureAwait(false);
+            if (section is null)
+            {
+                // the sections must match the declared count, otherwise the follower acknowledges entries it has not received
+                return count > 0L ? throw new RaftProtocolException(ExceptionMessages.MissingLogEntries(declaredCount)) : false;
+            }
+
+            if (count <= 0L)
+                throw new RaftProtocolException(ExceptionMessages.UnexpectedLogEntry(declaredCount));
 
             current = new(section);
             count -= 1L;

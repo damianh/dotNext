@@ -69,4 +69,7 @@ internal static class ExceptionMessages
     internal static string InvalidMemberCount(int count) => Resources.Get().Format(count);
 
     internal static string TruncatedConfiguration => (string)Resources.Get();
+
+    internal static string EntriesCountMismatch(long declaredCount, long receivedCount)
+        => Resources.Get().Format(declaredCount, receivedCount);
 }

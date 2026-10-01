@@ -249,11 +249,11 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
         entriesCount = ParseHeader(headers, CountHeader, Int64Parser);
     }
 
-    internal AppendEntriesMessage(HttpRequest request, out ILogEntryProducer<IRaftLogEntry> entries)
+    internal AppendEntriesMessage(HttpRequest request, PayloadSourceScope payload, out ILogEntryProducer<IRaftLogEntry> entries)
         : this(request.Headers, out var entriesCount)
-        => entries = CreateReader(request, entriesCount);
+        => entries = CreateReader(request, new PayloadReader(request.BodyReader, payload), entriesCount);
 
-    private static ILogEntryProducer<IRaftLogEntry> CreateReader(HttpRequest request, long count)
+    private static ILogEntryProducer<IRaftLogEntry> CreateReader(HttpRequest request, PipeReader body, long count)
     {
         var result = ILogEntryProducer<IRaftLogEntry>.Empty;
 
@@ -264,11 +264,11 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
         else if (StringSegment.Equals(mediaType.MediaType, MediaTypeNames.Application.Octet, StringComparison.OrdinalIgnoreCase))
         {
             // log entries encoded as efficient binary stream
-            result = new OctetStreamLogEntriesReader(request.BodyReader, count);
+            result = new OctetStreamLogEntriesReader(body, count);
         }
         else if (HeaderUtils.RemoveQuotes(mediaType.Boundary) is { Length: > 0 } boundary)
         {
-            result = new MultipartLogEntriesReader(boundary.ToString(), request.Body, count);
+            result = new MultipartLogEntriesReader(boundary.ToString(), body.AsStream(leaveOpen: true), count);
         }
 
         return result;

@@ -66,6 +66,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\DotNext.Net.Cluster\Net\Cluster\Consensus\Raft\PayloadSourceScope.cs" Link="Net\Cluster\Consensus\Raft\PayloadSourceScope.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <SourceRoot Include="$(MSBuildProjectDirectory)\..\..\..\" />
   </ItemGroup>
 </Project>

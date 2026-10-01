@@ -146,6 +146,21 @@ public sealed class TermVoteDurabilityTests : RaftTest
         Equal(2L, await fixture.Log.GetTermAsync(1L, TestToken));
     }
 
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(Trigger.AppendEntries)]
+    [InlineData(Trigger.Vote)]
+    public static async Task AcknowledgedTermSurvivesRestartWhenReadBackFails(Trigger trigger)
+    {
+        await using var fixture = await Fixture.CreateAsync(seedTerm: 1L);
+
+        // The read-back after the failed write cannot correct the published term, so a term published
+        // before its write is durable stays published, and the next term-2 request would skip the write.
+        await AcknowledgeTermTwoAsync(fixture, trigger, readBackFails: true);
+
+        await fixture.RestartTargetAsync();
+        Equal(2L, fixture.State.Term);
+    }
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ControlWithoutFaultKeepsTermAndEntry()
     {
@@ -166,10 +181,14 @@ public sealed class TermVoteDurabilityTests : RaftTest
         Vote,
     }
 
-    private static async Task AcknowledgeTermTwoAsync(Fixture fixture, Trigger trigger)
+    private static async Task AcknowledgeTermTwoAsync(Fixture fixture, Trigger trigger, bool readBackFails = false)
     {
         // The state file is unwritable exactly when the node learns about term 2.
-        fixture.Fault.Break();
+        if (readBackFails)
+            fixture.Fault.BreakReadBack();
+        else
+            fixture.Fault.Break();
+
         if (trigger is Trigger.Vote)
             await ThrowsAnyAsync<Exception>(() => fixture.VoteAsync(fixture.Second, 2L));
         else

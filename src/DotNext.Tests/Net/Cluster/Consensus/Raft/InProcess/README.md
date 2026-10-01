@@ -316,13 +316,17 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --fi
 `TermVoteDurabilityTests` covers issue #24. The target node is WAL-backed, and
 a "crash" is a dispose and reopen of the WAL followed by a node restart.
 `NodeStateFault` makes the `state` write fail by swapping the file handle for
-a read-only one (test-only reflection).
+a read-only one (test-only reflection). `BreakReadBack` uses a read-only handle
+to an empty file instead, so the read-back after the failed write fails too.
 
 - H1 and H2: a failed or cancelled vote write grants nothing, and a failed write
   never leads to two grants in one term across a restart.
 - H3: a term acknowledged in an `AppendEntries` reply survives a restart, so a
   stale leader cannot overwrite an acknowledged entry. Triggered by a failed
   term update from `AppendEntries` and from a `Vote` request.
+- H3 with a failed read-back (#79): the term must not be published before its
+  write is durable. With a successful read-back, publishing early is undone
+  before the request returns, so only this variant detects it.
 
 ```powershell
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.TermVoteDurabilityTests' --progress off --timeout 180s

@@ -59,9 +59,10 @@ public sealed class SimulationTests : RaftTest
         }
         else
         {
-            var baseSeed = long.TryParse(Environment.GetEnvironmentVariable(BaseSeedVariable), out var parsedBase)
-                ? parsedBase
-                : Random.Shared.NextInt64(1L, int.MaxValue);
+            var baseSeedText = Environment.GetEnvironmentVariable(BaseSeedVariable);
+            var baseSeed = string.IsNullOrEmpty(baseSeedText)
+                ? Random.Shared.NextInt64(1L, int.MaxValue)
+                : long.Parse(baseSeedText);
             var count = int.Parse(seeds);
             var message = $"campaign base seed={baseSeed} seeds={count} (replay the whole campaign with {BaseSeedVariable}={baseSeed} {SeedsVariable}={count})";
             TestContext.Current.TestOutputHelper?.WriteLine(message);

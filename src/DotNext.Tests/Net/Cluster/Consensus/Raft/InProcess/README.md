@@ -382,7 +382,7 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-class 'D
 
 **Campaign.** `Campaign` is skipped unless an environment variable is set. `DOTNEXT_RAFT_SIM_SEEDS=N` runs N random
 seeds for each size (roughly 0.7 s per run); `DOTNEXT_RAFT_SIM_STEPS` changes the fault-phase length. The N seeds are
-derived from `DOTNEXT_RAFT_SIM_BASE_SEED` (random when unset). The base seed is always printed to the console as
+derived from `DOTNEXT_RAFT_SIM_BASE_SEED` (random when unset or empty; a malformed value fails the run). The base seed is always printed to the console as
 `campaign base seed=B seeds=N`, so the same base seed and count give the same seeds again. The first failure stops the
 run and prints the seed and trace.
 

@@ -86,15 +86,16 @@ jobs:
           IN_STEPS: ${{ inputs.steps }}
           IN_BASE_SEED: ${{ inputs.base_seed }}
         run: |
-          is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
-          is_int "$IN_SEEDS" && [ "$IN_SEEDS" -gt 0 ] || { echo "::error::seeds must be a positive integer, got '$IN_SEEDS'"; exit 1; }
+          # decimal digits only, and the value must fit the type the test parses it into
+          is_number() { [[ "$1" =~ ^[0-9]{1,$2}$ ]] && [ "$((10#$1))" -le "$3" ]; }
+          is_number "$IN_SEEDS" 10 2147483647 && [ "$((10#$IN_SEEDS))" -gt 0 ] || { echo "::error::seeds must be an integer from 1 to 2147483647, got '$IN_SEEDS'"; exit 1; }
           [[ "$IN_VOTERS" =~ ^(both|3|5)$ ]] || { echo "::error::voters must be both, 3 or 5, got '$IN_VOTERS'"; exit 1; }
-          [ -z "$IN_STEPS" ] || is_int "$IN_STEPS" || { echo "::error::steps must be an integer, got '$IN_STEPS'"; exit 1; }
+          [ -z "$IN_STEPS" ] || is_number "$IN_STEPS" 10 2147483647 || { echo "::error::steps must be an integer from 0 to 2147483647, got '$IN_STEPS'"; exit 1; }
           base_seed="$IN_BASE_SEED"
           if [ -z "$base_seed" ]; then
             base_seed=$(( ((RANDOM << 15) | RANDOM) + 1 ))
           fi
-          is_int "$base_seed" || { echo "::error::base_seed must be an integer, got '$base_seed'"; exit 1; }
+          is_number "$base_seed" 18 999999999999999999 || { echo "::error::base_seed must be an integer from 0 to 999999999999999999, got '$base_seed'"; exit 1; }
 
           {
             echo "DOTNEXT_RAFT_SIM_SEEDS=$IN_SEEDS"

@@ -914,7 +914,7 @@ runtime seam was added). Power loss is out of scope and is documented in
 | H1 | A vote is granted, or a reply carries `Value = true`, before it is durable | Not reproduced. The handler sets `Value = true` only after `UpdateVotedForAsync` returns. Guards: `FailedVoteWriteGrantsNothing`, `CancelledVoteRequestGrantsNothing`. |
 | H2 | After a failed flush, memory is ahead of disk and the node grants X, then Y in the same term after a restart | Not reproduced. A failed request was never granted; a retry rewrites the whole record; before a restart the node only refuses the other candidate (availability, not safety). Guards: `FailedVoteWriteNeverYieldsTwoGrantsInOneTerm`, `RecoveredVoteWriteKeepsTheGrantAcrossRestart`. `FailedWriteThatReachedTheDiskIsNotOverwrittenByLowerTerm` guards the ambiguous-failure path. |
 | H3 | A term is advertised in an RPC reply before it is durable | **Reproduced.** See below. |
-| H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | Documented only (power-loss assumptions). |
+| H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | H5 fixed in #82 (directory fsync after the first creation of `state`); the rest documented only (power-loss assumptions). |
 
 **Defect (H3).** `IncrementTerm`, `UpdateTerm` and `UpdateVotedFor` changed the
 in-memory term and vote before `FlushAsync`. When the flush failed, memory stayed
@@ -963,9 +963,26 @@ conflicts with the cancellation handling of #53). Raising the term from the last
 log term at startup (changes recovery semantics and does not cover replies that
 were already sent).
 
-**Not implemented (proposals).** A directory fsync after the first creation of
-`state` (H5), and failing closed on a `state` file of 1 to 36 bytes (H7). Neither
-has a red test in the process-crash model.
+**H5 (#82).** The constructor now calls `DurableFile.FlushDirectory` after it
+creates `state`. The helper already existed (`LibraryImport`, so AOT-safe; on
+Windows it flushes a directory handle, not a no-op). On a fresh WAL the checkpoint
+constructor already flushed the root directory right after `state` was created, so
+first boot was covered by accident; the explicit call also covers a `state` created
+next to an existing checkpoint. The tests (`DurableFileTests`) only exercise the
+helper on the current OS: a power-loss reproduction is out of scope, and the call
+is not observable without a seam, so it has no red test.
+
+*Directory-entry flush inventory (not changed by #82).*
+
+| Create/rename site | Directory flush |
+|---|---|
+| WAL data and metadata pages | Flushed before each checkpoint write (`Persistence.cs`, `Flusher.cs`) |
+| Checkpoint creation and publication | Flushed (`Checkpoint.cs`, `DurableFile.Publish`) |
+| Snapshot `Commit()` rename and `Rollback()` | Flushed (`DurableFile.FlushPublication`, `FlushDirectory`) |
+| Staged configuration (`PersistentClusterConfigurationStorage`) | **Gap.** The rename flushes only on Linux, and only when `open` resolves. The first `CreateNew` save has no directory flush. Follow-up. |
+
+**Not implemented (proposal).** Failing closed on a `state` file of 1 to 36 bytes
+(H7). It has no red test in the process-crash model.
 ## Seeded simulation, #56 stage 1
 
 Part of #56. `SimulationTests` (see the in-process README) adds a seeded schedule runner over the existing in-process

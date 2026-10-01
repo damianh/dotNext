@@ -104,10 +104,10 @@ the whole record, serialized by a lock. The contract, guarded by
   at offset 0 normally lands in one 512 B or 4 KiB sector, but no universal
   atomicity guarantee is asserted and no checksum detects a torn record.
 - *Directory fsync on first creation.* The `state` file is created with
-  `FileMode.CreateNew`; the directory entry is not fsynced. On Linux, a power
-  loss right after the first boot could lose the file, and a vote granted in
-  that window would be forgotten (reset to term 0, no vote). Process termination
-  is not affected.
+  `FileMode.CreateNew`, and the directory is fsynced right after (#82), so the
+  directory entry does not depend on `O_SYNC` of the file. Without it, a power
+  loss right after the first boot could lose the file and a vote granted in that
+  window would be forgotten. It relies on the filesystem honouring directory fsync.
 - *`WriteThrough` per platform.* .NET maps `FileOptions.WriteThrough` to
   `FILE_FLAG_WRITE_THROUGH` on Windows and to `O_SYNC` on Unix
   (`SafeFileHandle.Unix.cs` in dotnet/runtime). `O_SYNC` makes each write

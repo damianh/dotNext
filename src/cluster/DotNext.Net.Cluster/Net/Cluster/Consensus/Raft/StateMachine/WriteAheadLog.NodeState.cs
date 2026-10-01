@@ -58,6 +58,10 @@ partial class WriteAheadLog
                 RandomAccess.Write(handle, buffer, fileOffset: 0L);
             }
 
+            // WriteThrough makes the data durable, not the new directory entry
+            if (mode is FileMode.CreateNew)
+                DurableFile.FlushDirectory(location);
+
             if (Unsafe.BitCast<byte, bool>(buffer[LastVotePresenceOffset]))
                 votedFor = BoxedClusterMemberId.Box(new ClusterMemberId(buffer.AsSpan(LastVoteOffset)));
             term = ReadInt64LittleEndian(buffer.AsSpan(TermOffset));

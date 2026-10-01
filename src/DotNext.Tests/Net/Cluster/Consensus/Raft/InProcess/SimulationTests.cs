@@ -11,6 +11,7 @@ public sealed class SimulationTests : RaftTest
     private const string SeedVariable = "DOTNEXT_RAFT_SIM_SEED";
     private const string VotersVariable = "DOTNEXT_RAFT_SIM_VOTERS";
     private const string StepsVariable = "DOTNEXT_RAFT_SIM_STEPS";
+    private const string BaseSeedVariable = "DOTNEXT_RAFT_SIM_BASE_SEED";
 
     public static TheoryData<int, long> FixedSeeds()
     {
@@ -35,7 +36,9 @@ public sealed class SimulationTests : RaftTest
     /// <summary>
     /// Manual campaign. Set <c>DOTNEXT_RAFT_SIM_SEEDS=N</c> to run N random seeds for each cluster size, or
     /// <c>DOTNEXT_RAFT_SIM_SEED=S</c> to run one seed again. <c>DOTNEXT_RAFT_SIM_VOTERS</c> (3 or 5) limits the size and
-    /// <c>DOTNEXT_RAFT_SIM_STEPS</c> changes the length of the fault phase. The first failure stops the run and reports the seed and trace.
+    /// <c>DOTNEXT_RAFT_SIM_STEPS</c> changes the length of the fault phase. The N seeds are derived from
+    /// <c>DOTNEXT_RAFT_SIM_BASE_SEED</c> (random when unset, always printed), so the same base seed and count give the same seeds.
+    /// The first failure stops the run and reports the seed and trace.
     /// </summary>
     [Fact(Timeout = 4 * 60 * 60 * 1000)]
     public static async Task Campaign()
@@ -56,9 +59,19 @@ public sealed class SimulationTests : RaftTest
         }
         else
         {
-            for (var i = 0; i < int.Parse(seeds); i++)
+            var baseSeedText = Environment.GetEnvironmentVariable(BaseSeedVariable);
+            var baseSeed = string.IsNullOrEmpty(baseSeedText)
+                ? Random.Shared.NextInt64(1L, int.MaxValue)
+                : long.Parse(baseSeedText);
+            var count = int.Parse(seeds);
+            var message = $"campaign base seed={baseSeed} seeds={count} (replay the whole campaign with {BaseSeedVariable}={baseSeed} {SeedsVariable}={count})";
+            TestContext.Current.TestOutputHelper?.WriteLine(message);
+            Console.WriteLine(message);
+
+            var generator = new Random(unchecked((int)baseSeed ^ (int)(baseSeed >> 32)));
+            for (var i = 0; i < count; i++)
             {
-                var seed = Random.Shared.NextInt64(1L, int.MaxValue);
+                var seed = generator.NextInt64(1L, int.MaxValue);
                 runs.AddRange(sizes.Select(size => (size, seed)));
             }
         }

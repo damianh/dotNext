@@ -17,6 +17,9 @@ internal partial class ProtocolStream
     private ReadState readState;
     private int frameSize;
 
+    // the number of bytes of frame data returned to the reader since the last call of ResetReadState
+    private long frameDataLength;
+
     internal ValueTask ReadAsync(int count, CancellationToken token)
         => Payload is { } payload ? payload.GuardAsync(ReadCoreAsync(count, token)) : ReadCoreAsync(count, token);
 
@@ -125,6 +128,7 @@ internal partial class ProtocolStream
             count = buffer.Span.Slice(bufferStart, count) >>> output;
             bufferStart += count;
             frameSize -= count;
+            frameDataLength += count;
         }
 
         return count;
@@ -154,6 +158,7 @@ internal partial class ProtocolStream
                     AdvanceReadCursor(length);
                     frame = writtenBuffer.Slice(0, length);
                     frameSize -= length;
+                    frameDataLength += length;
                     return true;
                 }
             }
@@ -190,7 +195,8 @@ internal partial class ProtocolStream
                 if (bufferStart == bufferEnd)
                 {
                     bufferStart = 0;
-                    bufferEnd = ReadFromTransport(buffer.Span);
+                    if ((bufferEnd = ReadFromTransport(buffer.Span)) is 0)
+                        throw new EndOfStreamException();
                 }
 
                 // we can copy no more than remaining frame
@@ -238,12 +244,28 @@ internal partial class ProtocolStream
                     if (bufferStart == bufferEnd)
                     {
                         bufferStart = 0;
-                        bufferEnd = await ReadFromTransportAsync(buffer.Memory, token).ConfigureAwait(false);
+                        if ((bufferEnd = await ReadFromTransportAsync(buffer.Memory, token).ConfigureAwait(false)) is 0)
+                            throw new EndOfStreamException();
                     }
 
                     // we can copy no more than remaining frame
                     return ReadFrame(output.Span);
             }
+        }
+    }
+
+    /// <summary>
+    /// Ensures that the payload read up to its final frame has the declared length.
+    /// </summary>
+    /// <param name="declaredLength">The declared length of the payload; <see langword="null"/> if unknown.</param>
+    /// <exception cref="EndOfStreamException">The length of the payload doesn't match <paramref name="declaredLength"/>.</exception>
+    /// <exception cref="OperationCanceledException">The length of the payload doesn't match <paramref name="declaredLength"/> and <see cref="Payload"/> is set.</exception>
+    internal void EnsurePayloadLength(long? declaredLength)
+    {
+        if (declaredLength is { } expected && expected != frameDataLength)
+        {
+            var e = new EndOfStreamException(ExceptionMessages.PayloadLengthMismatch(frameDataLength, expected));
+            throw Payload?.Fail(e) ?? (Exception)e;
         }
     }
 
@@ -266,7 +288,8 @@ internal partial class ProtocolStream
                     if (bufferStart == bufferEnd)
                     {
                         bufferStart = 0;
-                        bufferEnd = await ReadFromTransportAsync(buffer.Memory, token).ConfigureAwait(false);
+                        if ((bufferEnd = await ReadFromTransportAsync(buffer.Memory, token).ConfigureAwait(false)) is 0)
+                            throw new EndOfStreamException();
                     }
 
                     SkipFrame();

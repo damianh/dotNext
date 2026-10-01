@@ -37,11 +37,19 @@ partial class Server
             }
             else
             {
-                task = writer.CopyFromAsync(protocol, count: null, token);
+                // a derived class can declare the length of the payload
+                task = CopyFromAsync(writer, protocol, ((IDataTransferObject)this).Length, token);
                 protocol = null;
             }
 
             return task;
+        }
+
+        private static async ValueTask CopyFromAsync<TWriter>(TWriter writer, ProtocolStream protocol, long? declaredLength, CancellationToken token)
+            where TWriter : IAsyncBinaryWriter
+        {
+            await writer.CopyFromAsync(protocol, count: null, token).ConfigureAwait(false);
+            protocol.EnsurePayloadLength(declaredLength);
         }
     }
 }

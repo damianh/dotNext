@@ -62,4 +62,7 @@ internal static class ExceptionMessages
     internal static string SnapshotRestoreCanceled => (string)Resources.Get();
 
     internal static string SnapshotInProgressCanceled => (string)Resources.Get();
+
+    internal static string PayloadLengthMismatch(long actualLength, long declaredLength)
+        => Resources.Get().Format(actualLength, declaredLength);
 }

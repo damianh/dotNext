@@ -132,6 +132,7 @@ internal abstract partial class ProtocolStream : ModernStream, IResettable
     {
         readState = ReadState.FrameNotStarted;
         frameSize = 0;
+        frameDataLength = 0L;
     }
 
     protected override void Dispose(bool disposing)

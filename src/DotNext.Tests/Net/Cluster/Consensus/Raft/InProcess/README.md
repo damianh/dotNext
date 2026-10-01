@@ -366,7 +366,8 @@ as `LIVENESS failure`, distinct from `SAFETY failure`.
 **Checking the checker.** Pure oracle tests (`SimulationTests`, the synchronous facts) feed each oracle a synthetic bad
 history and assert that it fails.
 
-**Replay.** The failure message contains the seed and the cluster size. Try it again with:
+**Replay.** The failure message contains the seed and the cluster size, and the first trace line also shows the steps
+(set `DOTNEXT_RAFT_SIM_STEPS` too if they are not the default 150). Try it again with:
 
 ```powershell
 $env:DOTNEXT_RAFT_SIM_SEED = '<seed>'; $env:DOTNEXT_RAFT_SIM_VOTERS = '<3 or 5>'
@@ -380,13 +381,29 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-class 'D
 ```
 
 **Campaign.** `Campaign` is skipped unless an environment variable is set. `DOTNEXT_RAFT_SIM_SEEDS=N` runs N random
-seeds for each size (roughly 0.7 s per run); `DOTNEXT_RAFT_SIM_STEPS` changes the fault-phase length. The first
-failure stops the run and prints the seed and trace.
+seeds for each size (roughly 0.7 s per run); `DOTNEXT_RAFT_SIM_STEPS` changes the fault-phase length. The N seeds are
+derived from `DOTNEXT_RAFT_SIM_BASE_SEED` (random when unset). The base seed is always printed to the console as
+`campaign base seed=B seeds=N`, so the same base seed and count give the same seeds again. The first failure stops the
+run and prints the seed and trace.
 
 ```powershell
 $env:DOTNEXT_RAFT_SIM_SEEDS = '200'
 dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-method '*SimulationTests.Campaign' --progress off
 ```
+
+**Nightly campaign.** `.github/workflows/raft-simulation.yml` runs the `SimulationTests` class (the fixed seeds, the
+oracle facts and the campaign) on `ubuntu-latest` and `windows-latest`:
+
+- nightly (`schedule`, from the default branch) with 300 seeds per size, both sizes, default steps and a random base seed;
+- on demand (`workflow_dispatch`) with the inputs `seeds`, `voters` (`both`, `3` or `5`), `steps` and `base_seed`, for
+  example `gh workflow run raft-simulation.yml --ref <branch> -f seeds=50 -f voters=5`;
+- on pull requests that change the workflow file, with 5 seeds.
+
+The job has a 60-minute timeout (45 minutes for the test step). Each run writes its parameters (base seed, seeds,
+voters, steps, commit) to the job summary. On failure the job summary lists every failing seed with its category,
+cluster size and steps. It also gives the replay command for the first failing seed and for the whole campaign
+(`DOTNEXT_RAFT_SIM_BASE_SEED` + `DOTNEXT_RAFT_SIM_SEEDS`). The console log and the TRX file, which contain the trace,
+are uploaded as the `raft-simulation-<os>-<attempt>` artifact. Check out the commit shown in the summary before you replay.
 
 Compaction is disabled on purpose (`IStateMachine.CreateNoOp` with a large threshold): a compacted prefix reads back
 as one empty term-0 snapshot entry, which does not map to log indexes.

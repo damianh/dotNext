@@ -1,0 +1,197 @@
+name: Raft simulation campaign
+
+# Runs the seeded Raft simulation campaign (SimulationTests.Campaign, #56 stage 1) with many random seeds.
+# See src/DotNext.Tests/Net/Cluster/Consensus/Raft/InProcess/README.md, "Seeded simulation".
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: Number of random seeds per cluster size
+        required: true
+        default: '300'
+        type: string
+      voters:
+        description: Cluster size
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - '3'
+          - '5'
+      steps:
+        description: Fault-phase length (empty for the test default, 150)
+        required: false
+        default: ''
+        type: string
+      base_seed:
+        description: Base seed the campaign seeds are derived from (empty for random)
+        required: false
+        default: ''
+        type: string
+  # A short campaign that checks edits to this workflow.
+  pull_request:
+    paths:
+      - .github/workflows/raft-simulation.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_NOLOGO: 'true'
+  RESULTS_DIR: TestResults/raft-simulation
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  campaign:
+    name: Campaign (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore src/DotNext.Tests/DotNext.Tests.csproj --configfile NuGet.config
+
+      # Test access to library internals is enabled only in Debug builds.
+      - name: Build tests
+        run: dotnet build src/DotNext.Tests/DotNext.Tests.csproj --configuration Debug --no-restore
+
+      - name: Resolve campaign parameters
+        env:
+          IN_SEEDS: ${{ github.event_name == 'pull_request' && '5' || inputs.seeds || '300' }}
+          IN_VOTERS: ${{ inputs.voters || 'both' }}
+          IN_STEPS: ${{ inputs.steps }}
+          IN_BASE_SEED: ${{ inputs.base_seed }}
+        run: |
+          is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
+          is_int "$IN_SEEDS" && [ "$IN_SEEDS" -gt 0 ] || { echo "::error::seeds must be a positive integer, got '$IN_SEEDS'"; exit 1; }
+          [[ "$IN_VOTERS" =~ ^(both|3|5)$ ]] || { echo "::error::voters must be both, 3 or 5, got '$IN_VOTERS'"; exit 1; }
+          [ -z "$IN_STEPS" ] || is_int "$IN_STEPS" || { echo "::error::steps must be an integer, got '$IN_STEPS'"; exit 1; }
+          base_seed="$IN_BASE_SEED"
+          if [ -z "$base_seed" ]; then
+            base_seed=$(( ((RANDOM << 15) | RANDOM) + 1 ))
+          fi
+          is_int "$base_seed" || { echo "::error::base_seed must be an integer, got '$base_seed'"; exit 1; }
+
+          {
+            echo "DOTNEXT_RAFT_SIM_SEEDS=$IN_SEEDS"
+            echo "DOTNEXT_RAFT_SIM_BASE_SEED=$base_seed"
+            [ "$IN_VOTERS" = both ] || echo "DOTNEXT_RAFT_SIM_VOTERS=$IN_VOTERS"
+            [ -z "$IN_STEPS" ] || echo "DOTNEXT_RAFT_SIM_STEPS=$IN_STEPS"
+          } >> "$GITHUB_ENV"
+
+          echo "campaign: base seed=$base_seed seeds=$IN_SEEDS voters=$IN_VOTERS steps=${IN_STEPS:-default}"
+          {
+            echo "### Raft simulation campaign (${{ matrix.os }})"
+            echo ""
+            echo "| Base seed | Seeds per size | Voters | Steps | Commit |"
+            echo "|---|---|---|---|---|"
+            echo "| \`$base_seed\` | $IN_SEEDS | $IN_VOTERS | ${IN_STEPS:-default} | \`$GITHUB_SHA\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The class filter also runs the fixed seeds and the oracle facts (about 10 s).
+      - name: Run simulation campaign
+        id: campaign
+        timeout-minutes: 45
+        run: |
+          set -o pipefail
+          mkdir -p "$RESULTS_DIR"
+          dotnet run --project src/DotNext.Tests/DotNext.Tests.csproj --configuration Debug --no-build -- \
+            --filter-class 'DotNext.Net.Cluster.Consensus.Raft.InProcess.SimulationTests' \
+            --progress off --timeout 40m \
+            --results-directory "$GITHUB_WORKSPACE/$RESULTS_DIR" \
+            --report-trx --report-trx-filename simulation.trx \
+            2>&1 | tee "$RESULTS_DIR/console.log"
+
+      - name: Summarize failure
+        if: ${{ failure() && steps.campaign.outcome != 'skipped' }}
+        run: |
+          sources=("$RESULTS_DIR/console.log" "$RESULTS_DIR"/*.trx)
+          failures=$(grep -ohE '(SAFETY|LIVENESS|HARNESS) failure \(seed=[0-9]+, voters=[0-9]+\)' "${sources[@]}" 2>/dev/null | awk '!seen[$0]++' | head -n 20 || true)
+          artifact="raft-simulation-${{ matrix.os }}-${{ github.run_attempt }}"
+          command_ps="dotnet run --project src\\DotNext.Tests\\DotNext.Tests.csproj -- --filter-method '*SimulationTests.Campaign' --progress off"
+          command_sh="dotnet run --project src/DotNext.Tests/DotNext.Tests.csproj -- --filter-method '*SimulationTests.Campaign' --progress off"
+          {
+            echo "### :x: Raft simulation failed (${{ matrix.os }})"
+            echo ""
+            if [ -z "$failures" ]; then
+              echo "No simulation failure line was found (build error, timeout or a failed oracle fact?)."
+              echo "See the job log and the \`$artifact\` artifact."
+            else
+              echo "| Category | Seed | Voters | Steps |"
+              echo "|---|---|---|---|"
+              first=""
+              while IFS= read -r failure; do
+                category=${failure%% failure*}
+                seed=$(sed -E 's/.*seed=([0-9]+).*/\1/' <<< "$failure")
+                voters=$(sed -E 's/.*voters=([0-9]+).*/\1/' <<< "$failure")
+                # the first trace line records the steps the run was configured with
+                steps=$(grep -ohE "seed=$seed voters=$voters steps=[0-9]+ revision=" "${sources[@]}" 2>/dev/null | head -n 1 | sed -E 's/.*steps=([0-9]+).*/\1/' || true)
+                echo "| $category | \`$seed\` | $voters | ${steps:-?} |"
+                [ -n "$first" ] || first="$seed $voters ${steps:-}"
+              done <<< "$failures"
+              read -r seed voters steps <<< "$first"
+              steps_ps=""; steps_sh=""
+              if [ -n "$steps" ]; then
+                steps_ps="; \$env:DOTNEXT_RAFT_SIM_STEPS = '$steps'"
+                steps_sh=" DOTNEXT_RAFT_SIM_STEPS=$steps"
+              fi
+              echo ""
+              echo "The trace (what actually happened; a seed alone is not a guarantee of replay) is in the job log and in the \`$artifact\` artifact."
+              echo ""
+              echo "Replay seed \`$seed\` with $voters voters at commit \`$GITHUB_SHA\`:"
+              echo ""
+              echo '```powershell'
+              echo "\$env:DOTNEXT_RAFT_SIM_SEED = '$seed'; \$env:DOTNEXT_RAFT_SIM_VOTERS = '$voters'$steps_ps"
+              echo "$command_ps"
+              echo '```'
+              echo ""
+              echo '```bash'
+              echo "DOTNEXT_RAFT_SIM_SEED=$seed DOTNEXT_RAFT_SIM_VOTERS=$voters$steps_sh $command_sh"
+              echo '```'
+            fi
+            campaign="DOTNEXT_RAFT_SIM_BASE_SEED=$DOTNEXT_RAFT_SIM_BASE_SEED DOTNEXT_RAFT_SIM_SEEDS=$DOTNEXT_RAFT_SIM_SEEDS"
+            [ -z "${DOTNEXT_RAFT_SIM_VOTERS:-}" ] || campaign="$campaign DOTNEXT_RAFT_SIM_VOTERS=$DOTNEXT_RAFT_SIM_VOTERS"
+            [ -z "${DOTNEXT_RAFT_SIM_STEPS:-}" ] || campaign="$campaign DOTNEXT_RAFT_SIM_STEPS=$DOTNEXT_RAFT_SIM_STEPS"
+            echo ""
+            echo "Replay the whole campaign:"
+            echo ""
+            echo '```bash'
+            echo "$campaign $command_sh"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r failure; do
+            [ -z "$failure" ] || echo "::error title=Raft simulation ${failure%% (*}::$failure"
+          done <<< "$failures"
+      - name: Upload test output and trace
+        if: ${{ failure() && hashFiles('TestResults/raft-simulation/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: raft-simulation-${{ matrix.os }}-${{ github.run_attempt }}
+          path: TestResults/raft-simulation/
+          if-no-files-found: error
+          retention-days: 14

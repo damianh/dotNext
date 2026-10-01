@@ -277,6 +277,52 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         }
     }
 
+    // The memory reserved for the snapshot configuration must be proportional to the bytes received. The configuration has no declared
+    // length on this transport: it is the sequence of frames that precede the snapshot. A frame that announces 2^27 bytes of which 8 are sent
+    // must not reserve memory for the announced size. The connection stays open, so the short frame is the only defect of the request.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task DeclaredConfigurationFrameLengthDoesNotDriveAllocation()
+    {
+        const int DeclaredLength = 1 << 27;
+        const int DeliveredLength = 8;
+        const long AllocationBudget = 32L << 20;
+
+        var state = CreateWal(new DrainingStateMachine());
+        try
+        {
+            await using var cluster = new RaftCluster(CreateConfiguration()) { AuditTrail = state };
+            await cluster.StartAsync(TestToken);
+
+            var sender = new ClusterMemberId(Random.Shared);
+            var request = new byte[1 + SnapshotMessage.Size + FrameHeaderSize + DeliveredLength];
+            var offset = 0;
+            request[offset++] = (byte)MessageType.InstallSnapshot;
+            var metadata = new byte[LogEntryMetadata.Size];
+            WriteMetadata(metadata, SenderTerm, isSnapshot: true, DeclaredPayloadLength);
+            new SnapshotMessage(sender, SenderTerm, SnapshotIndex: 10L, new LogEntryMetadata(metadata), ConfigurationVersion: 0L, StateVersion: 0)
+                .Format(request.AsSpan(offset));
+            offset += SnapshotMessage.Size;
+            BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(offset), int.MinValue | DeclaredLength);
+
+            var before = GC.GetTotalAllocatedBytes(precise: true);
+            using (var peer = await ConnectAsync())
+            {
+                await peer.SendAsync(request, SocketFlags.None, TestToken);
+                await Task.Delay(StallLeadTime, TestToken);
+                await ProbeAsync(cluster, sender, expectBlocked: false);
+            }
+
+            var allocated = GC.GetTotalAllocatedBytes(precise: true) - before;
+            TestContext.Current.TestOutputHelper?.WriteLine($"Declared {DeclaredLength} bytes, delivered {DeliveredLength}, allocated {allocated} bytes, last entry index {state.LastEntryIndex}");
+            True(allocated < AllocationBudget, $"Allocated {allocated} bytes for {DeliveredLength} delivered bytes");
+            Equal(0L, state.LastEntryIndex);
+            await AssertLogUsableAsync(state);
+        }
+        finally
+        {
+            await DisposeAsync(state);
+        }
+    }
     // one entry announcing 1 KiB of payload, but only 16 bytes are sent
     private static byte[] PartialAppendEntriesRequest(ClusterMemberId sender, long declaredLength = DeclaredPayloadLength, int frameLength = DeclaredPayloadLength)
     {

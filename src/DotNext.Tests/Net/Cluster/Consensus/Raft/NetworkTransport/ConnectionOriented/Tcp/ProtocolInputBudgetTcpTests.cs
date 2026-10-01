@@ -249,6 +249,34 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         }
     }
 
+    // A snapshot whose final frame is shorter than its declared length must not be installed (#97).
+    // The connection stays open, so the mismatch is the only defect of the request.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task SnapshotShorterThanDeclaredLengthIsNotInstalled()
+    {
+        var state = CreateWal(new DrainingStateMachine());
+        try
+        {
+            await using var cluster = new RaftCluster(CreateConfiguration()) { AuditTrail = state };
+            await cluster.StartAsync(TestToken);
+
+            var sender = new ClusterMemberId(Random.Shared);
+            using (var peer = await ConnectAsync())
+            {
+                await peer.SendAsync(PartialInstallSnapshotRequest(sender, DeliveredPayloadLength), SocketFlags.None, TestToken);
+                await Task.Delay(StallLeadTime, TestToken);
+                await ProbeAsync(cluster, sender, expectBlocked: false);
+            }
+
+            Equal(0L, state.LastEntryIndex);
+            await AssertLogUsableAsync(state);
+        }
+        finally
+        {
+            await DisposeAsync(state);
+        }
+    }
+
     // one entry announcing 1 KiB of payload, but only 16 bytes are sent
     private static byte[] PartialAppendEntriesRequest(ClusterMemberId sender, long declaredLength = DeclaredPayloadLength, int frameLength = DeclaredPayloadLength)
     {
@@ -263,7 +291,7 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
     }
 
     // header, an empty final configuration frame, then a snapshot announcing 1 KiB with 16 bytes sent
-    private static byte[] PartialInstallSnapshotRequest(ClusterMemberId sender)
+    private static byte[] PartialInstallSnapshotRequest(ClusterMemberId sender, int frameLength = DeclaredPayloadLength)
     {
         var request = new byte[1 + SnapshotMessage.Size + FrameHeaderSize + FrameHeaderSize + DeliveredPayloadLength];
         var offset = 0;
@@ -275,7 +303,7 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         offset += SnapshotMessage.Size;
         BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(offset), int.MinValue);
         offset += FrameHeaderSize;
-        BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(offset), int.MinValue | DeclaredPayloadLength);
+        BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(offset), int.MinValue | frameLength);
         return request;
     }
 

@@ -238,6 +238,49 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         }
     }
 
+    // A snapshot configuration whose member count is negative or exceeds the payload is not a valid configuration.
+    // It must not replace the applied configuration, which stays decodable, and the node keeps serving requests.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(-1)]
+    [InlineData(1000)]
+    public static async Task MalformedSnapshotConfigurationIsNotApplied(int memberCount)
+    {
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var storage = host.Services.GetRequiredService<IClusterConfigurationStorage<UriEndPoint>>();
+            var (_, versionBefore) = await ((IClusterConfigurationStorage)storage).LoadConfigurationAsync(TestToken);
+            Equal(2, (await storage.LoadConfigurationAsync(TestToken)).Members.Count);
+
+            var configuration = new byte[sizeof(int)];
+            BinaryPrimitives.WriteInt32LittleEndian(configuration, memberCount);
+            var sender = new ClusterMemberId(Random.Shared);
+            var response = await SendAsync(FormatRequest(InstallSnapshotHeaders(sender, configuration.Length.ToString(), configVersion: "5"),
+                "application/octet-stream", contentLength: null, Chunked([.. configuration, .. new byte[DeliveredPayloadLength]])))
+                .WaitAsync(ReleaseDeadline, TestToken);
+
+            var memberCountAfter = -1;
+            var versionAfter = -1L;
+            var load = await Record.ExceptionAsync(async () =>
+            {
+                memberCountAfter = (await storage.LoadConfigurationAsync(TestToken)).Members.Count;
+                versionAfter = (await ((IClusterConfigurationStorage)storage).LoadConfigurationAsync(TestToken)).Version;
+            });
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"InstallSnapshot: {StatusLine(response)}, applied configuration: {memberCountAfter} members, version {versionBefore} -> {versionAfter}, load: {load?.GetType().Name ?? "OK"}");
+
+            Null(load);
+            Equal(2, memberCountAfter);
+            Equal(versionBefore, versionAfter);
+            StartsWith("HTTP/1.1 200", await SendAsync(HeartbeatRequest(sender)).WaitAsync(ReleaseDeadline, TestToken));
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
     // A declared entry count beyond the delivered entries must not make the follower commit or acknowledge
     // entries it has not received; the node stays available. The follower has an uncommitted tail that the leader
     // has not confirmed, so a commit index derived from the declared count would commit it.

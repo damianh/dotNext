@@ -108,31 +108,46 @@ internal abstract partial class Server : Disposable, IServer
         await protocol.ReadAsync(SnapshotMessage.Size, token).ConfigureAwait(false);
 
         var snapshot = new ReceivedSnapshot(protocol);
-        
-        // read configuration first
-        var configuration = new ProtocolStreamSegment(protocol);
-        await localMember
-            .InstallConfigurationAsync(
+        Result<HeartbeatResult> response;
+        var payload = protocol.Payload = new PayloadSourceScope(token);
+        try
+        {
+            // read configuration first
+            var configuration = new ProtocolStreamSegment(protocol);
+            await localMember
+                .InstallConfigurationAsync(
+                    snapshot.Message.Term,
+                    configuration,
+                    snapshot.Message.ConfigurationVersion,
+                    payload.Token)
+                .ConfigureAwait(false);
+
+            // skip contents of the configuration if it wasn't consumed
+            await configuration.EnsureConsumedAsync(payload.Token).ConfigureAwait(false);
+
+            protocol.ResetReadState();
+            response = await localMember.InstallSnapshotAsync(
+                snapshot.Message.Id,
                 snapshot.Message.Term,
-                configuration,
-                snapshot.Message.ConfigurationVersion,
-                token)
-            .ConfigureAwait(false);
+                snapshot,
+                snapshot.Message.SnapshotIndex,
+                snapshot.Message.StateVersion,
+                payload.Token).ConfigureAwait(false);
 
-        // skip contents of the configuration if it wasn't consumed
-        await configuration.EnsureConsumedAsync(token).ConfigureAwait(false);
-        
-        protocol.ResetReadState();
-        var response = await localMember.InstallSnapshotAsync(
-            snapshot.Message.Id,
-            snapshot.Message.Term,
-            snapshot,
-            snapshot.Message.SnapshotIndex,
-            snapshot.Message.StateVersion,
-            token).ConfigureAwait(false);
+            // skip contents of the snapshot if it wasn't consumed
+            await snapshot.EnsureConsumedAsync(payload.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            payload.ThrowIfSourceFailed();
+            throw;
+        }
+        finally
+        {
+            protocol.Payload = null;
+            payload.Dispose();
+        }
 
-        // skip contents of the snapshot if it wasn't consumed
-        await snapshot.EnsureConsumedAsync(token).ConfigureAwait(false);
         protocol.Reset();
         
         await protocol.WriteHeartbeatResultAsync(in response, token).ConfigureAwait(false);
@@ -142,16 +157,31 @@ internal abstract partial class Server : Disposable, IServer
     private async ValueTask AppendEntriesAsync(ProtocolStream protocol, CancellationToken token)
     {
         await protocol.ReadAsync(AppendEntriesMessage.Size, token).ConfigureAwait(false);
-        var response = await AppendEntriesAsync(localMember, out var enumerator, protocol, token).ConfigureAwait(false);
+        PayloadSourceScope? payload = null;
+        Result<ReplicationStatus> response;
         try
         {
-            // skip remaining log entries
-            while (await enumerator.MoveNextAsync().ConfigureAwait(false))
-                await protocol.SkipAsync(token).ConfigureAwait(false);
+            response = await AppendEntriesAsync(localMember, out var enumerator, out payload, protocol, token).ConfigureAwait(false);
+            try
+            {
+                // skip remaining log entries
+                while (await enumerator.MoveNextAsync().ConfigureAwait(false))
+                    await protocol.SkipAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (payload is not null)
+        {
+            payload.ThrowIfSourceFailed();
+            throw;
         }
         finally
         {
-            await enumerator.DisposeAsync().ConfigureAwait(false);
+            protocol.Payload = null;
+            payload?.Dispose();
         }
 
         protocol.Reset();
@@ -159,16 +189,25 @@ internal abstract partial class Server : Disposable, IServer
     }
     
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static ValueTask<Result<ReplicationStatus>> AppendEntriesAsync(ILocalMember localMember, out IAsyncEnumerator<IRaftLogEntry> enumerator, ProtocolStream protocol,
-        CancellationToken token)
+    private static ValueTask<Result<ReplicationStatus>> AppendEntriesAsync(ILocalMember localMember, out IAsyncEnumerator<IRaftLogEntry> enumerator,
+        out PayloadSourceScope? payload, ProtocolStream protocol, CancellationToken token)
     {
         var reader = new SpanReader<byte>(protocol.WrittenBufferSpan);
         var message = reader.Read<AppendEntriesMessage>();
         protocol.AdvanceReadCursor(reader.ConsumedCount);
 
-        var entries = message.EntriesCount > 0
-            ? new ReceivedLogEntries(protocol, message.EntriesCount, token)
-            : ILogEntryProducer<IRaftLogEntry>.Empty;
+        ILogEntryProducer<IRaftLogEntry> entries;
+        if (message.EntriesCount > 0)
+        {
+            protocol.Payload = payload = new(token);
+            token = payload.Token;
+            entries = new ReceivedLogEntries(protocol, message.EntriesCount, token);
+        }
+        else
+        {
+            payload = null;
+            entries = ILogEntryProducer<IRaftLogEntry>.Empty;
+        }
 
         enumerator = entries;
         return localMember.AppendEntriesAsync(message.Id,

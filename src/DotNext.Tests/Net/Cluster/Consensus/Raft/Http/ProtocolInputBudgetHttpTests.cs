@@ -28,12 +28,98 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
     private const string ProtocolPath = "/cluster-consensus/raft";
     private const long SenderTerm = 5L;
     private const int MetadataSize = 21; // see NetworkTransport.LogEntryMetadata
+    private const int DeclaredPayloadLength = 1024;
     private const int DeliveredPayloadLength = 16;
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(1);
 
     // Bounds every request of a test. The slack absorbs scheduling delays on a loaded CI agent.
     private static readonly TimeSpan ReleaseDeadline = RequestTimeout + TimeSpan.FromSeconds(2);
+
+    // Bounds a request that only Kestrel's MinRequestBodyDataRate (5 second grace period by default) releases.
+    private static readonly TimeSpan ObservationLimit = TimeSpan.FromSeconds(15);
+
+    // Gives the server time to parse the headers and enter the handler before the peer disconnects.
+    private static readonly TimeSpan StallLeadTime = TimeSpan.FromMilliseconds(300);
+
+    // A peer that disconnects in the middle of the body causes a transport failure, not a cancellation.
+    // The follower must stay available, and the partially received entry or snapshot must not be in the log (#90).
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public static async Task PeerDisconnectMidBodyLeavesLogUsable(bool snapshot, bool reset)
+    {
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var sender = new ClusterMemberId(Random.Shared);
+            using (var peer = await ConnectAsync())
+            {
+                await peer.SendAsync(PartialRequest(sender, snapshot), SocketFlags.None, TestToken);
+                await Task.Delay(StallLeadTime, TestToken);
+
+                if (reset)
+                {
+                    Reset(peer);
+                }
+                else
+                {
+                    peer.Shutdown(SocketShutdown.Send);
+                    peer.Close();
+                }
+            }
+
+            var response = await SendAsync(HeartbeatRequest(sender)).WaitAsync(ReleaseDeadline, TestToken);
+            var log = AuditTrail(host);
+            TestContext.Current.TestOutputHelper?.WriteLine($"Probe: {StatusLine(response)}, last entry index: {log.LastEntryIndex}");
+
+            StartsWith("HTTP/1.1 200", response);
+            Equal(0L, log.LastEntryIndex);
+            True(await IsLogUsableAsync(log), "The log rejects appends");
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // A peer that stalls in the middle of the body is cut off by Kestrel's MinRequestBodyDataRate.
+    // That timeout must cost the request only, as a disconnect does (#90). How soon the request is released
+    // is not covered here (#91).
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task MinRequestBodyDataRateMidBodyLeavesLogUsable(bool snapshot)
+    {
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        var peer = await ConnectAsync();
+        try
+        {
+            var sender = new ClusterMemberId(Random.Shared);
+            await peer.SendAsync(PartialRequest(sender, snapshot), SocketFlags.None, TestToken);
+            await Task.Delay(StallLeadTime, TestToken);
+
+            // a heartbeat always acquires the transition lock, so it completes after the stalled request is released
+            var timer = Stopwatch.StartNew();
+            var response = await SendAsync(HeartbeatRequest(sender)).WaitAsync(ObservationLimit, TestToken);
+            timer.Stop();
+            var log = AuditTrail(host);
+            TestContext.Current.TestOutputHelper?.WriteLine($"Probe after {timer.Elapsed}: {StatusLine(response)}, last entry index: {log.LastEntryIndex}");
+
+            StartsWith("HTTP/1.1 200", response);
+            Equal(0L, log.LastEntryIndex);
+            True(await IsLogUsableAsync(log), "The log rejects appends");
+        }
+        finally
+        {
+            Reset(peer);
+            await host.StopAsync(TestToken);
+        }
+    }
 
     // X-Raft-Config-Length that is negative or exceeds the known Content-Length is a protocol error:
     // the request is rejected, nothing is staged or installed, and the node keeps serving requests.
@@ -200,6 +286,21 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         True(await IsLogUsableAsync(log), "The log rejects appends");
     }
 
+    // one entry (or a snapshot) announcing 1 KiB of payload, but only 16 bytes are sent
+    private static byte[] PartialRequest(ClusterMemberId sender, bool snapshot)
+    {
+        if (snapshot)
+        {
+            return FormatRequest(InstallSnapshotHeaders(sender, configLength: "0"), "application/octet-stream",
+                contentLength: DeclaredPayloadLength, new byte[DeliveredPayloadLength]);
+        }
+
+        var body = new byte[MetadataSize + DeliveredPayloadLength];
+        WriteMetadata(body, SenderTerm, DeclaredPayloadLength);
+        return FormatRequest(AppendEntriesHeaders(sender, entriesCount: 1), "application/octet-stream",
+            contentLength: MetadataSize + DeclaredPayloadLength, body);
+    }
+
     private static byte[] HeartbeatRequest(ClusterMemberId sender)
         => FormatRequest(AppendEntriesHeaders(sender, entriesCount: 0), contentType: null, contentLength: 0L, []);
 
@@ -221,6 +322,12 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
             TestContext.Current.TestOutputHelper?.WriteLine($"Append failed: {e.GetType().Name}: {e.Message}");
             return false;
         }
+    }
+
+    private static void Reset(Socket socket)
+    {
+        socket.LingerState = new(true, 0);
+        socket.Close();
     }
 
     private static IHost CreateHost(bool useWal = true) => new HostBuilder()

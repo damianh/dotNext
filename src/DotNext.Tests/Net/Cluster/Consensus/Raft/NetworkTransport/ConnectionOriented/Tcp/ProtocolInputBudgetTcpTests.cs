@@ -87,6 +87,46 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         }
     }
 
+    // A peer that disconnects in the middle of the body causes a transport failure, not a cancellation.
+    // The follower must stay available: the transition lock is released, the partial write is rolled back
+    // and the log accepts further appends (#90). A graceful close (FIN) mid-body is covered by #97.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public static async Task PeerDisconnectMidBodyLeavesLogUsable(bool snapshot, bool reset)
+    {
+        var state = CreateWal(snapshot ? new DrainingStateMachine() : IStateMachine.CreateNoOp());
+        try
+        {
+            await using var cluster = new RaftCluster(CreateConfiguration()) { AuditTrail = state };
+            await cluster.StartAsync(TestToken);
+
+            var sender = new ClusterMemberId(Random.Shared);
+            using (var peer = await ConnectAsync())
+            {
+                await peer.SendAsync(snapshot ? PartialInstallSnapshotRequest(sender) : PartialAppendEntriesRequest(sender), SocketFlags.None, TestToken);
+                await Task.Delay(StallLeadTime, TestToken);
+
+                if (reset)
+                    peer.LingerState = new(true, 0);
+                else
+                    peer.Shutdown(SocketShutdown.Send);
+
+                peer.Close();
+            }
+
+            await ProbeAsync(cluster, sender, expectBlocked: false);
+
+            // an entry or snapshot whose declared payload was not fully received is not in the log
+            Equal(0L, state.LastEntryIndex);
+            await AssertLogUsableAsync(state);
+        }
+        finally
+        {
+            await DisposeAsync(state);
+        }
+    }
+
     // The memory reserved for received entries must be proportional to the entries received, not to the declared count.
     // The peer declares 2^25 entries, sends none and closes the connection.
     // ConsensusOnlyState is not covered: it reserves memory for the declared count (see RAFT-REVIEW.md, #22).

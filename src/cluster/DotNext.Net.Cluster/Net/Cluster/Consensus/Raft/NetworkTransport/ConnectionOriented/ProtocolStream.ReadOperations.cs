@@ -18,6 +18,9 @@ internal partial class ProtocolStream
     private int frameSize;
 
     internal ValueTask ReadAsync(int count, CancellationToken token)
+        => Payload is { } payload ? payload.GuardAsync(ReadCoreAsync(count, token)) : ReadCoreAsync(count, token);
+
+    private ValueTask ReadCoreAsync(int count, CancellationToken token)
     {
         if (bufferEnd - bufferStart >= count)
             return ValueTask.CompletedTask;
@@ -162,6 +165,18 @@ internal partial class ProtocolStream
 
     public sealed override int Read(Span<byte> output)
     {
+        try
+        {
+            return ReadCore(output);
+        }
+        catch (Exception e) when (Payload is { } payload && PayloadSourceScope.IsSourceFailure(e))
+        {
+            throw payload.Fail(e);
+        }
+    }
+
+    private int ReadCore(Span<byte> output)
+    {
     check_state:
         switch (readState, frameSize is 0)
         {
@@ -204,7 +219,10 @@ internal partial class ProtocolStream
         EndReadFrameHeader();
     }
 
-    public sealed override async ValueTask<int> ReadAsync(Memory<byte> output, CancellationToken token)
+    public sealed override ValueTask<int> ReadAsync(Memory<byte> output, CancellationToken token)
+        => Payload is { } payload ? payload.GuardAsync(ReadCoreAsync(output, token)) : ReadCoreAsync(output, token);
+
+    private async ValueTask<int> ReadCoreAsync(Memory<byte> output, CancellationToken token)
     {
         while (true)
         {
@@ -229,7 +247,10 @@ internal partial class ProtocolStream
         }
     }
 
-    internal async ValueTask SkipAsync(CancellationToken token)
+    internal ValueTask SkipAsync(CancellationToken token)
+        => Payload is { } payload ? payload.GuardAsync(SkipCoreAsync(token)) : SkipCoreAsync(token);
+
+    private async ValueTask SkipCoreAsync(CancellationToken token)
     {
         while (true)
         {

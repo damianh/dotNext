@@ -336,14 +336,20 @@ internal partial class RaftHttpCluster : IOutputChannel
 
     private async Task AppendEntriesAsync(HttpRequest request, HttpResponse response, CancellationToken token)
     {
-        var message = new AppendEntriesMessage(request, out var entries);
+        using var payload = new PayloadSourceScope(token);
+        var message = new AppendEntriesMessage(request, payload, out var entries);
         TryGetMember(message.Sender)?.Touch();
 
         try
         {
             var result = await AppendEntriesAsync(message.Sender, message.ConsensusTerm, entries, message.PrevLogIndex, message.PrevLogTerm,
-                message.CommitIndex, message.StateVersion, token).ConfigureAwait(false);
+                message.CommitIndex, message.StateVersion, payload.Token).ConfigureAwait(false);
             await AppendEntriesMessage.SaveResponseAsync(response, result, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            payload.ThrowIfSourceFailed();
+            throw;
         }
         finally
         {
@@ -351,28 +357,38 @@ internal partial class RaftHttpCluster : IOutputChannel
         }
     }
 
-    private async Task InstallSnapshotAsync(InstallSnapshotMessage message, HttpResponse response, CancellationToken token)
+    private async Task InstallSnapshotAsync(HttpRequest request, HttpResponse response, CancellationToken token)
     {
+        using var payload = new PayloadSourceScope(token);
+        var message = new InstallSnapshotMessage(request, payload);
         TryGetMember(message.Sender)?.Touch();
-        
-        await InstallConfigurationAsync(
-            message.ConsensusTerm,
-            message.Configuration,
-            message.ConfigurationVersion,
-            token).ConfigureAwait(false);
-            
-        // make sure that the configuration is consumed
-        await message.EnsureConfigurationConsumedAsync(token).ConfigureAwait(false);
 
-        // install snapshot
-        var result = await InstallSnapshotAsync(
-            message.Sender,
-            message.ConsensusTerm,
-            message.Snapshot,
-            message.Index,
-            message.StateVersion,
-            token).ConfigureAwait(false);
-        await InstallSnapshotMessage.SaveResponseAsync(response, result, token).ConfigureAwait(false);
+        try
+        {
+            await InstallConfigurationAsync(
+                message.ConsensusTerm,
+                message.Configuration,
+                message.ConfigurationVersion,
+                payload.Token).ConfigureAwait(false);
+
+            // make sure that the configuration is consumed
+            await message.EnsureConfigurationConsumedAsync(payload.Token).ConfigureAwait(false);
+
+            // install snapshot
+            var result = await InstallSnapshotAsync(
+                message.Sender,
+                message.ConsensusTerm,
+                message.Snapshot,
+                message.Index,
+                message.StateVersion,
+                payload.Token).ConfigureAwait(false);
+            await InstallSnapshotMessage.SaveResponseAsync(response, result, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            payload.ThrowIfSourceFailed();
+            throw;
+        }
     }
 
     private async Task SynchronizeAsync(SynchronizeMessage message, HttpResponse response, CancellationToken token)
@@ -411,7 +427,7 @@ internal partial class RaftHttpCluster : IOutputChannel
             SynchronizeMessage.MessageType => SynchronizeAsync(new SynchronizeMessage(request), response, token),
             RequestVoteMessage.MessageType => VoteAsync(new RequestVoteMessage(request), response, token),
             PreVoteMessage.MessageType => PreVoteAsync(new PreVoteMessage(request), response, token),
-            InstallSnapshotMessage.MessageType => InstallSnapshotAsync(new InstallSnapshotMessage(request), response, token),
+            InstallSnapshotMessage.MessageType => InstallSnapshotAsync(request, response, token),
             CustomMessage.MessageType => ReceiveMessageAsync(new CustomMessage(request), response, token),
             ResignMessage.MessageType => ResignAsync(new ResignMessage(request), response, token),
             MetadataMessage.MessageType => GetMetadataAsync(new MetadataMessage(request), response, token),

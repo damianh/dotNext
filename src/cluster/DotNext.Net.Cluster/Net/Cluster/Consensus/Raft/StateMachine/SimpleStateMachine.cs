@@ -261,8 +261,7 @@ public abstract partial class SimpleStateMachine : IAsyncDisposable, IStateMachi
         Interlocked.CompareExchange(ref snapshottingProcess, null, task);
     }
 
-    // BeginSnapshottingAsync has already disposed the writer and deleted its temporary file, so nothing is left to publish.
-    // Only the caller that clears the process reports the failure.
+    // The writer of a failed snapshot is not committed. Only the caller that clears the process reports the failure.
     private void DropFailedSnapshot(Task<SnapshotWriter> task, Exception failure)
     {
         if (ReferenceEquals(Interlocked.CompareExchange(ref snapshottingProcess, null, task), task))

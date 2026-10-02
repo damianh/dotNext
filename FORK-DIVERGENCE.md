@@ -132,6 +132,14 @@ record is durable. A failed or cancelled write leaves the published term and
 vote unchanged, so a term is never acknowledged in an RPC reply before it
 survives a restart. The persisted format is unchanged. See the "Supported
 storage and crash model" section of `src\cluster\README.md`.
+
+The directory is fsynced whenever the `state` file is opened, including
+immediately after its first creation (#82), so a failed barrier is retried on
+reopen. On filesystems and devices that honour directory fsync, this prevents a
+first-boot term and vote from vanishing from the directory on power loss; macOS
+power-loss durability remains unsupported as documented in
+`src\cluster\README.md`.
+
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.

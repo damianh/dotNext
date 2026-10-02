@@ -32,7 +32,7 @@ partial class WriteAheadLog
         private (long Term, BoxedClusterMemberId? Vote) staged;
         private bool suspect;
 
-        public NodeState(DirectoryInfo location)
+        public NodeState(DirectoryInfo location, Action<DirectoryInfo> flushDirectory)
         {
             var path = Path.Combine(location.FullName, FileName);
             long preallocationSize;
@@ -56,6 +56,18 @@ partial class WriteAheadLog
             {
                 Array.Clear(buffer);
                 RandomAccess.Write(handle, buffer, fileOffset: 0L);
+            }
+
+            // WriteThrough makes the data durable, not the directory entry. Repeat the barrier on reopen
+            // so an earlier failed publication is retried independently of whether cleanup succeeded.
+            try
+            {
+                flushDirectory(location);
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
             }
 
             if (Unsafe.BitCast<byte, bool>(buffer[LastVotePresenceOffset]))

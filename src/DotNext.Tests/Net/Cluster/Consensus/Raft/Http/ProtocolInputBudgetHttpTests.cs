@@ -747,7 +747,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
     private static byte[] MultipartRequest(ClusterMemberId sender, long entriesCount, params string[][] sections)
         => MultipartRequest(sender, entriesCount, closed: true, sections);
 
-    // closed: false omits the closing boundary, so the body ends inside the last section
+    // closed: false omits only the closing boundary, so every section is delimited but the body ends inside the last one
     private static byte[] MultipartRequest(ClusterMemberId sender, long entriesCount, bool closed, params string[][] sections)
     {
         const string Boundary = "entries";
@@ -756,8 +756,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         {
             body.AddRange(Encoding.ASCII.GetBytes($"--{Boundary}\r\n{string.Concat(headers.Select(static h => $"{h}\r\n"))}\r\n"));
             body.AddRange(new byte[DeliveredPayloadLength]);
-            if (closed)
-                body.AddRange("\r\n"u8.ToArray());
+            body.AddRange("\r\n"u8.ToArray());
         }
 
         if (closed)

@@ -42,6 +42,9 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
     // 5 second MinRequestBodyDataRate grace period.
     private static readonly TimeSpan ReleaseDeadline = RequestTimeout + TimeSpan.FromSeconds(2);
 
+    // The node cancels a stalled request after RequestTimeout. The tolerance absorbs scheduling delays on a loaded CI agent.
+    private static readonly TimeSpan SchedulingTolerance = TimeSpan.FromSeconds(1);
+
     // Bounds a request that only Kestrel's MinRequestBodyDataRate releases, and how long a test watches a request
     // that is not released, to report the actual release time.
     private static readonly TimeSpan ObservationLimit = TimeSpan.FromSeconds(15);
@@ -67,6 +70,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         Task<string> probe = null;
         try
         {
+            var requestTimer = Stopwatch.StartNew();
             await peer.SendAsync(PartialRequest(sender, snapshot), SocketFlags.None, TestToken);
             await Task.Delay(StallLeadTime, TestToken);
 
@@ -89,7 +93,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
 
             // the stalled request held the lock, otherwise the probe would not test anything
             True(timer.Elapsed >= TimeSpan.FromMilliseconds(250), $"The probe was not blocked ({timer.Elapsed})");
-            True(timer.Elapsed <= ReleaseDeadline, $"The transition lock was held for {timer.Elapsed + StallLeadTime}, RequestTimeout is {RequestTimeout}");
+            True(requestTimer.Elapsed <= RequestTimeout + SchedulingTolerance, $"The transition lock was held for {requestTimer.Elapsed}, RequestTimeout is {RequestTimeout}");
             StartsWith("HTTP/1.1 200", response);
 
             var stalled = await ReceiveOutcomeAsync(peer).WaitAsync(ReleaseDeadline, TestToken);
@@ -100,6 +104,59 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
             Equal(0L, log.LastEntryIndex);
             True(await IsLogUsableAsync(log), "The log rejects appends");
             StartsWith("HTTP/1.1 200", await SendAsync(HeartbeatRequest(sender)).WaitAsync(ReleaseDeadline, TestToken));
+        }
+        finally
+        {
+            // reset the stalled connection so that the host can stop
+            Reset(peer);
+            if (probe is not null)
+                await probe.ContinueWith(static _ => { }, TestToken);
+
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // The node's RequestTimeout must also bound the request that stalls while the entry framing is parsed, not only
+    // the entry payload: the metadata of an octet-stream entry and the headers of a multipart section.
+    // Kestrel's MinRequestBodyDataRate is disabled, so that only the node's own deadline can release the request.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task StalledEntryFramingReleasesTransitionLockWithinRequestTimeout(bool multipart)
+    {
+        using var host = CreateHost(kestrelMinDataRate: false);
+        await host.StartAsync(TestToken);
+        var sender = new ClusterMemberId(Random.Shared);
+        var peer = await ConnectAsync();
+        Task<string> probe = null;
+        try
+        {
+            var requestTimer = Stopwatch.StartNew();
+            await peer.SendAsync(multipart ? PartialMultipartHeadersRequest(sender) : PartialMetadataRequest(sender), SocketFlags.None, TestToken);
+            await Task.Delay(StallLeadTime, TestToken);
+
+            // a heartbeat always acquires the transition lock
+            probe = SendAsync(HeartbeatRequest(sender));
+            string response;
+            try
+            {
+                response = await probe.WaitAsync(ObservationLimit, TestToken);
+            }
+            catch (TimeoutException)
+            {
+                Fail($"The transition lock was not released within {ObservationLimit + StallLeadTime}, RequestTimeout is {RequestTimeout}");
+                throw;
+            }
+
+            requestTimer.Stop();
+            TestContext.Current.TestOutputHelper?.WriteLine($"Probe acquired the transition lock after {requestTimer.Elapsed}: {StatusLine(response)}");
+
+            True(requestTimer.Elapsed <= RequestTimeout + SchedulingTolerance, $"The transition lock was held for {requestTimer.Elapsed}, RequestTimeout is {RequestTimeout}");
+            StartsWith("HTTP/1.1 200", response);
+
+            var log = AuditTrail(host);
+            Equal(0L, log.LastEntryIndex);
+            True(await IsLogUsableAsync(log), "The log rejects appends");
         }
         finally
         {
@@ -203,6 +260,10 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         await host.StartAsync(TestToken);
         try
         {
+            var storage = host.Services.GetRequiredService<IClusterConfigurationStorage<UriEndPoint>>();
+            var (current, versionBefore) = await ((IClusterConfigurationStorage)storage).LoadConfigurationAsync(TestToken);
+            var configuration = await current.ToByteArrayAsync(token: TestToken);
+
             var sender = new ClusterMemberId(Random.Shared);
             var response = await SendAsync(FormatRequest(InstallSnapshotHeaders(sender, configLength), "application/octet-stream",
                 contentLength: DeliveredPayloadLength, new byte[DeliveredPayloadLength])).WaitAsync(ReleaseDeadline, TestToken);
@@ -210,6 +271,18 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
             DoesNotMatch(@"^HTTP/1\.1 2\d\d", response);
 
             await AssertAvailableAsync(host, sender);
+
+            // nothing was staged or installed: the applied configuration is unchanged, and a matching snapshot
+            // that follows the rejected one is installed with its own configuration
+            Equal(2, (await storage.LoadConfigurationAsync(TestToken)).Members.Count);
+            Equal(versionBefore, (await ((IClusterConfigurationStorage)storage).LoadConfigurationAsync(TestToken)).Version);
+
+            var matching = await SendAsync(FormatRequest(InstallSnapshotHeaders(sender, configuration.Length.ToString(), configVersion: "5"), "application/octet-stream",
+                contentLength: null, Chunked([.. configuration, .. new byte[DeliveredPayloadLength]]))).WaitAsync(ReleaseDeadline, TestToken);
+            StartsWith("HTTP/1.1 200", matching);
+            Equal(10L, AuditTrail(host).LastEntryIndex);
+            Equal(2, (await storage.LoadConfigurationAsync(TestToken)).Members.Count);
+            Equal(5L, (await ((IClusterConfigurationStorage)storage).LoadConfigurationAsync(TestToken)).Version);
         }
         finally
         {
@@ -548,8 +621,50 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         }
     }
 
-    // A declared entry length beyond the delivered payload must not drive allocation or persist a truncated entry.
-    // Whether the log stays usable after the failed read is not covered here (see RAFT-REVIEW.md, #22).
+    // A multipart request that fails after its first section wrote a new entry must cost that request only:
+    // the entry is rolled back and the log accepts further appends. The leader declares two entries,
+    // but sends one (missing section) or three (unexpected section), or the second section has an ambiguous header.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData("missing")]
+    [InlineData("unexpected")]
+    [InlineData("duplicate-header")]
+    [InlineData("missing-header")]
+    public static async Task MultipartRequestFailingAfterFirstEntryLeavesLogUsable(string defect)
+    {
+        string[] valid = [$"X-Raft-Record-Term: {SenderTerm}", "X-Raft-Configuration: false"];
+        string[] second = defect switch
+        {
+            "duplicate-header" => [$"X-Raft-Record-Term: {SenderTerm}", $"X-Raft-Record-Term: {SenderTerm}", "X-Raft-Configuration: false"],
+            "missing-header" => ["X-Raft-Configuration: false"],
+            _ => valid,
+        };
+
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var sender = new ClusterMemberId(Random.Shared);
+            var request = defect switch
+            {
+                "missing" => MultipartRequest(sender, 2L, valid),
+                "unexpected" => MultipartRequest(sender, 2L, valid, valid, valid),
+                _ => MultipartRequest(sender, 2L, valid, second),
+            };
+
+            var response = await SendAsync(request).WaitAsync(ReleaseDeadline, TestToken);
+            TestContext.Current.TestOutputHelper?.WriteLine($"{defect}: {StatusLine(response)}, last entry index {AuditTrail(host).LastEntryIndex}");
+
+            DoesNotContain("HTTP/1.1 2", StatusLine(response), StringComparison.Ordinal);
+            await AssertAvailableAsync(host, sender, maxLastEntryIndex: 2L);
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // A declared entry length beyond the delivered payload must not drive allocation or persist a truncated entry,
+    // and the request, which is complete from the point of view of HTTP, costs that request only: the log stays usable.
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(1L << 30)]
     [InlineData(long.MaxValue)]
@@ -577,6 +692,8 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
             True(allocated < AllocationBudget, $"Allocated {allocated} bytes for {DeliveredPayloadLength} delivered bytes");
             Equal(0L, log.LastEntryIndex);
             Equal(0L, log.LastCommittedEntryIndex);
+
+            await AssertAvailableAsync(host, sender);
         }
         finally
         {
@@ -620,6 +737,40 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         return FormatRequest(AppendEntriesHeaders(sender, entriesCount: 1L), $"multipart/mixed; boundary=\"{Boundary}\"", body.Length, body);
     }
 
+    // AppendEntries that declares entriesCount multipart entries and carries one section for every set of headers
+    private static byte[] MultipartRequest(ClusterMemberId sender, long entriesCount, params string[][] sections)
+    {
+        const string Boundary = "entries";
+        var body = new List<byte>();
+        foreach (var headers in sections)
+        {
+            body.AddRange(Encoding.ASCII.GetBytes($"--{Boundary}\r\n{string.Concat(headers.Select(static h => $"{h}\r\n"))}\r\n"));
+            body.AddRange(new byte[DeliveredPayloadLength]);
+            body.AddRange("\r\n"u8.ToArray());
+        }
+
+        body.AddRange(Encoding.ASCII.GetBytes($"--{Boundary}--\r\n"));
+        return FormatRequest(AppendEntriesHeaders(sender, entriesCount), $"multipart/mixed; boundary=\"{Boundary}\"", body.Count, [.. body]);
+    }
+
+    // one octet-stream entry whose metadata stops in the middle
+    private static byte[] PartialMetadataRequest(ClusterMemberId sender)
+    {
+        var body = new byte[MetadataSize];
+        WriteMetadata(body, SenderTerm, DeliveredPayloadLength);
+        return FormatRequest(AppendEntriesHeaders(sender, entriesCount: 1), "application/octet-stream",
+            contentLength: MetadataSize + DeliveredPayloadLength, body.AsSpan(0, MetadataSize / 2));
+    }
+
+    // a multipart entry whose section headers stop in the middle
+    private static byte[] PartialMultipartHeadersRequest(ClusterMemberId sender)
+    {
+        const string Boundary = "entries";
+        byte[] body = Encoding.ASCII.GetBytes($"--{Boundary}\r\nX-Raft-Record-Term: {SenderTerm}\r\n");
+        return FormatRequest(AppendEntriesHeaders(sender, entriesCount: 1), $"multipart/mixed; boundary=\"{Boundary}\"",
+            contentLength: body.Length + 1024, body);
+    }
+
     // parses a follower's response to AppendEntries that has the given header values (replaces the default value of that header)
     private static async Task<Result<ReplicationStatus>> ParseAppendEntriesResponseAsync(string header, params string[] values)
     {
@@ -656,13 +807,15 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
     private static byte[] Chunked(ReadOnlySpan<byte> body)
         => [.. Encoding.ASCII.GetBytes($"{body.Length:x}\r\n"), .. body, .. "\r\n0\r\n\r\n"u8];
 
-    private static async Task AssertAvailableAsync(IHost host, ClusterMemberId sender)
+    // Entries that were received completely before the request failed are valid and may stay in the log,
+    // but the entry that was not received completely must not
+    private static async Task AssertAvailableAsync(IHost host, ClusterMemberId sender, long maxLastEntryIndex = 0L)
     {
         var response = await SendAsync(HeartbeatRequest(sender)).WaitAsync(ReleaseDeadline, TestToken);
         StartsWith("HTTP/1.1 200", response);
 
         var log = AuditTrail(host);
-        Equal(0L, log.LastEntryIndex);
+        True(log.LastEntryIndex <= maxLastEntryIndex, $"Unexpected last entry index {log.LastEntryIndex}");
         True(await IsLogUsableAsync(log), "The log rejects appends");
     }
 

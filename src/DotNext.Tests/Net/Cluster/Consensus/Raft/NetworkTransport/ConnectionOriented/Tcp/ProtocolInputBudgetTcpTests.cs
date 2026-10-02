@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.NetworkTransport.ConnectionOriented.Tcp;
@@ -30,8 +31,11 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(1);
 
-    // The server cancels the request after RequestTimeout. The slack absorbs scheduling delays on a loaded CI agent.
+    // Bounds how long the test waits for any operation of the node.
     private static readonly TimeSpan ReleaseDeadline = RequestTimeout + TimeSpan.FromSeconds(2);
+
+    // The server cancels a stalled request after RequestTimeout. The tolerance absorbs scheduling delays on a loaded CI agent.
+    private static readonly TimeSpan SchedulingTolerance = TimeSpan.FromSeconds(1);
 
     // Gives the server time to read the header and enter the handler before the probe is sent.
     private static readonly TimeSpan StallLeadTime = TimeSpan.FromMilliseconds(300);
@@ -49,10 +53,11 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
 
             var sender = new ClusterMemberId(Random.Shared);
             using var peer = await ConnectAsync();
+            var requestTimer = Stopwatch.StartNew();
             await peer.SendAsync(PartialAppendEntriesRequest(sender), SocketFlags.None, TestToken);
             await Task.Delay(StallLeadTime, TestToken);
 
-            await ProbeAsync(cluster, sender, expectBlocked: true);
+            await ProbeAsync(cluster, sender, expectBlocked: true, requestTimer);
             await AssertConnectionClosedAsync(peer);
             await AssertLogUsableAsync(state);
         }
@@ -74,12 +79,40 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
 
             var sender = new ClusterMemberId(Random.Shared);
             using var peer = await ConnectAsync();
+            var requestTimer = Stopwatch.StartNew();
             await peer.SendAsync(PartialInstallSnapshotRequest(sender), SocketFlags.None, TestToken);
             await Task.Delay(StallLeadTime, TestToken);
 
-            await ProbeAsync(cluster, sender, expectBlocked: true);
+            await ProbeAsync(cluster, sender, expectBlocked: true, requestTimer);
             await AssertConnectionClosedAsync(peer);
             await AssertLogUsableAsync(state);
+        }
+        finally
+        {
+            await DisposeAsync(state);
+        }
+    }
+
+    // The payload scope must not change how the server classifies the cancellation of a request:
+    // a stalled body is a timeout of the request, which the server reports.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task StalledBodyIsReportedAsRequestTimeout(bool snapshot)
+    {
+        var loggerFactory = new CapturingLoggerFactory();
+        var state = CreateWal(snapshot ? new DrainingStateMachine() : IStateMachine.CreateNoOp());
+        try
+        {
+            await using var cluster = new RaftCluster(CreateConfiguration(loggerFactory)) { AuditTrail = state };
+            await cluster.StartAsync(TestToken);
+
+            var sender = new ClusterMemberId(Random.Shared);
+            using var peer = await ConnectAsync();
+            await peer.SendAsync(snapshot ? PartialInstallSnapshotRequest(sender) : PartialAppendEntriesRequest(sender), SocketFlags.None, TestToken);
+            await AssertConnectionClosedAsync(peer);
+
+            Contains(loggerFactory.Events, static name => name.EndsWith("RequestTimedOut", StringComparison.Ordinal));
         }
         finally
         {
@@ -278,6 +311,40 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         }
     }
 
+    // An entry whose final frame does not match its declared length must not be persisted, even if the whole frame
+    // is already in the receive buffer: a frame that announces more than the entry declares, a frame that carries more than
+    // the entry declares, and the frame that carries less than the entry declares.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(DeliveredPayloadLength, DeclaredPayloadLength, DeliveredPayloadLength)]
+    [InlineData(2 * DeliveredPayloadLength, 2 * DeliveredPayloadLength, DeliveredPayloadLength)]
+    [InlineData(DeliveredPayloadLength, DeliveredPayloadLength, 2 * DeliveredPayloadLength)]
+    public static async Task BufferedFinalFrameThatDoesNotMatchEntryLengthIsNotPersisted(int deliveredLength, int frameLength, int declaredLength)
+    {
+        var state = CreateWal(IStateMachine.CreateNoOp());
+        try
+        {
+            await using var cluster = new RaftCluster(CreateConfiguration()) { AuditTrail = state };
+            await cluster.StartAsync(TestToken);
+
+            var sender = new ClusterMemberId(Random.Shared);
+            using (var peer = await ConnectAsync())
+            {
+                await peer.SendAsync(PartialAppendEntriesRequest(sender, declaredLength, frameLength, deliveredLength), SocketFlags.None, TestToken);
+
+                // the server drops the connection after the request is rejected or timed out
+                await AssertConnectionClosedAsync(peer);
+            }
+
+            await ProbeAsync(cluster, sender, expectBlocked: false);
+            Equal(0L, state.LastEntryIndex);
+            await AssertLogUsableAsync(state);
+        }
+        finally
+        {
+            await DisposeAsync(state);
+        }
+    }
+
     // The memory reserved for the snapshot configuration must be proportional to the bytes received. The configuration has no declared
     // length on this transport: it is the sequence of frames that precede the snapshot. A frame that announces 2^27 bytes of which 8 are sent
     // must not reserve memory for the announced size. The connection stays open, so the short frame is the only defect of the request.
@@ -325,9 +392,9 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         }
     }
     // one entry announcing 1 KiB of payload, but only 16 bytes are sent
-    private static byte[] PartialAppendEntriesRequest(ClusterMemberId sender, long declaredLength = DeclaredPayloadLength, int frameLength = DeclaredPayloadLength)
+    private static byte[] PartialAppendEntriesRequest(ClusterMemberId sender, long declaredLength = DeclaredPayloadLength, int frameLength = DeclaredPayloadLength, int deliveredLength = DeliveredPayloadLength)
     {
-        var request = new byte[1 + AppendEntriesMessage.Size + LogEntryMetadata.Size + FrameHeaderSize + DeliveredPayloadLength];
+        var request = new byte[1 + AppendEntriesMessage.Size + LogEntryMetadata.Size + FrameHeaderSize + deliveredLength];
         var offset = 0;
         request[offset++] = (byte)MessageType.AppendEntries;
         new AppendEntriesMessage(sender, SenderTerm, 0L, 0L, 0L, EntriesCount: 1, StateVersion: 0).Format(request.AsSpan(offset));
@@ -354,7 +421,7 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         return request;
     }
 
-    private static async Task ProbeAsync(RaftCluster cluster, ClusterMemberId sender, bool expectBlocked)
+    private static async Task ProbeAsync(RaftCluster cluster, ClusterMemberId sender, bool expectBlocked, Stopwatch requestTimer = null)
     {
         // a heartbeat always acquires the transition lock
         var timer = Stopwatch.StartNew();
@@ -370,6 +437,10 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
             True(timer.Elapsed >= TimeSpan.FromMilliseconds(250), $"The probe was not blocked ({timer.Elapsed})");
 
         True(probe.Value.Result is HeartbeatResult.Replicated or HeartbeatResult.ReplicatedWithLeaderTerm);
+
+        // the lock is released by the node's own deadline, measured from the moment the partial request was sent
+        if (requestTimer is not null)
+            True(requestTimer.Elapsed <= RequestTimeout + SchedulingTolerance, $"The transition lock was held for {requestTimer.Elapsed}, RequestTimeout is {RequestTimeout}");
     }
 
     // the server drops the stalled connection
@@ -424,7 +495,7 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
     private static WriteAheadLog CreateWal(IStateMachine stateMachine)
         => new(new() { Location = GetTempPath() }, stateMachine);
 
-    private static RaftCluster.TcpConfiguration CreateConfiguration()
+    private static RaftCluster.TcpConfiguration CreateConfiguration(ILoggerFactory loggerFactory = null)
     {
         var result = new RaftCluster.TcpConfiguration(new IPEndPoint(IPAddress.Loopback, LocalPort))
         {
@@ -433,7 +504,7 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
             // a standby node never starts elections, so only the requests in the test take the transition lock
             Standby = true,
             RequestTimeout = RequestTimeout,
-            LoggerFactory = NullLoggerFactory.Instance,
+            LoggerFactory = loggerFactory ?? NullLoggerFactory.Instance,
             ConfigurationStorage = null,
         };
 
@@ -445,6 +516,41 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         builder.Build();
 
         return result;
+    }
+
+    // records the names of the logged events
+    private sealed class CapturingLoggerFactory : ILoggerFactory, ILogger
+    {
+        private readonly List<string> events = [];
+
+        public IReadOnlyCollection<string> Events
+        {
+            get
+            {
+                lock (events)
+                    return [.. events];
+            }
+        }
+
+        void ILoggerFactory.AddProvider(ILoggerProvider provider)
+        {
+        }
+
+        ILogger ILoggerFactory.CreateLogger(string categoryName) => this;
+
+        IDisposable ILogger.BeginScope<TState>(TState state) => null;
+
+        bool ILogger.IsEnabled(LogLevel logLevel) => true;
+
+        void ILogger.Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            lock (events)
+                events.Add(eventId.Name ?? string.Empty);
+        }
+
+        void IDisposable.Dispose()
+        {
+        }
     }
 
     private sealed class DrainingStateMachine : IStateMachine

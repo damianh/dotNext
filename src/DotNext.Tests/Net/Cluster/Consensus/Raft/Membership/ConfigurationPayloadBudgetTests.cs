@@ -11,7 +11,7 @@ using HttpEndPoint = Net.Http.HttpEndPoint;
 /// or a configuration log entry) is decoded by <see cref="ClusterConfigurationStorage{TAddress}"/>.
 /// Its member count prefix is untrusted input.
 /// </summary>
-[Collection(TestCollections.Raft)]
+[Collection(TestCollections.AllocationBudget)]
 public sealed class ConfigurationPayloadBudgetTests : Test
 {
     private const long AllocationBudget = 32L << 20;

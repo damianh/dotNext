@@ -17,11 +17,15 @@ namespace DotNext.Net.Cluster.Consensus.Raft;
 /// </remarks>
 internal sealed class PayloadSourceScope : IDisposable
 {
+    private readonly CancellationToken upstream;
     private readonly CancellationTokenSource source;
     private volatile ExceptionDispatchInfo? sourceFailure;
 
     internal PayloadSourceScope(CancellationToken token)
-        => source = CancellationTokenSource.CreateLinkedTokenSource(token);
+    {
+        upstream = token;
+        source = CancellationTokenSource.CreateLinkedTokenSource(token);
+    }
 
     /// <summary>
     /// Gets the token to be passed to the operation that consumes the payload.
@@ -88,9 +92,41 @@ internal sealed class PayloadSourceScope : IDisposable
     }
 
     /// <summary>
-    /// Rethrows the original failure of the payload source, if any.
+    /// Converts only the premature end of the payload, which is malformed content, into the cancellation of the request.
     /// </summary>
-    internal void ThrowIfSourceFailed() => sourceFailure?.Throw();
+    /// <remarks>
+    /// Unlike <see cref="GuardAsync(ValueTask)"/>, it doesn't convert other <see cref="IOException"/>s
+    /// that can be thrown by the storage that receives the payload.
+    /// </remarks>
+    internal ValueTask GuardTruncationAsync(ValueTask task)
+        => task.IsCompletedSuccessfully ? task : GuardTruncationSlowAsync(task);
+
+    private async ValueTask GuardTruncationSlowAsync(ValueTask task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (EndOfStreamException e)
+        {
+            throw Fail(e);
+        }
+    }
+
+    /// <summary>
+    /// Restores the cancellation or the failure of the payload source, to be called from the handler
+    /// that catches <see cref="OperationCanceledException"/>.
+    /// </summary>
+    /// <remarks>
+    /// Rethrows the original failure of the payload source, if any. If the request was cancelled by the token
+    /// passed to the constructor, throws the cancellation of that token instead of the one of <see cref="Token"/>,
+    /// so the caller can still identify the reason of the cancellation, such as the receive timeout.
+    /// </remarks>
+    internal void ThrowIfSourceFailed()
+    {
+        sourceFailure?.Throw();
+        upstream.ThrowIfCancellationRequested();
+    }
 
     public void Dispose() => source.Dispose();
 }

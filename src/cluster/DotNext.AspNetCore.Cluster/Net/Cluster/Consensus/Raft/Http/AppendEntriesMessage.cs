@@ -56,12 +56,14 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
     private class OctetStreamLogEntry : IRaftLogEntry
     {
         private readonly PipeReader reader;
+        private readonly PayloadSourceScope payload;
         private Memory<byte> metadataBuffer;
         private LogEntryMetadata metadata;
 
-        private protected OctetStreamLogEntry(PipeReader reader)
+        private protected OctetStreamLogEntry(PipeReader reader, PayloadSourceScope payload)
         {
             this.reader = reader;
+            this.payload = payload;
             IsConsumed = true;
         }
 
@@ -71,7 +73,7 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
         {
             IsConsumed = true;
             return metadata.Length > 0L
-                ? reader.SkipAsync(metadata.Length)
+                ? payload.GuardTruncationAsync(reader.SkipAsync(metadata.Length))
                 : ValueTask.CompletedTask;
         }
 
@@ -93,7 +95,7 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
             if (metadataBuffer.IsEmpty)
                 metadataBuffer = new byte[LogEntryMetadata.Size];
 
-            await reader.ReadExactlyAsync(metadataBuffer).ConfigureAwait(false);
+            await payload.GuardTruncationAsync(reader.ReadExactlyAsync(metadataBuffer)).ConfigureAwait(false);
             metadata = new(metadataBuffer);
             IsConsumed = false;
         }
@@ -124,7 +126,7 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
             {
                 IsConsumed = true;
                 result = metadata.Length > 0L
-                    ? reader.CopyToAsync(writer, metadata.Length, token)
+                    ? payload.GuardTruncationAsync(reader.CopyToAsync(writer, metadata.Length, token))
                     : ValueTask.CompletedTask;
             }
 
@@ -140,13 +142,17 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
 
     private sealed class MultipartLogEntriesReader : MultipartReader, ILogEntryProducer<MultipartLogEntry>, IDisposable
     {
+        // owned by the request handler
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213", Justification = "Owned by the request handler")]
+        private readonly PayloadSourceScope payload;
         private readonly long declaredCount;
         private long count;
         private MultipartLogEntry? current;
 
-        internal MultipartLogEntriesReader(string boundary, Stream body, long count)
+        internal MultipartLogEntriesReader(string boundary, Stream body, long count, PayloadSourceScope payload)
             : base(boundary, body)
         {
+            this.payload = payload;
             declaredCount = this.count = count;
         }
 
@@ -163,13 +169,22 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
             if (section is null)
             {
                 // the sections must match the declared count, otherwise the follower acknowledges entries it has not received
-                return count > 0L ? throw new RaftProtocolException(ExceptionMessages.MissingLogEntries(declaredCount)) : false;
+                // the request is rejected as cancelled, so the log rolls back the entries that it has appended already
+                return count > 0L ? throw payload.Fail(new RaftProtocolException(ExceptionMessages.MissingLogEntries(declaredCount))) : false;
             }
 
             if (count <= 0L)
-                throw new RaftProtocolException(ExceptionMessages.UnexpectedLogEntry(declaredCount));
+                throw payload.Fail(new RaftProtocolException(ExceptionMessages.UnexpectedLogEntry(declaredCount)));
 
-            current = new(section);
+            try
+            {
+                current = new(section);
+            }
+            catch (RaftProtocolException e)
+            {
+                throw payload.Fail(e);
+            }
+
             count -= 1L;
             return true;
         }
@@ -209,8 +224,8 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
     {
         private long count;
 
-        internal OctetStreamLogEntriesReader(PipeReader reader, long count)
-            : base(reader)
+        internal OctetStreamLogEntriesReader(PipeReader reader, long count, PayloadSourceScope payload)
+            : base(reader, payload)
             => this.count = count;
 
         long ILogEntryProducer<OctetStreamLogEntry>.RemainingCount => count;
@@ -262,9 +277,9 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
 
     internal AppendEntriesMessage(HttpRequest request, PayloadSourceScope payload, out ILogEntryProducer<IRaftLogEntry> entries)
         : this(request.Headers, out var entriesCount)
-        => entries = CreateReader(request, new PayloadReader(request.BodyReader, payload), entriesCount);
+        => entries = CreateReader(request, new PayloadReader(request.BodyReader, payload), payload, entriesCount);
 
-    private static ILogEntryProducer<IRaftLogEntry> CreateReader(HttpRequest request, PipeReader body, long count)
+    private static ILogEntryProducer<IRaftLogEntry> CreateReader(HttpRequest request, PipeReader body, PayloadSourceScope payload, long count)
     {
         var result = ILogEntryProducer<IRaftLogEntry>.Empty;
 
@@ -275,11 +290,11 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
         else if (StringSegment.Equals(mediaType.MediaType, MediaTypeNames.Application.Octet, StringComparison.OrdinalIgnoreCase))
         {
             // log entries encoded as efficient binary stream
-            result = new OctetStreamLogEntriesReader(body, count);
+            result = new OctetStreamLogEntriesReader(body, count, payload);
         }
         else if (HeaderUtils.RemoveQuotes(mediaType.Boundary) is { Length: > 0 } boundary)
         {
-            result = new MultipartLogEntriesReader(boundary.ToString(), body.AsStream(leaveOpen: true), count);
+            result = new MultipartLogEntriesReader(boundary.ToString(), body.AsStream(leaveOpen: true), count, payload);
         }
 
         return result;

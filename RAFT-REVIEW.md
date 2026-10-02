@@ -1045,6 +1045,17 @@ outcome and states the outcome after the fix.
 - R8 (#95): both `TryParseHeader` overloads require exactly one value and throw `RaftProtocolException` otherwise. Fixed by #105; every
   header parsed by `HttpMessage` is a scalar, so none is legitimately multi-valued, and there is no wire change.
 
+**Review hardening of the fixes (#89).** Pull request review found gaps in the R1–R3 fixes, each covered by a test:
+
+- The remapped cancellation token hid the receive timeout from the TCP server log; the handlers now rethrow the cancellation of the caller's token (`StalledBodyIsReportedAsRequestTimeout`).
+- The TCP zero-copy fast path accepted a final frame that was larger than, or announced more than, the declared entry length;
+  it is now taken only for a final frame of exactly the declared length (`BufferedFinalFrameThatDoesNotMatchEntryLengthIsNotPersisted`).
+- HTTP reads of the entry framing (21-byte metadata, skipping, multipart section headers) passed no token, so with Kestrel's
+  `MinRequestBodyDataRate` disabled a stall held the locks past `RequestTimeout`; `PayloadReader` now bounds them by the request token (`StalledEntryFramingReleasesTransitionLockWithinRequestTimeout`).
+- A short octet-stream entry in a complete HTTP body, and a multipart section count or section header error after the first entry,
+  faulted the WAL instead of rolling back; they are now reported as cancellation of the request, like a transport failure
+  (`DeclaredEntryLengthDoesNotDriveAllocation`, `MultipartRequestFailingAfterFirstEntryLeavesLogUsable`). Entries received completely before the failure may stay in the log.
+
 **Informational.** `ConsensusOnlyState` accepts an HTTP octet-stream entry whose payload is shorter than its
 declared length; it discards payloads by design, so nothing is persisted.
 

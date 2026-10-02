@@ -153,7 +153,10 @@ internal partial class ProtocolStream
                 // the header is in the buffer
                 EndReadFrameHeader();
                 var writtenBuffer = WrittenBuffer;
-                if (frameSize >= length && writtenBuffer.Length >= length)
+
+                // The frame must be the final one and must contain exactly the declared payload,
+                // otherwise the checked path validates the length of the payload
+                if (readState is ReadState.EndOfStreamReached && frameSize == length && writtenBuffer.Length >= length)
                 {
                     AdvanceReadCursor(length);
                     frame = writtenBuffer.Slice(0, length);

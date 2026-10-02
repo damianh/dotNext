@@ -1052,8 +1052,8 @@ outcome and states the outcome after the fix.
   it is now taken only for a final frame of exactly the declared length (`BufferedFinalFrameThatDoesNotMatchEntryLengthIsNotPersisted`).
 - HTTP reads of the entry framing (21-byte metadata, skipping, multipart section headers) passed no token, so with Kestrel's
   `MinRequestBodyDataRate` disabled a stall held the locks past `RequestTimeout`; `PayloadReader` now bounds them by the request token (`StalledEntryFramingReleasesTransitionLockWithinRequestTimeout`).
-- A short octet-stream entry in a complete HTTP body, and a multipart section count or section header error after the first entry,
-  faulted the WAL instead of rolling back; they are now reported as cancellation of the request, like a transport failure
+- A short octet-stream entry in a complete HTTP body, and a multipart section count or section header error, a malformed
+  multipart header line, or a body that ends before the closing boundary after the first entry, faulted the WAL instead of rolling back; they are now reported as cancellation of the request, like a transport failure
   (`DeclaredEntryLengthDoesNotDriveAllocation`, `MultipartRequestFailingAfterFirstEntryLeavesLogUsable`). Entries received completely before the failure may stay in the log.
 
 **Informational.** `ConsensusOnlyState` accepts an HTTP octet-stream entry whose payload is shorter than its

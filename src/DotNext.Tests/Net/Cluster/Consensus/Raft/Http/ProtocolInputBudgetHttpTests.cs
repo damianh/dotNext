@@ -623,12 +623,16 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
 
     // A multipart request that fails after its first section wrote a new entry must cost that request only:
     // the entry is rolled back and the log accepts further appends. The leader declares two entries,
-    // but sends one (missing section) or three (unexpected section), or the second section has an ambiguous header.
+    // but sends one (missing section) or three (unexpected section), or the second section has an ambiguous
+    // or malformed header, or the body ends inside the second section (no closing boundary).
+    // Only the entries received completely may stay in the log.
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData("missing")]
     [InlineData("unexpected")]
     [InlineData("duplicate-header")]
     [InlineData("missing-header")]
+    [InlineData("malformed-header-line")]
+    [InlineData("missing-closing-boundary")]
     public static async Task MultipartRequestFailingAfterFirstEntryLeavesLogUsable(string defect)
     {
         string[] valid = [$"X-Raft-Record-Term: {SenderTerm}", "X-Raft-Configuration: false"];
@@ -636,6 +640,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         {
             "duplicate-header" => [$"X-Raft-Record-Term: {SenderTerm}", $"X-Raft-Record-Term: {SenderTerm}", "X-Raft-Configuration: false"],
             "missing-header" => ["X-Raft-Configuration: false"],
+            "malformed-header-line" => [$"X-Raft-Record-Term {SenderTerm}", "X-Raft-Configuration: false"],
             _ => valid,
         };
 
@@ -648,6 +653,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
             {
                 "missing" => MultipartRequest(sender, 2L, valid),
                 "unexpected" => MultipartRequest(sender, 2L, valid, valid, valid),
+                "missing-closing-boundary" => MultipartRequest(sender, 2L, closed: false, valid, valid),
                 _ => MultipartRequest(sender, 2L, valid, second),
             };
 
@@ -655,7 +661,7 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
             TestContext.Current.TestOutputHelper?.WriteLine($"{defect}: {StatusLine(response)}, last entry index {AuditTrail(host).LastEntryIndex}");
 
             DoesNotContain("HTTP/1.1 2", StatusLine(response), StringComparison.Ordinal);
-            await AssertAvailableAsync(host, sender, maxLastEntryIndex: 2L);
+            await AssertAvailableAsync(host, sender, maxLastEntryIndex: defect is "unexpected" ? 2L : 1L);
         }
         finally
         {
@@ -739,6 +745,10 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
 
     // AppendEntries that declares entriesCount multipart entries and carries one section for every set of headers
     private static byte[] MultipartRequest(ClusterMemberId sender, long entriesCount, params string[][] sections)
+        => MultipartRequest(sender, entriesCount, closed: true, sections);
+
+    // closed: false omits the closing boundary, so the body ends inside the last section
+    private static byte[] MultipartRequest(ClusterMemberId sender, long entriesCount, bool closed, params string[][] sections)
     {
         const string Boundary = "entries";
         var body = new List<byte>();
@@ -746,10 +756,12 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         {
             body.AddRange(Encoding.ASCII.GetBytes($"--{Boundary}\r\n{string.Concat(headers.Select(static h => $"{h}\r\n"))}\r\n"));
             body.AddRange(new byte[DeliveredPayloadLength]);
-            body.AddRange("\r\n"u8.ToArray());
+            if (closed)
+                body.AddRange("\r\n"u8.ToArray());
         }
 
-        body.AddRange(Encoding.ASCII.GetBytes($"--{Boundary}--\r\n"));
+        if (closed)
+            body.AddRange(Encoding.ASCII.GetBytes($"--{Boundary}--\r\n"));
         return FormatRequest(AppendEntriesHeaders(sender, entriesCount), $"multipart/mixed; boundary=\"{Boundary}\"", body.Count, [.. body]);
     }
 

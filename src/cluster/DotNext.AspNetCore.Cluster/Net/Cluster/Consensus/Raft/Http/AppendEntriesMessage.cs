@@ -36,8 +36,8 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
 
     private sealed class MultipartLogEntry : StreamTransferObject, IRaftLogEntry
     {
-        internal MultipartLogEntry(MultipartSection section)
-            : base(section.Body, true)
+        internal MultipartLogEntry(MultipartSection section, PayloadSourceScope payload)
+            : base(new PayloadSectionStream(section.Body, payload), true)
         {
             Term = ParseHeader(section.Headers, VoteMessageBase.RecordTermHeader, Int64Parser);
             CommandId = TryParseHeader(section.Headers, CommandIdHeader, Int32Parser).OrNull();
@@ -165,7 +165,17 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
             if (current is not null)
                 await current.DisposeAsync().ConfigureAwait(false);
 
-            var section = await ReadNextSectionAsync().ConfigureAwait(false);
+            MultipartSection? section;
+            try
+            {
+                section = await ReadNextSectionAsync().ConfigureAwait(false);
+            }
+            catch (Exception e) when (PayloadSectionStream.IsSourceFailure(e))
+            {
+                // malformed or truncated multipart framing
+                throw payload.Fail(e);
+            }
+
             if (section is null)
             {
                 // the sections must match the declared count, otherwise the follower acknowledges entries it has not received
@@ -178,7 +188,7 @@ internal class AppendEntriesMessage : RaftHttpMessage, IHttpMessage
 
             try
             {
-                current = new(section);
+                current = new(section, payload);
             }
             catch (RaftProtocolException e)
             {

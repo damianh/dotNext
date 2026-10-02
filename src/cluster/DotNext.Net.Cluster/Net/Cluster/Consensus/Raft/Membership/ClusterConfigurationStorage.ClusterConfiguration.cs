@@ -85,9 +85,22 @@ partial class ClusterConfigurationStorage<TAddress>
     
     private void Deserialize(ImmutableHashSet<TAddress>.Builder builder, ref SequenceReader reader)
     {
-        for (var count = reader.ReadLittleEndian<int>(); count > 0; count--)
+        // The count is untrusted: it must not be negative, and it must not drive allocation.
+        // A payload that is shorter than its count is malformed, which is not a failure of the source that delivered it.
+        try
         {
-            builder.Add(Decode(ref reader));
+            var count = reader.ReadLittleEndian<int>();
+            if (count < 0)
+                throw new RaftProtocolException(ExceptionMessages.InvalidMemberCount(count));
+
+            for (; count > 0; count--)
+            {
+                builder.Add(Decode(ref reader));
+            }
+        }
+        catch (EndOfStreamException)
+        {
+            throw new RaftProtocolException(ExceptionMessages.TruncatedConfiguration);
         }
     }
 

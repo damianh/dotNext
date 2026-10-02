@@ -80,6 +80,8 @@ public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuar
         bool ISupplier<bool>.Invoke() => index <= Atomic.Read(in state.commitIndex);
     }
 
+    private const int InitialTermsCapacity = 16;
+
     private readonly AsyncReaderWriterLock syncRoot = new();
     private readonly AsyncTrigger commitEvent = new();
     private long term, commitIndex, lastTerm, index;
@@ -140,17 +142,25 @@ public sealed class ConsensusOnlyState : Disposable, IPersistentState, ITermGuar
         if (count > 0L)
         {
             // skip entries
-            var newEntries = new long[count];
             for (; skip-- > 0; token.ThrowIfCancellationRequested())
                 await entries.MoveNextAsync().ConfigureAwait(false);
 
-            // copy terms
-            for (var i = 0; await entries.MoveNextAsync().ConfigureAwait(false) && i < newEntries.LongLength; i++, token.ThrowIfCancellationRequested())
+            // copy terms; the array grows with the entries received, the declared count is not trusted
+            var newEntries = new long[long.Min(count, InitialTermsCapacity)];
+            var received = 0L;
+            // the last MoveNextAsync drains the payload of the last entry, so a truncated body is not committed
+            for (; await entries.MoveNextAsync().ConfigureAwait(false) && received < count; received++, token.ThrowIfCancellationRequested())
             {
-                newEntries[i] = entries.Current is { IsSnapshot: false } entry
+                if (received == newEntries.LongLength)
+                    Array.Resize(ref newEntries, (int)long.Min(count, newEntries.LongLength << 1));
+
+                newEntries[received] = entries.Current is { IsSnapshot: false } entry
                     ? entry.Term
                     : throw new InvalidOperationException(ExceptionMessages.SnapshotDetected);
             }
+
+            if (received < count)
+                throw new RaftProtocolException(ExceptionMessages.EntriesCountMismatch(count, received));
 
             // now concat existing array of terms
             Append(newEntries, startIndex.GetValueOrDefault());

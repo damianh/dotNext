@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotNext.Net.Cluster.Consensus.Raft;
 
+using Buffers;
 using Collections.Specialized;
 using Diagnostics;
 using Extensions;
@@ -682,8 +683,28 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         if (activeConfiguration is null)
             return await configurationStorage.SaveConfigurationAsync(configuration, configurationVersion, token).ConfigureAwait(false);
 
-        StageSnapshotConfiguration(senderTerm, await configuration.ToByteArrayAsync(token: token).ConfigureAwait(false), configurationVersion);
+        // the staged payload is persisted later, so an invalid payload must be rejected now, before the snapshot is installed
+        var payload = await ReceiveConfigurationAsync(configuration, token).ConfigureAwait(false);
+        await activeConfiguration.ValidateAsync(payload, token).ConfigureAwait(false);
+        StageSnapshotConfiguration(senderTerm, payload, configurationVersion);
         return true;
+    }
+
+    // The declared length of the configuration is untrusted, so the buffer must grow with the received bytes
+    // instead of being sized in advance (see DataTransferObject.ToByteArrayAsync).
+    private static async ValueTask<byte[]> ReceiveConfigurationAsync<TConfiguration>(TConfiguration configuration, CancellationToken token)
+        where TConfiguration : IDataTransferObject
+    {
+        if (configuration.TryGetMemory(out var memory))
+            return memory.ToArray();
+
+        using var writer = new PoolingBufferWriter<byte>();
+        await configuration.WriteToAsync(writer, token).ConfigureAwait(false);
+
+        if (configuration.Length is { } declaredLength && declaredLength != writer.WrittenCount)
+            throw new EndOfStreamException();
+
+        return writer.WrittenMemory.ToArray();
     }
 
     /// <summary>

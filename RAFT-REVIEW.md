@@ -997,6 +997,68 @@ the schedules are short, and the fixed CI seeds find little alone; the campaign 
 Interleavings that need many elections (#49, #70) depend on the campaign reaching them.
 Crash points are between steps only, never inside a write.
 
+## Protocol input budgets (#22)
+
+**Question.** Can a peer that sends a malformed, inconsistent or stalled request make a node allocate memory
+beyond what it received, hold `transitionLock` or the WAL append lock without a bound, or accept an ambiguous
+or corrupt payload? The budgets come from existing settings, not new caps: the node's `RequestTimeout`
+(the TCP server receive timeout), the declared `Content-Length` when it is known, and the bytes actually
+received. Requests of unknown length (chunked) remain valid. Allocation is measured with
+`GC.GetTotalAllocatedBytes` against a 32 MiB budget in the non-parallel `AllocationBudget` test collection.
+Peers are assumed non-Byzantine (see the security assessment), but R1, R2 and R3 are reachable by a correct
+leader: its TCP client closes the connection gracefully on `RequestTimeout`, on step-down and on any error.
+
+**Evidence.** Baseline `fork` @ `8045153e3b7a14b53880402974b83b98069f9470`, Debug, one class at a time:
+`dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-class '<Class>' --progress off`.
+The guard tests below pass on the baseline. The RED tests were run on the same baseline and were not committed with
+the investigation; each follow-up added its own red test and fixed the finding. The Result column keeps the baseline
+outcome and states the outcome after the fix.
+
+| Candidate | Contract | Test | Result | Follow-up |
+|---|---|---|---|---|
+| C1 TCP stall | A stalled AppendEntries or InstallSnapshot body releases `transitionLock` within `RequestTimeout`, and the log stays usable | `ProtocolInputBudgetTcpTests.Stalled*BodyReleasesTransitionLock` | GREEN: released after about 1.0-1.1 s with `RequestTimeout` = 1 s | - |
+| C1 HTTP stall | Same, for the HTTP endpoint, with and without Kestrel's `MinRequestBodyDataRate` | `ProtocolInputBudgetHttpTests.StalledBodyReleasesTransitionLockWithinRequestTimeout` | Was **RED (R3)**: no server-side deadline. Without `MinRequestBodyDataRate` the lock was held for more than 15.3 s; with the Kestrel default it was released after about 5.75 s, and then R2 applies. GREEN after the fix: AppendEntries, InstallSnapshot and Synchronize are bounded by the node's `RequestTimeout`; the lock is released after about 1.0 s with `RequestTimeout` = 1 s, the connection is aborted, the partial write rolls back and the log stays usable | R3 (#91), fixed by #100 |
+| C1 disconnect (TCP, HTTP) | A peer that disconnects or times out mid-body costs that request only; the log stays usable | `ProtocolInputBudgetTcpTests.PeerDisconnectMidBodyLeavesLogUsable` (reset), `ProtocolInputBudgetHttpTests.PeerDisconnectMidBodyLeavesLogUsable`, `MinRequestBodyDataRateMidBodyLeavesLogUsable` | Was **RED (R2)**: a TCP reset, an HTTP FIN or reset, and a Kestrel minimum data rate failure all reached `OnBackgroundTaskFailure`; every later append and heartbeat failed until the WAL was reopened. GREEN after the fix: the transport failure cancels the request and the partial write rolls back | R2 (#90), fixed by #98 |
+| C1 truncation (TCP) | An entry or snapshot whose received payload is shorter than its declared length is never persisted | `ProtocolInputBudgetTcpTests.PeerDisconnectMidBodyLeavesLogUsable` (FIN), `RetransmissionAfterGracefulCloseMidEntryIsStoredInFull`, `DeclaredEntryLengthDoesNotDriveAllocation`, `SnapshotShorterThanDeclaredLengthIsNotInstalled` | Was **RED (R1, critical)**: a FIN mid-body persisted entry 1 with 16 of 1024 bytes, and a complete retransmission at the same index and term did not repair it; an InstallSnapshot installed index 10 from 16 of 1024 bytes; a final frame shorter than the entry or snapshot length was persisted without any disconnect. HTTP rejects these cases. GREEN after the fix: EOF inside a frame and a length mismatch cancel the request, the partial write rolls back, and the retransmission is stored in full | R1 (#97), fixed by #99 |
+| C2a config length | A negative `X-Raft-Config-Length`, or one larger than the known `Content-Length`, is rejected; nothing is installed and the node stays available. Chunked requests are accepted | `ProtocolInputBudgetHttpTests.InconsistentConfigurationLengthIsRejected`, `ChunkedInstallSnapshotIsAccepted` | GREEN: -1, `int.MinValue` and 1024 (with 16 bytes sent) are rejected with 500 | - |
+| C2b config member count | An invalid configuration payload (negative member count, or more members than the payload holds) is rejected without replacing the applied or stored configuration | `ConfigurationPayloadBudgetTests` (in-memory and persistent storage, including reopen), `ProtocolInputBudgetHttpTests.MalformedSnapshotConfigurationIsNotApplied` | Was **RED (R4)**: a count of -1 decoded as an empty member set (HTTP 200, members 2 to 0, version 0 to 5; storage `Save` returned true); a count of 1000 or `int.MaxValue` was persisted before decoding, so every later load threw `EndOfStreamException`, including after reopen (HTTP 500). GREEN after the fix: the request is rejected with `RaftProtocolException`, nothing is persisted or applied, and the node serves the next request | R4 (#92), fixed by #101 |
+| C3a staged config | Memory reserved for the staged snapshot configuration is proportional to the bytes received | `ProtocolInputBudgetHttpTests.DeclaredConfigurationLengthDoesNotDriveAllocation`, `ProtocolInputBudgetTcpTests.DeclaredConfigurationFrameLengthDoesNotDriveAllocation` | Was **RED (R5)** on HTTP: 128 MiB declared with `Content-Length` 8 allocated 134 MB; 256 MiB declared over chunked allocated 268 MB. GREEN after the fix: 285 KB and 170 KB, both requests still rejected. TCP was never affected: the configuration is a sequence of frames with no declared total length, and a frame announcing 128 MiB with 8 bytes delivered allocated 90 KB. A valid chunked InstallSnapshot with a real configuration is still accepted (`ChunkedInstallSnapshotWithConfigurationIsAccepted`) | R5 (#94), fixed by #102 |
+| C3b entry count | A declared entry count beyond the entries delivered drives no allocation, and the follower commits or acknowledges only what it received | `ProtocolInputBudgetTcpTests.DeclaredEntryCountDoesNotDriveAllocation`, `ProtocolInputBudgetHttpTests.EntryCountBeyondDeliveredEntriesIsNotAcknowledged` | GREEN for the WAL (rejected, nothing committed). Was **RED (R6)** for `ConsensusOnlyState`: 2^25 declared over TCP allocated 268 MB, and HTTP multipart with fewer sections than declared committed a stale tail and a phantom entry (200, `X-Raft-Last-Index` 4). GREEN after the fix: TCP allocates under 32 MiB and closes the connection; HTTP multipart is rejected with 500 and nothing is committed (both parametrized with `useWal: false`) | R6 (#96), fixed by #103 |
+| C3c entry length | A declared entry length beyond the delivered payload drives no allocation | `ProtocolInputBudgetTcpTests.DeclaredEntryLengthDoesNotDriveAllocation`, `ProtocolInputBudgetHttpTests.DeclaredEntryLengthDoesNotDriveAllocation` | GREEN: under 1 MB for 2^30 and `long.MaxValue`. Persistence of the short entry over TCP is R1 | - |
+| C3d metadata count | A declared metadata pair count drives no allocation before the pairs arrive | `MetadataPayloadBudgetTests.DeclaredPairCountDoesNotDriveAllocation`, `MetadataPayloadBudgetTests.TruncatedPairsAreRejected`, `MetadataPayloadBudgetTests.ValidMetadataRoundTrips` | Was **RED (R7)**: 2^23 declared pairs allocated 235 MB then threw `EndOfStreamException`; a negative count threw `ArgumentOutOfRangeException`. GREEN after the fix (#104): under 32 MiB for 2^23, `int.MaxValue` and truncated payloads; a negative count or truncated payload is rejected with `RaftProtocolException`; valid metadata round-trips (TCP client reading a peer's metadata reply) | R7 (#93), fixed by #104 |
+| C4 duplicate headers | A repeated singleton `X-Raft-*` header (or multipart section header) is rejected without a state change, even with identical values | `ProtocolInputBudgetHttpTests.DuplicateSingletonHeaderIsRejected` (request headers), `DuplicateEntrySectionHeaderIsRejected` (multipart section headers), `DuplicateResponseHeaderIsRejected` (response headers the leader parses); controls `SingleSingletonHeaderIsAccepted`, `SingleEntrySectionHeaderIsAccepted`, `SingleResponseHeaderIsAccepted` | Was **RED (R8)**: 12 of 12 request cases were accepted with 200 and changed state; the first parseable value won (`HttpMessage.TryParseHeader`). GREEN after the fix: a repeated singleton header, even with identical values or an unparseable first value, is rejected with `RaftProtocolException` (500) for request, multipart section and response headers, and nothing changes; a single header and an absent header behave as before | R8 (#95), fixed by #105 |
+
+**Fixes (one issue and pull request each).**
+
+- R1 (#97): `ProtocolStream` throws `EndOfStreamException` at transport EOF inside a frame, and received entries and
+  snapshots compare the copied bytes with the declared length. No wire change.
+- R2 (#90): the server readers turn transport read failures into cancellation of the request, so the rollback of #53 and #73 applies.
+  Storage I/O errors stay fail-closed.
+- R3 (#91): the HTTP handler token includes the node's `RequestTimeout`, as on TCP. Depends on R2. Fixed by #100 for
+  AppendEntries, InstallSnapshot and Synchronize; nodes of one cluster should use the same `RequestTimeout`.
+- R4 (#92): `ClusterConfigurationStorage` rejects a negative count and decodes the payload before persisting it, and a staged snapshot configuration is decoded when it is received. Fixed by #101; the member count is not capped.
+- R5 (#94): the staged configuration buffer grows as data arrives and the received length is checked against the declared one; a declared length above a known `Content-Length` is rejected. Fixed by #102; the configuration size is not capped.
+- R6 (#96): the multipart reader rejects a section count that differs from `X-Raft-Entries-Count`; `ConsensusOnlyState`
+  allocates for the entries enumerated, not the declared count, and rejects a shortfall with `RaftProtocolException`.
+  Fixed by #103; chunked bodies are unaffected and there is no new limit.
+- R7 (#93): `MetadataTransferObject` reads without a capacity hint taken from the count, rejects a negative count and a payload shorter than its count with `RaftProtocolException`. Fixed by #104; there is no wire change.
+- R8 (#95): both `TryParseHeader` overloads require exactly one value and throw `RaftProtocolException` otherwise. Fixed by #105; every
+  header parsed by `HttpMessage` is a scalar, so none is legitimately multi-valued, and there is no wire change.
+
+**Review hardening of the fixes (#89).** Pull request review found gaps in the R1–R3 fixes, each covered by a test:
+
+- The remapped cancellation token hid the receive timeout from the TCP server log; the handlers now rethrow the cancellation of the caller's token (`StalledBodyIsReportedAsRequestTimeout`).
+- The TCP zero-copy fast path accepted a final frame that was larger than, or announced more than, the declared entry length;
+  it is now taken only for a final frame of exactly the declared length (`BufferedFinalFrameThatDoesNotMatchEntryLengthIsNotPersisted`).
+- HTTP reads of the entry framing (21-byte metadata, skipping, multipart section headers) passed no token, so with Kestrel's
+  `MinRequestBodyDataRate` disabled a stall held the locks past `RequestTimeout`; `PayloadReader` now bounds them by the request token (`StalledEntryFramingReleasesTransitionLockWithinRequestTimeout`).
+- A short octet-stream entry in a complete HTTP body, and a multipart section count or section header error, a malformed
+  multipart header line, or a body that ends before the closing boundary after the first entry, faulted the WAL instead of rolling back; they are now reported as cancellation of the request, like a transport failure
+  (`DeclaredEntryLengthDoesNotDriveAllocation`, `MultipartRequestFailingAfterFirstEntryLeavesLogUsable`). Entries received completely before the failure may stay in the log.
+
+**Informational.** `ConsensusOnlyState` accepts an HTTP octet-stream entry whose payload is shorter than its
+declared length; it discards payloads by design, so nothing is persisted.
+
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,

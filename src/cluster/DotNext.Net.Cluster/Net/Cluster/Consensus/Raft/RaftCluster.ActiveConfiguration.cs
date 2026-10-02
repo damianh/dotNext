@@ -329,6 +329,9 @@ public partial class RaftCluster<TMember>
 
         private protected abstract ValueTask RescanAsync(IPersistentState auditTrail, long startIndex, CancellationToken token);
 
+        // Decodes the configuration payload received from a peer without applying it
+        internal abstract ValueTask ValidateAsync(byte[] payload, CancellationToken token);
+
         internal abstract void GetChanges(IMemberList members, out IReadOnlySet<TMember> added, out IReadOnlySet<TMember> removed);
     }
 
@@ -423,6 +426,9 @@ public partial class RaftCluster<TMember>
             Fold(auditTrail.LastCommittedEntryIndex);
             Publish();
         }
+
+        internal override async ValueTask ValidateAsync(byte[] payload, CancellationToken token)
+            => await storage.ReadConfigurationAsync(new BinaryTransferObject(payload), token).ConfigureAwait(false);
 
         internal override void GetChanges(IMemberList members, out IReadOnlySet<TMember> added, out IReadOnlySet<TMember> removed)
         {

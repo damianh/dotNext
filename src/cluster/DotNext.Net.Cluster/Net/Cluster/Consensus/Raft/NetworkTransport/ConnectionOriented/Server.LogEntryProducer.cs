@@ -73,7 +73,14 @@ internal partial class Server
             consumed = true;
             return metadata.Length is { } length and <= int.MaxValue && stream.TryReadFrameData((int)length, out var payload)
                 ? writer.Invoke(payload, token)
-                : writer.CopyFromAsync(stream, count: null, token);
+                : CopyFromAsync(writer, token);
+        }
+
+        private async ValueTask CopyFromAsync<TWriter>(TWriter writer, CancellationToken token)
+            where TWriter : IAsyncBinaryWriter
+        {
+            await writer.CopyFromAsync(stream, count: null, token).ConfigureAwait(false);
+            stream.EnsurePayloadLength(metadata.Length);
         }
 
         ValueTask<TResult> IDataTransferObject.TransformAsync<TResult, TTransformation>(TTransformation transformation, CancellationToken token)

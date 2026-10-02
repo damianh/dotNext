@@ -62,4 +62,18 @@ internal static class ExceptionMessages
     internal static string SnapshotRestoreCanceled => (string)Resources.Get();
 
     internal static string SnapshotInProgressCanceled => (string)Resources.Get();
+
+    internal static string PayloadLengthMismatch(long actualLength, long declaredLength)
+        => Resources.Get().Format(actualLength, declaredLength);
+
+    internal static string InvalidMemberCount(int count) => Resources.Get().Format(count);
+
+    internal static string TruncatedConfiguration => (string)Resources.Get();
+
+    internal static string InvalidMetadataCount(int count) => Resources.Get().Format(count);
+
+    internal static string TruncatedMetadata => (string)Resources.Get();
+
+    internal static string EntriesCountMismatch(long declaredCount, long receivedCount)
+        => Resources.Get().Format(declaredCount, receivedCount);
 }

@@ -105,6 +105,15 @@ internal abstract partial class ProtocolStream : ModernStream, IResettable
         return result;
     }
 
+    /// <summary>
+    /// Gets or sets the payload of the request being received.
+    /// </summary>
+    /// <remarks>
+    /// While it is set, a failure of the transport or of the framing inside the read operations of this stream
+    /// is reported as cancellation of the request (see <see cref="PayloadSourceScope"/>).
+    /// </remarks>
+    internal PayloadSourceScope? Payload { get; set; }
+
     private Memory<byte> RemainingBuffer => buffer.Memory.Slice(bufferEnd);
 
     internal Span<byte> RemainingBufferSpan => buffer.Span.Slice(bufferEnd);
@@ -123,6 +132,7 @@ internal abstract partial class ProtocolStream : ModernStream, IResettable
     {
         readState = ReadState.FrameNotStarted;
         frameSize = 0;
+        frameDataLength = 0L;
     }
 
     protected override void Dispose(bool disposing)

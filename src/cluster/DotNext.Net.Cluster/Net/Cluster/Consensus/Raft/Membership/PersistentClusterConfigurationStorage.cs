@@ -5,6 +5,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.Membership;
 
 using Buffers;
 using IO;
+using StateMachine;
 
 /// <summary>
 /// Represents persistent cluster configuration storage.
@@ -16,6 +17,7 @@ public abstract class PersistentClusterConfigurationStorage<TAddress> : ClusterC
     private const FileOptions Options = FileOptions.Asynchronous | FileOptions.SequentialScan;
     
     private readonly string configurationFile;
+    private readonly Action<DirectoryInfo> flushDirectory;
     private readonly nint openFileFunction;
 
     /// <summary>
@@ -23,8 +25,14 @@ public abstract class PersistentClusterConfigurationStorage<TAddress> : ClusterC
     /// </summary>
     /// <param name="fileName">The full path to the file used as persistent storage of cluster members.</param>
     protected PersistentClusterConfigurationStorage(string fileName)
+        : this(fileName, DurableFile.FlushDirectory)
+    {
+    }
+
+    private protected PersistentClusterConfigurationStorage(string fileName, Action<DirectoryInfo> flushDirectory)
     {
         configurationFile = fileName;
+        this.flushDirectory = flushDirectory;
 
         if (OperatingSystem.IsLinux())
         {

@@ -98,6 +98,29 @@ the whole record, serialized by a lock. The contract, guarded by
   storage is failing broadly; RPCs are not made to fail closed while the record is
   suspect.
 
+**Applied cluster configuration.** `PersistentClusterConfigurationStorage`
+holds the last applied configuration as the committed baseline used on startup
+and after snapshot installation. It is not always rebuildable from the WAL:
+compaction can remove configuration entries covered by a snapshot, and the
+state-machine snapshot does not contain them.
+
+Every save writes a same-directory temporary file, flushes it, atomically
+publishes it, and flushes the directory through `DurableFile` (#106). The
+directory barrier runs on Windows, Linux, macOS and FreeBSD and is repeated when
+an existing file is reopened. After a post-rename barrier failure, the same
+instance retries the complete publication barrier before its next load or save.
+Stale temporary files matching
+`<configuration-file>.*.tmp` are removed on reopen. Temporary files left by
+older releases, which used unrelated random names, are not identified.
+
+The on-disk format remains an 8-byte little-endian version followed by the
+configuration payload. A file shorter than the version header fails closed with
+`IntegrityException`; restore it from a backup, or remove the member and re-add
+it with an empty WAL directory. Deleting only this file can restore an obsolete
+configuration and is unsafe. The payload has no checksum; truncation or
+corruption after the complete header is detected only when configuration
+decoding and validation reject it.
+
 **Platform assumptions (documented, not tested).**
 
 - *Sector atomicity.* The 37-byte write is assumed not to tear. A 37-byte write

@@ -140,6 +140,26 @@ first-boot term and vote from vanishing from the directory on power loss; macOS
 power-loss durability remains unsupported as documented in
 `src\cluster\README.md`.
 
+### Applied cluster configuration durability (#106)
+
+`PersistentClusterConfigurationStorage` is not merely a cache after log-derived
+configuration (#68): it is the committed baseline on restart and after snapshot
+installation. Once compaction removes the corresponding configuration entries,
+the file is the only durable copy.
+
+Both first creation and replacement now write a same-directory temporary file
+and publish it atomically through `DurableFile.Publish`. This flushes the file
+before publication and the directory afterward on Windows, Linux, macOS and
+FreeBSD. Reopening an existing file repeats the directory barrier, so a failed
+publication barrier can be retried. The same instance also completes a pending
+post-rename publication barrier before its next load or save. Temporary files use the
+`<configuration-file>.*.tmp` pattern and stale matches are removed on reopen.
+
+An existing file shorter than its 8-byte version header now throws
+`IntegrityException` on load or save, names the damaged file, and gives recovery
+guidance. It is never treated as version zero or overwritten. The persisted
+format is unchanged.
+
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
@@ -163,6 +183,7 @@ power-loss durability remains unsupported as documented in
 | `IStateMachine.IsSnapshotInstallCancellationSafe` | absent | **added** (default interface member, default `false`; `SimpleStateMachine` returns `true`): opts in to a snapshot `ApplyAsync` cancellation leaving the WAL usable (#73) |
 | `SimpleStateMachine.OnSnapshotFailed(Exception)` (protected virtual) | absent | **added** (default: no-op): reports a failed background snapshot that was dropped instead of poisoning the state machine (#75) |
 | `WriteAheadLog` constructor, existing `state` file of 1 to 36 bytes | zeroes the record: the node silently restarts at term 0 with no vote | **throws `IntegrityException`** naming the file; length 0 is still initialized and 37 or more is unchanged (#83) |
+| `PersistentClusterConfigurationStorage`, existing file shorter than 8 bytes | may allocate a negative buffer on load or read an incomplete version on save | **throws `IntegrityException`** without changing the file (#106) |
 
 ## Fork-only fixes
 All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests are in `damianh/dotNext`:
@@ -173,7 +194,8 @@ unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush 
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
 configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
-#73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable).
+#73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
+#106 (durable applied cluster configuration baseline).
 
 ## Upstream sync log
 

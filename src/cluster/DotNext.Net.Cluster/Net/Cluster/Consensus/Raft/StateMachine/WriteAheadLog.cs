@@ -72,6 +72,9 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     /// <exception cref="InvalidDataException">
     /// An existing data page file does not match the configured chunk size.
     /// </exception>
+    /// <exception cref="IntegrityException">
+    /// The term/vote file is nonempty but shorter than a record.
+    /// </exception>
     public WriteAheadLog(Options configuration, IStateMachine stateMachine)
         : this(configuration, stateMachine, DurableFile.FlushDirectory)
     {

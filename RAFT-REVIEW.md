@@ -923,7 +923,7 @@ runtime seam for record writes was added). Power loss is out of scope and is doc
 | H1 | A vote is granted, or a reply carries `Value = true`, before it is durable | Not reproduced. The handler sets `Value = true` only after `UpdateVotedForAsync` returns. Guards: `FailedVoteWriteGrantsNothing`, `CancelledVoteRequestGrantsNothing`. |
 | H2 | After a failed flush, memory is ahead of disk and the node grants X, then Y in the same term after a restart | Not reproduced. A failed request was never granted; a retry rewrites the whole record; before a restart the node only refuses the other candidate (availability, not safety). Guards: `FailedVoteWriteNeverYieldsTwoGrantsInOneTerm`, `RecoveredVoteWriteKeepsTheGrantAcrossRestart`. `FailedWriteThatReachedTheDiskIsNotOverwrittenByLowerTerm` guards the ambiguous-failure path. |
 | H3 | A term is advertised in an RPC reply before it is durable | **Reproduced.** See below. |
-| H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | H5 fixed in #82 (directory fsync after the first creation of `state`); the rest are documented (power-loss assumptions). |
+| H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | H5 fixed in #82 (directory fsync after creating `state`, retried on reopen); H7 fixed in #83 (a `state` file of 1 to 36 bytes fails closed); H4 and H6 are documented only (power-loss assumptions). |
 
 **Defect (H3).** `IncrementTerm`, `UpdateTerm` and `UpdateVotedFor` changed the
 in-memory term and vote before `FlushAsync`. When the flush failed, memory stayed
@@ -972,6 +972,14 @@ conflicts with the cancellation handling of #53). Raising the term from the last
 log term at startup (changes recovery semantics and does not cover replies that
 were already sent).
 
+**H7 (#83).** The `NodeState` constructor now fails closed on an existing `state`
+file of 1 to 36 bytes: it throws `IntegrityException` naming the file and the
+manual recovery, and does not touch the file. Length 0 is initialized as before
+(the only length reachable in the process-crash model), and length 37 or more is
+unchanged. `WriteAheadLogNodeStateTests` covers lengths 1, 18 and 36 (red before
+the change) and the two unchanged cases. A *missing* `state` file next to an
+existing checkpoint is still recreated at term 0; that is not changed here.
+
 **H5 (#82).** The constructor now calls `DurableFile.FlushDirectory` whenever it
 opens `state`, including immediately after creation. The helper already existed
 (`LibraryImport`, so AOT-safe; on Windows it flushes a directory handle, not a
@@ -982,7 +990,10 @@ If the barrier fails, the constructor closes the handle; reopening repeats the
 barrier independently of whether cleanup could remove the file.
 `WriteAheadLogNodeStateTests` injects that failure through an internal constructor
 seam and verifies the retry; `DurableFileTests` exercise the native helper on the
-current OS. A power-loss reproduction remains out of scope.
+current OS. The barrier runs only after the full 37-byte initial record has been
+written, so a file left by a failed barrier is reopened as a complete record and
+the barrier is retried; it is not mistaken for a truncated record. A power-loss
+reproduction remains out of scope.
 
 *Directory-entry flush inventory (not changed by #82).*
 
@@ -992,9 +1003,6 @@ current OS. A power-loss reproduction remains out of scope.
 | Checkpoint creation and publication | Flushed (`Checkpoint.cs`, `DurableFile.Publish`) |
 | Snapshot `Commit()` rename and `Rollback()` | Flushed (`DurableFile.FlushPublication`, `FlushDirectory`) |
 | Staged configuration (`PersistentClusterConfigurationStorage`) | **Gap.** The rename flushes only on Linux, and only when `open` resolves. The first `CreateNew` save has no directory flush. Follow-up. |
-
-**Not implemented (proposal).** Failing closed on a `state` file of 1 to 36 bytes
-(H7). It has no red test in the process-crash model.
 ## Seeded simulation, #56 stage 1
 
 Part of #56. `SimulationTests` (see the in-process README) adds a seeded schedule runner over the existing in-process

@@ -6,6 +6,7 @@ using static System.Buffers.Binary.BinaryPrimitives;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
 
+using IO.Log;
 using Threading;
 using BoxedClusterMemberId = Runtime.BoxedValue<ClusterMemberId>;
 
@@ -52,7 +53,27 @@ partial class WriteAheadLog
             handle = File.OpenHandle(path, mode, FileAccess.ReadWrite, FileShare.Read, FileOptions.WriteThrough, preallocationSize);
             buffer = GC.AllocateUninitializedArray<byte>(Size, pinned: true);
 
-            if (RandomAccess.Read(handle, buffer, fileOffset: 0L) < buffer.Length)
+            var bytesRead = 0;
+            while (bytesRead < Size)
+            {
+                var count = RandomAccess.Read(handle, buffer.AsSpan(bytesRead), fileOffset: bytesRead);
+                if (count is 0)
+                    break;
+
+                bytesRead += count;
+            }
+
+            if (bytesRead > 0 && bytesRead < Size)
+            {
+                // Zeroing it would reset the node to term 0 with no vote, which can allow a double vote
+                handle.Dispose();
+                throw new IntegrityException(
+                    $"The term/vote file '{path}' is truncated ({bytesRead} of {Size} bytes). The WAL cannot tell what term and vote it held. " +
+                    "Restore the file from a backup, or remove this member from the cluster and re-add it with an empty WAL directory. " +
+                    "Deleting the file resets the term and vote, and is safe only if this member never voted or the rest of the cluster has moved to a later term.");
+            }
+
+            if (bytesRead < Size)
             {
                 Array.Clear(buffer);
                 RandomAccess.Write(handle, buffer, fileOffset: 0L);

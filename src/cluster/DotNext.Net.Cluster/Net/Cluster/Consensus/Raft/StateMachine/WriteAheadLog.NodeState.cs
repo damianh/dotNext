@@ -53,7 +53,16 @@ partial class WriteAheadLog
             handle = File.OpenHandle(path, mode, FileAccess.ReadWrite, FileShare.Read, FileOptions.WriteThrough, preallocationSize);
             buffer = GC.AllocateUninitializedArray<byte>(Size, pinned: true);
 
-            var bytesRead = RandomAccess.Read(handle, buffer, fileOffset: 0L);
+            var bytesRead = 0;
+            while (bytesRead < Size)
+            {
+                var count = RandomAccess.Read(handle, buffer.AsSpan(bytesRead), fileOffset: bytesRead);
+                if (count is 0)
+                    break;
+
+                bytesRead += count;
+            }
+
             if (bytesRead > 0 && bytesRead < Size)
             {
                 // Zeroing it would reset the node to term 0 with no vote, which can allow a double vote

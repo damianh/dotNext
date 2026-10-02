@@ -14,6 +14,9 @@ internal static class ExceptionMessages
     internal static string MissingHeader(string headerName)
         => Resources.Get().Format(headerName);
 
+    internal static string DuplicateHeader(string headerName)
+        => Resources.Get().Format(headerName);
+
     internal static string IncorrectResponse => (string)Resources.Get();
 
     internal static string InvalidRpcTimeout => (string)Resources.Get();

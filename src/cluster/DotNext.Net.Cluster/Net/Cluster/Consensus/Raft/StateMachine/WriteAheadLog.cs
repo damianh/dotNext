@@ -73,9 +73,15 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     /// An existing data page file does not match the configured chunk size.
     /// </exception>
     public WriteAheadLog(Options configuration, IStateMachine stateMachine)
+        : this(configuration, stateMachine, DurableFile.FlushDirectory)
+    {
+    }
+
+    internal WriteAheadLog(Options configuration, IStateMachine stateMachine, Action<DirectoryInfo> flushDirectory)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(stateMachine);
+        ArgumentNullException.ThrowIfNull(flushDirectory);
 
         // Snapshot getter may throw if the state machine is not restored or initialized
         var snapshotIndex = stateMachine.Snapshot?.Index ?? 0L;
@@ -101,7 +107,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             ConcurrencyLevel = configuration.ConcurrencyLevel,
             MeasurementTags = configuration.MeasurementTags,
         };
-        state = new(rootPath);
+        state = new(rootPath, flushDirectory);
         measurementTags = configuration.MeasurementTags;
 
         // checkpoint

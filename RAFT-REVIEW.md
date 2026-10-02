@@ -913,7 +913,7 @@ before it is acted on, within the process-crash model?
 **Crash model used.** A dispose and reopen of the WAL at the same location, then
 a restart of the node. Fault injection swaps the private `state` file handle for
 a read-only handle to the same file (`NodeStateFault`, test-only reflection; no
-runtime seam was added). Power loss is out of scope and is documented in
+runtime seam for record writes was added). Power loss is out of scope and is documented in
 `src\cluster\README.md` (Supported storage and crash model).
 
 **Hypotheses.**
@@ -923,7 +923,7 @@ runtime seam was added). Power loss is out of scope and is documented in
 | H1 | A vote is granted, or a reply carries `Value = true`, before it is durable | Not reproduced. The handler sets `Value = true` only after `UpdateVotedForAsync` returns. Guards: `FailedVoteWriteGrantsNothing`, `CancelledVoteRequestGrantsNothing`. |
 | H2 | After a failed flush, memory is ahead of disk and the node grants X, then Y in the same term after a restart | Not reproduced. A failed request was never granted; a retry rewrites the whole record; before a restart the node only refuses the other candidate (availability, not safety). Guards: `FailedVoteWriteNeverYieldsTwoGrantsInOneTerm`, `RecoveredVoteWriteKeepsTheGrantAcrossRestart`. `FailedWriteThatReachedTheDiskIsNotOverwrittenByLowerTerm` guards the ambiguous-failure path. |
 | H3 | A term is advertised in an RPC reply before it is durable | **Reproduced.** See below. |
-| H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | H5 fixed in #82 (directory fsync after the first creation of `state`); the rest documented only (power-loss assumptions). |
+| H4-H7 | Sector atomicity, directory fsync, `WriteThrough` mapping, short `state` file | H5 fixed in #82 (directory fsync after the first creation of `state`); the rest are documented (power-loss assumptions). |
 
 **Defect (H3).** `IncrementTerm`, `UpdateTerm` and `UpdateVotedFor` changed the
 in-memory term and vote before `FlushAsync`. When the flush failed, memory stayed
@@ -977,9 +977,11 @@ creates `state`. The helper already existed (`LibraryImport`, so AOT-safe; on
 Windows it flushes a directory handle, not a no-op). On a fresh WAL the checkpoint
 constructor already flushed the root directory right after `state` was created, so
 first boot was covered by accident; the explicit call also covers a `state` created
-next to an existing checkpoint. The tests (`DurableFileTests`) only exercise the
-helper on the current OS: a power-loss reproduction is out of scope, and the call
-is not observable without a seam, so it has no red test.
+next to an existing checkpoint. If the barrier fails, the constructor closes and
+deletes the new file so reopening recreates it and retries the barrier.
+`WriteAheadLogNodeStateTests` injects that failure through an internal constructor
+seam and verifies the retry; `DurableFileTests` exercise the native helper on the
+current OS. A power-loss reproduction remains out of scope.
 
 *Directory-entry flush inventory (not changed by #82).*
 

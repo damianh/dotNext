@@ -32,7 +32,7 @@ partial class WriteAheadLog
         private (long Term, BoxedClusterMemberId? Vote) staged;
         private bool suspect;
 
-        public NodeState(DirectoryInfo location)
+        public NodeState(DirectoryInfo location, Action<DirectoryInfo> flushDirectory)
         {
             var path = Path.Combine(location.FullName, FileName);
             long preallocationSize;
@@ -60,7 +60,18 @@ partial class WriteAheadLog
 
             // WriteThrough makes the data durable, not the new directory entry
             if (mode is FileMode.CreateNew)
-                DurableFile.FlushDirectory(location);
+            {
+                try
+                {
+                    flushDirectory(location);
+                }
+                catch
+                {
+                    handle.Dispose();
+                    File.Delete(path);
+                    throw;
+                }
+            }
 
             if (Unsafe.BitCast<byte, bool>(buffer[LastVotePresenceOffset]))
                 votedFor = BoxedClusterMemberId.Box(new ClusterMemberId(buffer.AsSpan(LastVoteOffset)));

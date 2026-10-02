@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Win32.SafeHandles;
 using static System.Buffers.Binary.BinaryPrimitives;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.Membership;
@@ -19,33 +20,45 @@ public abstract class PersistentClusterConfigurationStorage<TAddress> : ClusterC
     
     private readonly string configurationFile;
     private readonly Action<DirectoryInfo> flushDirectory;
+    private readonly Func<SafeFileHandle, Memory<byte>, long, CancellationToken, ValueTask<int>> readAsync;
+    private volatile bool publicationPending;
 
     /// <summary>
     /// Initializes a new persistent storage.
     /// </summary>
     /// <param name="fileName">The full path to the file used as persistent storage of cluster members.</param>
     protected PersistentClusterConfigurationStorage(string fileName)
-        : this(fileName, DurableFile.FlushDirectory)
+        : this(fileName, DurableFile.FlushDirectory, RandomAccess.ReadAsync)
     {
     }
 
     private protected PersistentClusterConfigurationStorage(string fileName, Action<DirectoryInfo> flushDirectory)
+        : this(fileName, flushDirectory, RandomAccess.ReadAsync)
+    {
+    }
+
+    private protected PersistentClusterConfigurationStorage(string fileName, Action<DirectoryInfo> flushDirectory,
+        Func<SafeFileHandle, Memory<byte>, long, CancellationToken, ValueTask<int>> readAsync)
     {
         configurationFile = fileName;
         ArgumentNullException.ThrowIfNull(flushDirectory);
         this.flushDirectory = flushDirectory;
+        ArgumentNullException.ThrowIfNull(readAsync);
+        this.readAsync = readAsync;
 
         var file = new FileInfo(fileName);
         DeleteStaleTemporaryFiles(file);
         if (file.Exists)
         {
-            flushDirectory(file.Directory!);
+            DurableFile.FlushPublication(file, flushDirectory);
         }
     }
 
     /// <inheritdoc/>
     protected sealed override async ValueTask<(MemoryOwner<byte> Configuration, long Version)> LoadConfigurationAsync(CancellationToken token)
     {
+        CompletePendingPublication();
+
         if (!File.Exists(configurationFile))
             return default;
 
@@ -58,7 +71,8 @@ public abstract class PersistentClusterConfigurationStorage<TAddress> : ClusterC
         try
         {
             var configBuffer = MemoryAllocator.AllocateExactly(length - sizeof(long));
-            if (await RandomAccess.ReadAsync(handle, [versionBuffer.Memory, configBuffer.Memory], fileOffset: 0L, token).ConfigureAwait(false) != length)
+            if (!await ReadExactlyAsync(handle, versionBuffer.Memory, fileOffset: 0L, token).ConfigureAwait(false)
+                || !await ReadExactlyAsync(handle, configBuffer.Memory, fileOffset: sizeof(long), token).ConfigureAwait(false))
             {
                 configBuffer.Dispose();
                 ThrowIfTruncated(RandomAccess.GetLength(handle));
@@ -76,9 +90,12 @@ public abstract class PersistentClusterConfigurationStorage<TAddress> : ClusterC
     /// <inheritdoc/>
     protected sealed override ValueTask<bool> SaveConfigurationAsync(ReadOnlyMemory<byte> configuration, long configurationVersion,
         CancellationToken token)
-        => File.Exists(configurationFile)
+    {
+        CompletePendingPublication();
+        return File.Exists(configurationFile)
             ? RewriteConfigurationAsync(configuration, configurationVersion, token)
             : SaveFreshConfigurationAsync(configuration, configurationVersion, token);
+    }
 
     private async ValueTask<bool> SaveFreshConfigurationAsync(ReadOnlyMemory<byte> configuration, long configurationVersion,
         CancellationToken token)
@@ -110,8 +127,11 @@ public abstract class PersistentClusterConfigurationStorage<TAddress> : ClusterC
             {
                 var length = RandomAccess.GetLength(handle);
                 ThrowIfTruncated(length);
-                if (await RandomAccess.ReadAsync(handle, versionBuffer.Memory, fileOffset: 0L, token).ConfigureAwait(false) != sizeof(long))
-                    ThrowTruncated(length);
+                if (!await ReadExactlyAsync(handle, versionBuffer.Memory, fileOffset: 0L, token).ConfigureAwait(false))
+                {
+                    ThrowIfTruncated(RandomAccess.GetLength(handle));
+                    throw new IntegrityException($"The cluster configuration file '{configurationFile}' changed while it was being read.");
+                }
 
                 version = ReadInt64LittleEndian(versionBuffer.Span);
             }
@@ -149,11 +169,48 @@ public abstract class PersistentClusterConfigurationStorage<TAddress> : ClusterC
                     .ConfigureAwait(false);
             }
 
-            DurableFile.Publish(tempFile, configurationFile, flushDirectory);
+            publicationPending = true;
+            try
+            {
+                DurableFile.Publish(tempFile, configurationFile, flushDirectory);
+                publicationPending = false;
+            }
+            catch
+            {
+                if (File.Exists(tempFile))
+                    publicationPending = false;
+
+                throw;
+            }
         }
         finally
         {
             File.Delete(tempFile);
+        }
+    }
+
+    private async ValueTask<bool> ReadExactlyAsync(SafeFileHandle handle, Memory<byte> output, long fileOffset,
+        CancellationToken token)
+    {
+        while (!output.IsEmpty)
+        {
+            var count = await readAsync(handle, output, fileOffset, token).ConfigureAwait(false);
+            if (count is 0)
+                return false;
+
+            output = output[count..];
+            fileOffset += count;
+        }
+
+        return true;
+    }
+
+    private void CompletePendingPublication()
+    {
+        if (publicationPending)
+        {
+            DurableFile.FlushPublication(new FileInfo(configurationFile), flushDirectory);
+            publicationPending = false;
         }
     }
 

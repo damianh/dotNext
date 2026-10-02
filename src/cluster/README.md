@@ -107,7 +107,9 @@ state-machine snapshot does not contain them.
 Every save writes a same-directory temporary file, flushes it, atomically
 publishes it, and flushes the directory through `DurableFile` (#106). The
 directory barrier runs on Windows, Linux, macOS and FreeBSD and is repeated when
-an existing file is reopened. Stale temporary files matching
+an existing file is reopened. After a post-rename barrier failure, the same
+instance retries the complete publication barrier before its next load or save.
+Stale temporary files matching
 `<configuration-file>.*.tmp` are removed on reopen. Temporary files left by
 older releases, which used unrelated random names, are not identified.
 

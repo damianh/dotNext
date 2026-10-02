@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Win32.SafeHandles;
 using static System.Buffers.Binary.BinaryPrimitives;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.Membership;
@@ -10,9 +11,19 @@ using HttpEndPoint = Net.Http.HttpEndPoint;
 
 public sealed class PersistentClusterConfigurationStorageDurabilityTests : Test
 {
-    private sealed class Storage(string fileName, Action<DirectoryInfo> flushDirectory)
-        : PersistentClusterConfigurationStorage<HttpEndPoint>(fileName, flushDirectory)
+    private sealed class Storage : PersistentClusterConfigurationStorage<HttpEndPoint>
     {
+        internal Storage(string fileName, Action<DirectoryInfo> flushDirectory)
+            : base(fileName, flushDirectory)
+        {
+        }
+
+        internal Storage(string fileName, Action<DirectoryInfo> flushDirectory,
+            Func<SafeFileHandle, Memory<byte>, long, CancellationToken, ValueTask<int>> readAsync)
+            : base(fileName, flushDirectory, readAsync)
+        {
+        }
+
         protected override HttpEndPoint Decode(ref SequenceReader reader)
             => (HttpEndPoint)reader.ReadEndPoint();
 
@@ -130,6 +141,51 @@ public sealed class PersistentClusterConfigurationStorageDurabilityTests : Test
         True(File.Exists(path));
         using var reopened = new Storage(path, FlushDirectory);
         Equal(2, barrierCount);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task DirectoryBarrierFailureIsRetriedBySameInstance()
+    {
+        var path = GetTempPath();
+        var barrierCount = 0;
+
+        void FlushDirectory(DirectoryInfo _)
+        {
+            if (++barrierCount is 1)
+                throw new IOException("Injected directory barrier failure.");
+        }
+
+        using var storage = new Storage(path, FlushDirectory);
+        var typedStorage = storage.As<IClusterConfigurationStorage<HttpEndPoint>>();
+        var configuration = await typedStorage.LoadConfigurationAsync(TestToken);
+        await ThrowsAsync<IOException>(
+            () => typedStorage.SaveConfigurationAsync(configuration, 1L, TestToken).AsTask());
+
+        False(await typedStorage.SaveConfigurationAsync(configuration, 1L, TestToken));
+        Equal(2, barrierCount);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task PartialReadsAreCompleted()
+    {
+        var path = GetTempPath();
+        var endpoint = new HttpEndPoint(IPAddress.Loopback, 4292, false);
+        using (var storage = new Storage(path, static _ => { }))
+        {
+            var typedStorage = storage.As<IClusterConfigurationStorage<HttpEndPoint>>();
+            var configuration = (await typedStorage.LoadConfigurationAsync(TestToken)).Add(endpoint);
+            True(await typedStorage.SaveConfigurationAsync(configuration, 1L, TestToken));
+        }
+
+        static ValueTask<int> ReadOneByteAsync(SafeFileHandle handle, Memory<byte> output, long offset,
+            CancellationToken token)
+            => RandomAccess.ReadAsync(handle, output[..int.Min(1, output.Length)], offset, token);
+
+        using var partialStorage = new Storage(path, static _ => { }, ReadOneByteAsync);
+        var partialTypedStorage = partialStorage.As<IClusterConfigurationStorage<HttpEndPoint>>();
+        var loaded = await partialTypedStorage.LoadConfigurationAsync(TestToken);
+        Equal(endpoint, Single(loaded.Members));
+        True(await partialTypedStorage.SaveConfigurationAsync(loaded, 2L, TestToken));
     }
 
     [Fact(Timeout = TestTimeouts.Default)]

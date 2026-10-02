@@ -1002,7 +1002,7 @@ reproduction remains out of scope.
 | WAL data and metadata pages | Flushed before each checkpoint write (`Persistence.cs`, `Flusher.cs`) |
 | Checkpoint creation and publication | Flushed (`Checkpoint.cs`, `DurableFile.Publish`) |
 | Snapshot `Commit()` rename and `Rollback()` | Flushed (`DurableFile.FlushPublication`, `FlushDirectory`) |
-| Applied configuration baseline (`PersistentClusterConfigurationStorage`) | Flushed after every atomic publication (`DurableFile.Publish`, #106); reopening an existing file repeats the barrier. |
+| Applied configuration baseline (`PersistentClusterConfigurationStorage`) | Flushed after every atomic publication (`DurableFile.Publish`, #106); reopening an existing file or using an instance after a failed post-rename barrier repeats the full publication barrier. |
 
 ## Seeded simulation, #56 stage 1
 

@@ -151,7 +151,8 @@ Both first creation and replacement now write a same-directory temporary file
 and publish it atomically through `DurableFile.Publish`. This flushes the file
 before publication and the directory afterward on Windows, Linux, macOS and
 FreeBSD. Reopening an existing file repeats the directory barrier, so a failed
-publication barrier can be retried. Temporary files use the
+publication barrier can be retried. The same instance also completes a pending
+post-rename publication barrier before its next load or save. Temporary files use the
 `<configuration-file>.*.tmp` pattern and stale matches are removed on reopen.
 
 An existing file shorter than its 8-byte version header now throws

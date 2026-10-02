@@ -25,4 +25,8 @@ internal static class ExceptionMessages
     internal static string UnknownLocalNodeAddress => (string)Resources.Get();
 
     internal static string AbsoluteUriExpected(Uri uri) => Resources.Get().Format(uri);
+
+    internal static string MissingLogEntries(long declaredCount) => Resources.Get().Format(declaredCount);
+
+    internal static string UnexpectedLogEntry(long declaredCount) => Resources.Get().Format(declaredCount);
 }

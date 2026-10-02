@@ -346,9 +346,9 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
     // A declared entry count beyond the delivered entries must not make the follower commit or acknowledge
     // entries it has not received; the node stays available. The follower has an uncommitted tail that the leader
     // has not confirmed, so a commit index derived from the declared count would commit it.
-    // ConsensusOnlyState with multipart entries is not covered: it violates this contract (see RAFT-REVIEW.md, #22).
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(true, true)]
+    [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(false, false)]
     public static async Task EntryCountBeyondDeliveredEntriesIsNotAcknowledged(bool multipart, bool useWal)

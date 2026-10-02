@@ -170,14 +170,15 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
 
     // The memory reserved for received entries must be proportional to the entries received, not to the declared count.
     // The peer declares 2^25 entries, sends none and closes the connection.
-    // ConsensusOnlyState is not covered: it reserves memory for the declared count (see RAFT-REVIEW.md, #22).
-    [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task DeclaredEntryCountDoesNotDriveAllocation()
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task DeclaredEntryCountDoesNotDriveAllocation(bool useWal)
     {
         const int DeclaredCount = 1 << 25;
         const long AllocationBudget = 32L << 20;
 
-        var state = CreateWal(IStateMachine.CreateNoOp());
+        var state = useWal ? CreateWal(IStateMachine.CreateNoOp()) : (IPersistentState)new ConsensusOnlyState();
         try
         {
             await using var cluster = new RaftCluster(CreateConfiguration()) { AuditTrail = state };

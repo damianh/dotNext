@@ -972,13 +972,14 @@ conflicts with the cancellation handling of #53). Raising the term from the last
 log term at startup (changes recovery semantics and does not cover replies that
 were already sent).
 
-**H5 (#82).** The constructor now calls `DurableFile.FlushDirectory` after it
-creates `state`. The helper already existed (`LibraryImport`, so AOT-safe; on
-Windows it flushes a directory handle, not a no-op). On a fresh WAL the checkpoint
-constructor already flushed the root directory right after `state` was created, so
-first boot was covered by accident; the explicit call also covers a `state` created
-next to an existing checkpoint. If the barrier fails, the constructor closes and
-deletes the new file so reopening recreates it and retries the barrier.
+**H5 (#82).** The constructor now calls `DurableFile.FlushDirectory` whenever it
+opens `state`, including immediately after creation. The helper already existed
+(`LibraryImport`, so AOT-safe; on Windows it flushes a directory handle, not a
+no-op). On a fresh WAL the checkpoint constructor already flushed the root
+directory right after `state` was created, so first boot was covered by accident;
+the explicit call also covers a `state` created next to an existing checkpoint.
+If the barrier fails, the constructor closes the handle; reopening repeats the
+barrier independently of whether cleanup could remove the file.
 `WriteAheadLogNodeStateTests` injects that failure through an internal constructor
 seam and verifies the retry; `DurableFileTests` exercise the native helper on the
 current OS. A power-loss reproduction remains out of scope.

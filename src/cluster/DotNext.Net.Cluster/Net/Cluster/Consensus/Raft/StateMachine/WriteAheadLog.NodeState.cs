@@ -58,19 +58,16 @@ partial class WriteAheadLog
                 RandomAccess.Write(handle, buffer, fileOffset: 0L);
             }
 
-            // WriteThrough makes the data durable, not the new directory entry
-            if (mode is FileMode.CreateNew)
+            // WriteThrough makes the data durable, not the directory entry. Repeat the barrier on reopen
+            // so an earlier failed publication is retried independently of whether cleanup succeeded.
+            try
             {
-                try
-                {
-                    flushDirectory(location);
-                }
-                catch
-                {
-                    handle.Dispose();
-                    File.Delete(path);
-                    throw;
-                }
+                flushDirectory(location);
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
             }
 
             if (Unsafe.BitCast<byte, bool>(buffer[LastVotePresenceOffset]))

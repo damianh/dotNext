@@ -18,7 +18,7 @@ public sealed class WriteAheadLogNodeStateTests : Test
         }
 
         Throws<IOException>(() => new WriteAheadLog(options, IStateMachine.CreateNoOp(), FlushDirectory));
-        False(File.Exists(statePath));
+        True(File.Exists(statePath));
 
         using var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp(), FlushDirectory);
         Equal(2, barrierCount);

@@ -51,7 +51,7 @@ public sealed class PersistentClusterConfigurationStorageDurabilityTests : Test
         using var storage = new Storage(path, static _ => { });
         var error = await ThrowsAsync<IntegrityException>(
             () => storage.As<IClusterConfigurationStorage>()
-                .SaveConfigurationAsync(new BinaryTransferObject(ReadOnlyMemory<byte>.Empty), 1L, TestToken)
+                .SaveConfigurationAsync(new BinaryTransferObject(new byte[sizeof(int)]), 1L, TestToken)
                 .AsTask());
 
         Contains(path, error.Message);

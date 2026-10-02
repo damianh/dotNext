@@ -14,7 +14,12 @@ internal static partial class DurableFile
     }
 
     internal static void Publish(string temporaryPath, string destinationPath)
+        => Publish(temporaryPath, destinationPath, FlushDirectory);
+
+    internal static void Publish(string temporaryPath, string destinationPath, Action<DirectoryInfo> flushDirectory)
     {
+        ArgumentNullException.ThrowIfNull(flushDirectory);
+
         temporaryPath = Path.GetFullPath(temporaryPath);
         destinationPath = Path.GetFullPath(destinationPath);
         var directory = Path.GetDirectoryName(destinationPath);
@@ -40,12 +45,17 @@ internal static partial class DurableFile
             throw new PlatformNotSupportedException("Durable WAL publication is not supported on this operating system.");
         }
 
-        FlushPublication(new FileInfo(destinationPath));
+        FlushPublication(new FileInfo(destinationPath), flushDirectory);
     }
 
     internal static void FlushPublication(FileInfo file)
+        => FlushPublication(file, FlushDirectory);
+
+    internal static void FlushPublication(FileInfo file, Action<DirectoryInfo> flushDirectory)
     {
-        FlushDirectory(file.Directory!);
+        ArgumentNullException.ThrowIfNull(flushDirectory);
+
+        flushDirectory(file.Directory!);
         if (OperatingSystem.IsMacOS())
         {
             using var handle = File.OpenHandle(file.FullName, access: FileAccess.Write,

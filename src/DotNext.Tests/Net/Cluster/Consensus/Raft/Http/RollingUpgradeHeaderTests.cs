@@ -29,9 +29,11 @@ public sealed class RollingUpgradeHeaderTests : Test
     private static readonly Type AppendEntriesResponseInterface = TransportAssembly.GetType(
         "DotNext.Net.Cluster.Consensus.Raft.Http.IHttpMessage`1", throwOnError: true)!
         .MakeGenericType(typeof(Result<ReplicationStatus>));
+    private static readonly Type PayloadSourceScopeType = TransportAssembly.GetType(
+        "DotNext.Net.Cluster.Consensus.Raft.PayloadSourceScope", throwOnError: true)!;
     private static readonly ConstructorInfo AppendEntriesRequestConstructor = AppendEntriesRequestType.GetConstructor(
         Instance | NonPublic,
-        [typeof(HttpRequest), typeof(ILogEntryProducer<IRaftLogEntry>).MakeByRefType()])!;
+        [typeof(HttpRequest), PayloadSourceScopeType, typeof(ILogEntryProducer<IRaftLogEntry>).MakeByRefType()])!;
     private static readonly FieldInfo StateVersionField = AppendEntriesRequestType.BaseType!.GetField(
         "StateVersion", Instance | NonPublic)!;
     private static readonly ConstructorInfo AppendEntriesResponseConstructor = AppendEntriesResponseType.GetConstructor(
@@ -94,7 +96,8 @@ public sealed class RollingUpgradeHeaderTests : Test
         if (stateVersion is not null)
             headers[StateVersionHeader] = stateVersion;
 
-        object[] args = [context.Request, null];
+        var payload = Activator.CreateInstance(PayloadSourceScopeType, Instance | NonPublic, binder: null, [CancellationToken.None], culture: null)!;
+        object[] args = [context.Request, payload, null];
         return AppendEntriesRequestConstructor.Invoke(args);
     }
 

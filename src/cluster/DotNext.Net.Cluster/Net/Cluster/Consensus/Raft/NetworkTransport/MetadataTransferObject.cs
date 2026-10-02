@@ -96,19 +96,31 @@ internal readonly struct MetadataTransferObject(IReadOnlyDictionary<string, stri
 
     private static MetadataTransferObject Read(ref SequenceReader reader)
     {
-        var length = reader.ReadLittleEndian<int>();
-        var output = new Dictionary<string, string>(length, StringComparer.Ordinal);
-        var context = new DecodingContext(Encoding, reuseDecoder: true);
-        while (--length >= 0)
+        // The count is untrusted: it must not be negative, and it must not drive allocation.
+        // A payload that is shorter than its count is malformed.
+        var output = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
         {
-            // read key
-            using var key = reader.Decode(context, LengthEncoding);
+            var length = reader.ReadLittleEndian<int>();
+            if (length < 0)
+                throw new RaftProtocolException(ExceptionMessages.InvalidMetadataCount(length));
 
-            // read value
-            using var value = reader.Decode(context, LengthEncoding);
+            var context = new DecodingContext(Encoding, reuseDecoder: true);
+            while (--length >= 0)
+            {
+                // read key
+                using var key = reader.Decode(context, LengthEncoding);
 
-            // write pair to the dictionary
-            output.Add(key.ToString(), value.ToString());
+                // read value
+                using var value = reader.Decode(context, LengthEncoding);
+
+                // write pair to the dictionary
+                output.Add(key.ToString(), value.ToString());
+            }
+        }
+        catch (EndOfStreamException)
+        {
+            throw new RaftProtocolException(ExceptionMessages.TruncatedMetadata);
         }
 
         output.TrimExcess();
@@ -118,19 +130,31 @@ internal readonly struct MetadataTransferObject(IReadOnlyDictionary<string, stri
     private static async ValueTask<MetadataTransferObject> ReadAsync<TReader>(TReader reader, CancellationToken token)
         where TReader : IAsyncBinaryReader
     {
-        var length = await reader.ReadLittleEndianAsync<int>(token).ConfigureAwait(false);
-        var output = new Dictionary<string, string>(length, StringComparer.Ordinal);
-        var context = new DecodingContext(Encoding, reuseDecoder: true);
-        while (--length >= 0)
+        // The count is untrusted: it must not be negative, and it must not drive allocation.
+        // A payload that is shorter than its count is malformed.
+        var output = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
         {
-            // read key
-            using var key = await reader.DecodeAsync(context, LengthEncoding, token: token).ConfigureAwait(false);
+            var length = await reader.ReadLittleEndianAsync<int>(token).ConfigureAwait(false);
+            if (length < 0)
+                throw new RaftProtocolException(ExceptionMessages.InvalidMetadataCount(length));
 
-            // read value
-            using var value = await reader.DecodeAsync(context, LengthEncoding, token: token).ConfigureAwait(false);
+            var context = new DecodingContext(Encoding, reuseDecoder: true);
+            while (--length >= 0)
+            {
+                // read key
+                using var key = await reader.DecodeAsync(context, LengthEncoding, token: token).ConfigureAwait(false);
 
-            // write pair to the dictionary
-            output.Add(key.ToString(), value.ToString());
+                // read value
+                using var value = await reader.DecodeAsync(context, LengthEncoding, token: token).ConfigureAwait(false);
+
+                // write pair to the dictionary
+                output.Add(key.ToString(), value.ToString());
+            }
+        }
+        catch (EndOfStreamException)
+        {
+            throw new RaftProtocolException(ExceptionMessages.TruncatedMetadata);
         }
 
         output.TrimExcess();

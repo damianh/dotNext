@@ -146,9 +146,11 @@ public abstract partial class ClusterConfigurationStorage<TAddress> : Disposable
         await accessLock.EnterWriteLockAsync(token).ConfigureAwait(false);
         try
         {
+            // the payload comes from a peer, so it must be valid before it is persisted or applied
+            var decoded = Deserialize(configuration);
             installed = await SaveConfigurationAsync(configuration, configurationVersion, token).ConfigureAwait(false);
             if (installed)
-                await InvokeHandlers(Deserialize(configuration), handlers, token).ConfigureAwait(false);
+                await InvokeHandlers(decoded, handlers, token).ConfigureAwait(false);
         }
         finally
         {
@@ -168,9 +170,10 @@ public abstract partial class ClusterConfigurationStorage<TAddress> : Disposable
         try
         {
             await configuration.WriteToAsync(writer, token).ConfigureAwait(false);
+            var decoded = Deserialize(writer.WrittenMemory);
             installed = await SaveConfigurationAsync(writer.WrittenMemory, configurationVersion, token).ConfigureAwait(false);
             if (installed)
-                await InvokeHandlers(Deserialize(writer.WrittenMemory), handlers, token).ConfigureAwait(false);
+                await InvokeHandlers(decoded, handlers, token).ConfigureAwait(false);
         }
         finally
         {

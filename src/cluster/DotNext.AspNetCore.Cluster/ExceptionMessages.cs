@@ -14,6 +14,9 @@ internal static class ExceptionMessages
     internal static string MissingHeader(string headerName)
         => Resources.Get().Format(headerName);
 
+    internal static string DuplicateHeader(string headerName)
+        => Resources.Get().Format(headerName);
+
     internal static string IncorrectResponse => (string)Resources.Get();
 
     internal static string InvalidRpcTimeout => (string)Resources.Get();
@@ -25,4 +28,8 @@ internal static class ExceptionMessages
     internal static string UnknownLocalNodeAddress => (string)Resources.Get();
 
     internal static string AbsoluteUriExpected(Uri uri) => Resources.Get().Format(uri);
+
+    internal static string MissingLogEntries(long declaredCount) => Resources.Get().Format(declaredCount);
+
+    internal static string UnexpectedLogEntry(long declaredCount) => Resources.Get().Format(declaredCount);
 }

@@ -8,11 +8,13 @@ namespace DotNext.Net.Cluster.Consensus.Raft.Http;
 
 using Messaging;
 using Runtime.Serialization;
+using CancellationTokenMultiplexer = Threading.CancellationTokenMultiplexer;
 
 internal partial class RaftHttpCluster : IOutputChannel
 {
     private readonly Lock syncRoot;
     private readonly DuplicateRequestDetector duplicationDetector;
+    private readonly CancellationTokenMultiplexer requestDeadlines = new() { MaximumRetained = Environment.ProcessorCount * 2 };
     private volatile ImmutableList<IInputChannel> messageHandlers;
     private volatile MemberMetadata metadata;
 
@@ -336,14 +338,20 @@ internal partial class RaftHttpCluster : IOutputChannel
 
     private async Task AppendEntriesAsync(HttpRequest request, HttpResponse response, CancellationToken token)
     {
-        var message = new AppendEntriesMessage(request, out var entries);
+        using var payload = new PayloadSourceScope(token);
+        var message = new AppendEntriesMessage(request, payload, out var entries);
         TryGetMember(message.Sender)?.Touch();
 
         try
         {
             var result = await AppendEntriesAsync(message.Sender, message.ConsensusTerm, entries, message.PrevLogIndex, message.PrevLogTerm,
-                message.CommitIndex, message.StateVersion, token).ConfigureAwait(false);
+                message.CommitIndex, message.StateVersion, payload.Token).ConfigureAwait(false);
             await AppendEntriesMessage.SaveResponseAsync(response, result, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            payload.ThrowIfSourceFailed();
+            throw;
         }
         finally
         {
@@ -351,28 +359,38 @@ internal partial class RaftHttpCluster : IOutputChannel
         }
     }
 
-    private async Task InstallSnapshotAsync(InstallSnapshotMessage message, HttpResponse response, CancellationToken token)
+    private async Task InstallSnapshotAsync(HttpRequest request, HttpResponse response, CancellationToken token)
     {
+        using var payload = new PayloadSourceScope(token);
+        var message = new InstallSnapshotMessage(request, payload);
         TryGetMember(message.Sender)?.Touch();
-        
-        await InstallConfigurationAsync(
-            message.ConsensusTerm,
-            message.Configuration,
-            message.ConfigurationVersion,
-            token).ConfigureAwait(false);
-            
-        // make sure that the configuration is consumed
-        await message.EnsureConfigurationConsumedAsync(token).ConfigureAwait(false);
 
-        // install snapshot
-        var result = await InstallSnapshotAsync(
-            message.Sender,
-            message.ConsensusTerm,
-            message.Snapshot,
-            message.Index,
-            message.StateVersion,
-            token).ConfigureAwait(false);
-        await InstallSnapshotMessage.SaveResponseAsync(response, result, token).ConfigureAwait(false);
+        try
+        {
+            await InstallConfigurationAsync(
+                message.ConsensusTerm,
+                message.Configuration,
+                message.ConfigurationVersion,
+                payload.Token).ConfigureAwait(false);
+
+            // make sure that the configuration is consumed
+            await message.EnsureConfigurationConsumedAsync(payload.Token).ConfigureAwait(false);
+
+            // install snapshot
+            var result = await InstallSnapshotAsync(
+                message.Sender,
+                message.ConsensusTerm,
+                message.Snapshot,
+                message.Index,
+                message.StateVersion,
+                payload.Token).ConfigureAwait(false);
+            await InstallSnapshotMessage.SaveResponseAsync(response, result, token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            payload.ThrowIfSourceFailed();
+            throw;
+        }
     }
 
     private async Task SynchronizeAsync(SynchronizeMessage message, HttpResponse response, CancellationToken token)
@@ -387,13 +405,19 @@ internal partial class RaftHttpCluster : IOutputChannel
     {
         context.Features.Set(duplicationDetector);
 
-        var tokenSource = CombineTokens(context.RequestAborted, context.RequestServices.ApplicationStoppingToken);
+        var messageType = HttpMessage.GetMessageType(context.Request);
+        var tokenSource = requestDeadlines.Combine(
+            GetRequestDeadline(messageType),
+            context.RequestAborted,
+            context.RequestServices.ApplicationStoppingToken);
         try
         {
-            await ProcessRequestAsync(context.Request, context.Response, tokenSource.Token).ConfigureAwait(false);
+            await ProcessRequestAsync(messageType, context.Request, context.Response, tokenSource.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException e) when (e.CancellationToken == tokenSource.Token)
+        catch (OperationCanceledException) when (tokenSource.Token.IsCancellationRequested)
         {
+            // The token can reach the handler through a linked token (see PayloadSourceScope), so the exception
+            // does not necessarily carry tokenSource.Token
             context.Abort();
         }
         finally
@@ -402,16 +426,26 @@ internal partial class RaftHttpCluster : IOutputChannel
         }
     }
 
-    private Task ProcessRequestAsync(HttpRequest request, HttpResponse response, CancellationToken token)
+    // AppendEntries and InstallSnapshot read their payload from the peer while they hold the transition lock,
+    // and Synchronize waits for the commit index. Like the TCP server with its receive timeout,
+    // the node bounds them with its own request timeout, which is also the timeout of the leader's HTTP client.
+    // The other messages have no payload, or carry application-defined messages that are not bounded on purpose.
+    private TimeSpan GetRequestDeadline(string messageType) => messageType switch
+    {
+        AppendEntriesMessage.MessageType or InstallSnapshotMessage.MessageType or SynchronizeMessage.MessageType => requestTimeout,
+        _ => Timeout.InfiniteTimeSpan,
+    };
+
+    private Task ProcessRequestAsync(string messageType, HttpRequest request, HttpResponse response, CancellationToken token)
     {
         // process request
-        return HttpMessage.GetMessageType(request) switch
+        return messageType switch
         {
             AppendEntriesMessage.MessageType => AppendEntriesAsync(request, response, token),
             SynchronizeMessage.MessageType => SynchronizeAsync(new SynchronizeMessage(request), response, token),
             RequestVoteMessage.MessageType => VoteAsync(new RequestVoteMessage(request), response, token),
             PreVoteMessage.MessageType => PreVoteAsync(new PreVoteMessage(request), response, token),
-            InstallSnapshotMessage.MessageType => InstallSnapshotAsync(new InstallSnapshotMessage(request), response, token),
+            InstallSnapshotMessage.MessageType => InstallSnapshotAsync(request, response, token),
             CustomMessage.MessageType => ReceiveMessageAsync(new CustomMessage(request), response, token),
             ResignMessage.MessageType => ResignAsync(new ResignMessage(request), response, token),
             MetadataMessage.MessageType => GetMetadataAsync(new MetadataMessage(request), response, token),

@@ -50,8 +50,8 @@ internal sealed class InstallSnapshotMessage : RaftHttpMessage, IHttpMessage<Res
         Configuration = new ReceivedConfiguration(body, configLength);
     }
 
-    public InstallSnapshotMessage(HttpRequest request)
-        : this(request.Headers, request.BodyReader, request.ContentLength)
+    public InstallSnapshotMessage(HttpRequest request, PayloadSourceScope payload)
+        : this(request.Headers, new PayloadReader(request.BodyReader, payload), request.ContentLength)
     {
     }
 

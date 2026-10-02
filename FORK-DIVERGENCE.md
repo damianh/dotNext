@@ -122,7 +122,8 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
   `BeginSnapshottingAsync` task, so every later apply and snapshot install rethrows it and the WAL fails closed until it
   is reopened. The fork drops the failed attempt, keeps the previous snapshot, reports the failure through
   `SimpleStateMachine.OnSnapshotFailed`, and lets the next persist point start a new attempt. A failure of the final
-  publish step (`writer.Commit()`) and cancellation by disposal are unchanged. See
+  publish step (`writer.Commit()`) and cancellation by disposal are unchanged. A failure to roll back a snapshot that an
+  incoming snapshot supersedes is dropped and reported the same way (#81), because nothing was published. See
   [Failed background snapshot](RAFT-REVIEW.md#failed-background-snapshot-75).
 ### Term and vote publication (#24)
 

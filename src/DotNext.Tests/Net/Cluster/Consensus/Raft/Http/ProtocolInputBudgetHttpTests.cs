@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Builder;
@@ -266,6 +267,147 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         }
     }
 
+    // A singleton protocol header that appears twice is ambiguous. The request must be rejected (non-2xx)
+    // without changing the node state, even when both values are identical or one of them is unparseable.
+    // "{sender}" and "{other}" stand for the sender ID and an unrelated member ID.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, "X-Raft-Term", "5", "6")]
+    [InlineData(false, "X-Raft-Term", "5", "5")]
+    [InlineData(false, "X-Raft-Term", "invalid", "5")]
+    [InlineData(false, "X-Raft-Node-ID", "{sender}", "{other}")]
+    [InlineData(false, "X-Raft-Message-Type", "AppendEntries", "Vote")]
+    [InlineData(false, "X-Raft-Preceding-Record-Index", "0", "1")]
+    [InlineData(false, "X-Raft-Commit-Index", "0", "1")]
+    [InlineData(false, "X-Raft-Entries-Count", "0", "1")]
+    [InlineData(true, "X-Raft-Config-Length", "4", "0")]
+    [InlineData(true, "X-Raft-Snapshot-Index", "10", "20")]
+    public static async Task DuplicateSingletonHeaderIsRejected(bool snapshot, string header, string first, string second)
+    {
+        var sender = new ClusterMemberId(Random.Shared);
+        var other = new ClusterMemberId(Random.Shared);
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var log = AuditTrail(host);
+            var term = log.Term;
+            var response = await SendAsync(SingletonHeaderRequest(sender, snapshot, header, Substitute(first, sender, other), Substitute(second, sender, other)))
+                .WaitAsync(ReleaseDeadline, TestToken);
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"{header}: {first}, {second} -> {StatusLine(response)}, term {term} -> {log.Term}, last entry index {log.LastEntryIndex}");
+
+            DoesNotContain("HTTP/1.1 2", StatusLine(response), StringComparison.Ordinal);
+            Equal(term, log.Term);
+            Equal(0L, log.LastEntryIndex);
+
+            await AssertAvailableAsync(host, sender);
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // Control for the cases above: the same request with a single value of the header is accepted.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false, "X-Raft-Term", "5")]
+    [InlineData(false, "X-Raft-Node-ID", "{sender}")]
+    [InlineData(false, "X-Raft-Message-Type", "AppendEntries")]
+    [InlineData(false, "X-Raft-Preceding-Record-Index", "0")]
+    [InlineData(false, "X-Raft-Commit-Index", "0")]
+    [InlineData(false, "X-Raft-Entries-Count", "0")]
+    [InlineData(true, "X-Raft-Config-Length", "4")]
+    [InlineData(true, "X-Raft-Snapshot-Index", "10")]
+    public static async Task SingleSingletonHeaderIsAccepted(bool snapshot, string header, string value)
+    {
+        var sender = new ClusterMemberId(Random.Shared);
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var response = await SendAsync(SingletonHeaderRequest(sender, snapshot, header, Substitute(value, sender, sender)))
+                .WaitAsync(ReleaseDeadline, TestToken);
+            TestContext.Current.TestOutputHelper?.WriteLine($"{header}: {value} -> {StatusLine(response)}");
+
+            StartsWith("HTTP/1.1 200", response);
+            Equal(snapshot ? 10L : 0L, AuditTrail(host).LastEntryIndex);
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // The same rule applies to the headers of a multipart log entry section.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData("X-Raft-Record-Term", "5", "1")]
+    [InlineData("X-Raft-Configuration", "false", "true")]
+    public static async Task DuplicateEntrySectionHeaderIsRejected(string header, string first, string second)
+    {
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var log = AuditTrail(host);
+            var sender = new ClusterMemberId(Random.Shared);
+            var response = await SendAsync(EntrySectionRequest(sender, header, first, second)).WaitAsync(ReleaseDeadline, TestToken);
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                $"{header}: {first}, {second} -> {StatusLine(response)}, last entry index {log.LastEntryIndex}");
+
+            DoesNotContain("HTTP/1.1 2", StatusLine(response), StringComparison.Ordinal);
+            Equal(0L, log.LastEntryIndex);
+            await AssertAvailableAsync(host, sender);
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // Control for the cases above: the same entry with a single value of the section header is accepted.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData("X-Raft-Record-Term", "5")]
+    [InlineData("X-Raft-Configuration", "false")]
+    public static async Task SingleEntrySectionHeaderIsAccepted(string header, string value)
+    {
+        using var host = CreateHost();
+        await host.StartAsync(TestToken);
+        try
+        {
+            var sender = new ClusterMemberId(Random.Shared);
+            var response = await SendAsync(EntrySectionRequest(sender, header, value)).WaitAsync(ReleaseDeadline, TestToken);
+            TestContext.Current.TestOutputHelper?.WriteLine($"{header}: {value} -> {StatusLine(response)}");
+
+            StartsWith("HTTP/1.1 200", response);
+            Equal(1L, AuditTrail(host).LastEntryIndex);
+        }
+        finally
+        {
+            await host.StopAsync(TestToken);
+        }
+    }
+
+    // The leader parses the headers of the follower's response with the same rule.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData("X-Raft-Term", "5", "6")]
+    [InlineData("X-Raft-Term", "5", "5")]
+    [InlineData("X-Raft-Term", "invalid", "5")]
+    [InlineData("X-Raft-Last-Index", "10", "20")]
+    [InlineData("X-Raft-Last-Index", "10", "10")]
+    public static async Task DuplicateResponseHeaderIsRejected(string header, string first, string second)
+        => await ThrowsAsync<RaftProtocolException>(ParseAppendEntriesResponseAsync(header, first, second));
+
+    // Control for the cases above: a single value of the response header is parsed.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData("X-Raft-Term", "5")]
+    [InlineData("X-Raft-Last-Index", "42")]
+    public static async Task SingleResponseHeaderIsAccepted(string header, string value)
+    {
+        var result = await ParseAppendEntriesResponseAsync(header, value);
+
+        Equal(header is "X-Raft-Term" ? 5L : 1L, result.Term);
+        Equal(header is "X-Raft-Last-Index" ? 42L : 10L, result.Value.LastIndex);
+    }
     // The memory reserved for the received configuration must be proportional to the bytes received,
     // not to the declared X-Raft-Config-Length. The claims use distinct power-of-two sizes,
     // so a buffer returned to ArrayPool.Shared by one case cannot hide the allocation of another.
@@ -442,6 +584,70 @@ public sealed class ProtocolInputBudgetHttpTests : RaftTest
         }
     }
 
+    private static string Substitute(string value, ClusterMemberId sender, ClusterMemberId other) => value
+        .Replace("{sender}", sender.ToString(), StringComparison.Ordinal)
+        .Replace("{other}", other.ToString(), StringComparison.Ordinal);
+
+    // the request with the header repeated for every value
+    private static byte[] SingletonHeaderRequest(ClusterMemberId sender, bool snapshot, string header, params string[] values)
+    {
+        var headers = (snapshot ? InstallSnapshotHeaders(sender, EmptyConfiguration.Length.ToString()) : AppendEntriesHeaders(sender, entriesCount: 0L))
+            .Where(h => !string.Equals(h.Item1, header, StringComparison.OrdinalIgnoreCase))
+            .Concat(values.Select(v => (header, v)));
+
+        return snapshot
+            ? FormatRequest(headers, "application/octet-stream", contentLength: null, Chunked([.. EmptyConfiguration, .. new byte[DeliveredPayloadLength]]))
+            : FormatRequest(headers, contentType: null, contentLength: 0L, []);
+    }
+
+    // AppendEntries with one multipart entry section, whose header is repeated for every value
+    private static byte[] EntrySectionRequest(ClusterMemberId sender, string header, params string[] values)
+    {
+        const string Boundary = "entries";
+        var sectionHeaders = new List<(string Name, string Value)>
+        {
+            ("X-Raft-Record-Term", SenderTerm.ToString()),
+            ("X-Raft-Configuration", "false"),
+        };
+        sectionHeaders.RemoveAll(h => h.Name == header);
+        sectionHeaders.AddRange(values.Select(v => (header, v)));
+
+        byte[] body = [
+            .. Encoding.ASCII.GetBytes($"--{Boundary}\r\n{string.Concat(sectionHeaders.Select(static h => $"{h.Name}: {h.Value}\r\n"))}\r\n"),
+            .. new byte[DeliveredPayloadLength],
+            .. Encoding.ASCII.GetBytes($"\r\n--{Boundary}--\r\n"),
+        ];
+        return FormatRequest(AppendEntriesHeaders(sender, entriesCount: 1L), $"multipart/mixed; boundary=\"{Boundary}\"", body.Length, body);
+    }
+
+    // parses a follower's response to AppendEntries that has the given header values (replaces the default value of that header)
+    private static async Task<Result<ReplicationStatus>> ParseAppendEntriesResponseAsync(string header, params string[] values)
+    {
+        var assembly = typeof(RequestJournalConfiguration).Assembly;
+        var messageType = assembly.GetType("DotNext.Net.Cluster.Consensus.Raft.Http.AppendEntriesMessage`2", throwOnError: true)!
+            .MakeGenericType(typeof(EmptyLogEntry), typeof(EmptyLogEntry[]));
+        var contract = assembly.GetType("DotNext.Net.Cluster.Consensus.Raft.Http.IHttpMessage`1", throwOnError: true)!
+            .MakeGenericType(typeof(Result<ReplicationStatus>));
+        var map = messageType.GetInterfaceMap(contract);
+        var parseResponse = map.TargetMethods[Array.FindIndex(map.InterfaceMethods, static m => m.Name is "ParseResponseAsync")];
+        var message = messageType.GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            [typeof(ClusterMemberId), typeof(long), typeof(long), typeof(long), typeof(long), typeof(EmptyLogEntry[]), typeof(int)])!
+            .Invoke([new ClusterMemberId(Random.Shared), 1L, 10L, 1L, 10L, Array.Empty<EmptyLogEntry>(), 0]);
+
+        using var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(nameof(HeartbeatResult.Replicated)),
+        };
+
+        if (header is not "X-Raft-Term")
+            response.Headers.Add("X-Raft-Term", "1");
+
+        foreach (var value in values)
+            response.Headers.Add(header, value);
+
+        return await (Task<Result<ReplicationStatus>>)parseResponse.Invoke(message, [response, TestToken])!;
+    }
     private static IPersistentState AuditTrail(IHost host) => host.Services.GetRequiredService<IRaftCluster>().AuditTrail;
 
     // the encoding of an empty configuration: a zero member count

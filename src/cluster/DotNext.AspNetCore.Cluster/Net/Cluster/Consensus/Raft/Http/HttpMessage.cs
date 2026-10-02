@@ -100,11 +100,12 @@ internal abstract class HttpMessage
     {
         if (headers is not null && headers.TryGetValue(headerName, out var values))
         {
-            foreach (var header in values)
-            {
-                if (header is not null && parser(header, out var result))
-                    return result;
-            }
+            // a repeated singleton header is ambiguous, even if the values are identical
+            if (values.Count > 1)
+                throw new RaftProtocolException(ExceptionMessages.DuplicateHeader(headerName));
+
+            if (values.Count is 1 && values[0] is { } header && parser(header, out var result))
+                return result;
         }
 
         return Optional<T>.None;
@@ -134,11 +135,18 @@ internal abstract class HttpMessage
     {
         if (headers is not null && headers.TryGetValues(headerName, out var values))
         {
+            string? single = null;
+            var count = 0;
             foreach (var header in values)
             {
-                if (parser(header, out var result))
-                    return result;
+                if (++count > 1)
+                    throw new RaftProtocolException(ExceptionMessages.DuplicateHeader(headerName));
+
+                single = header;
             }
+
+            if (single is not null && parser(single, out var result))
+                return result;
         }
 
         return Optional<T>.None;

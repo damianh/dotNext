@@ -398,6 +398,17 @@ Do not substitute uniform unknown-member rejection for authentication.
 Authorized joining nodes need catch-up access before membership is committed;
 credential authorization and voting membership are distinct.
 
+#23 documents this host contract in the
+[Host security](src/cluster/README.md#host-security) and
+[Bootstrap and membership](src/cluster/README.md#bootstrap-and-membership)
+sections of the cluster README. `ConsensusHandlerHostSecurityTests` shows that an
+unauthenticated request reaches the handler under the published ordering and is
+rejected when authentication and authorization come first.
+`HttpBootstrapRecipeTests` shows that two empty `coldStart: true` nodes form
+separate clusters, that a single cold-start owner plus a joiner form one
+cluster, and that a restart with persisted state does not bootstrap again. No
+runtime behavior or defaults were changed.
+
 Consequently, this assessment is **not an assurance that exposing Raft RPC
 endpoints to untrusted clients is safe**. The failed-snapshot publication issue
 remains a durability defect, and finding 17 remains a transport correctness

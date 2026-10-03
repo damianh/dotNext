@@ -192,6 +192,15 @@ public static partial class ConfigurationExtensions
     /// <summary>
     /// Setup Raft protocol handler as middleware for the specified application.
     /// </summary>
+    /// <remarks>
+    /// The handler is terminal: it maps the consensus protocol path to a branch that ends the pipeline,
+    /// so middleware registered after this call never sees consensus requests and cannot protect them.
+    /// The library does not authenticate or authorize peers. The host owns that responsibility and may use
+    /// any mechanism, for example mutual TLS, an authentication scheme with an authorization policy,
+    /// a network policy or a private network. Register in-process protection such as
+    /// <c>UseAuthentication</c> and <c>UseAuthorization</c> before this call.
+    /// The member ID sent by a peer is self-asserted and is not a credential.
+    /// </remarks>
     /// <param name="builder">The application builder.</param>
     /// <returns>The configured application builder.</returns>
     [CLSCompliant(false)]

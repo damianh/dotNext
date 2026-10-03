@@ -144,6 +144,121 @@ decoding and validation reject it.
   possible), and that is still initialized. Lengths of 1 to 36 need power loss or
   external damage, and now fail closed (#83): the WAL does not open and throws
   `IntegrityException` naming the file.
+
+## Host security
+
+The library does not authenticate or authorize peers. Every Raft RPC
+(PreVote, RequestVote, AppendEntries, InstallSnapshot, Synchronize, Resign,
+Metadata) and every custom message sent through `IMessageBus` arrives at one
+HTTP endpoint: the path of `publicEndPoint`, or `/cluster-consensus/raft` when
+that has no path. Any caller that reaches this endpoint can change cluster
+state. Protecting it is the host's responsibility. TLS is optional, and
+server-authenticated HTTPS on its own does not authenticate callers.
+
+**Choose a mechanism.** The library does not mandate one. Common options, alone
+or combined:
+
+- mutual TLS enforced by Kestrel or by an authenticating proxy or service mesh;
+- an ASP.NET Core authentication scheme with an authorization policy that admits
+  only cluster peers;
+- network isolation, so that only cluster peers can reach the endpoint.
+
+For outbound calls, attach peer credentials through `IHttpMessageHandlerFactory`.
+The node creates its client handler by the name in `clientHandlerName`
+(default `raftClient`).
+
+**Register protection before the consensus handler.** `UseConsensusProtocolHandler`
+maps the protocol path to a terminal branch. Middleware registered after it
+never sees consensus requests, so it cannot protect them:
+
+```csharp
+app.UseAuthentication();
+app.UseAuthorization();            // FallbackPolicy must admit only cluster peers
+app.UseConsensusProtocolHandler();
+```
+
+The consensus handler is not a routed endpoint, so `[Authorize]` or
+`RequireAuthorization()` metadata does not apply to it. Use the authorization
+`FallbackPolicy`, your own gate middleware, mutual TLS, or a network-level
+restriction. The upstream guide
+([Cluster Programming using Raft](https://dotnet.github.io/dotNext/features/cluster/raft.html))
+says that `UseConsensusProtocolHandler` "should be called before registration of
+any authentication/authorization middleware". Do not follow that advice. With that
+ordering an unauthenticated request reaches the handler and gets a successful
+reply. `ConsensusHandlerHostSecurityTests` checks both orderings.
+
+**Member IDs are not credentials.** The sender's member ID (the `X-Raft-Node-ID`
+header) is self-asserted. Rejecting unknown member IDs is not a substitute for
+authentication: a caller can copy a known ID, and an authorized joining node
+needs catch-up traffic before it becomes a member (see below).
+
+**Custom messages.** Messages delivered to `IInputChannel` handlers use the same
+endpoint and are covered by the same host protection. A handler that needs
+per-message authorization must perform it itself.
+
+**Request deduplication is not replay protection.** The request journal
+(`requestJournal`) is a bounded, expiring, process-local deduplication cache.
+It is neither replay protection nor authentication.
+
+**Leader redirection and forwarded headers.** `RedirectToLeader` keeps the
+scheme, path and query of the incoming request and replaces the host and port
+with the leader's address. A client cannot choose the destination host, so
+the open-redirect claim (S4 in [RAFT-REVIEW.md](../../RAFT-REVIEW.md)) was
+rejected. Trusting forwarded headers is a separate deployment decision. The
+scheme comes from `HttpRequest.Scheme`, which forwarded-headers middleware can
+rewrite, so accept `X-Forwarded-*` headers only from known proxies.
+
+## Bootstrap and membership
+
+**Authorization is not membership.** Host authorization decides whether a peer
+may call the endpoint. Voting membership is the committed cluster configuration.
+They are separate. When the leader adds a node (`AddMemberAsync`), it first
+replicates its log to the node for `warmupRounds` rounds (default 10) and only
+then commits a configuration that includes it. The host policy must therefore
+admit an authorized joining node before it becomes a member.
+
+**Exactly one node owns the cold start.** `coldStart` is `true` by default. It is
+used only when the node's stored configuration is empty. The node then stores a
+configuration that contains only itself and elects itself. Every empty node
+started with `coldStart: true` forms its own single-node cluster. The configuration
+sample in the upstream guide has `"coldStart" : true`, which is correct for
+the first node only. Supported recipes:
+
+- Start one node with `coldStart: true`. Start the others with `coldStart: false`.
+  They wait in standby until the leader adds them with `AddMemberAsync`, or a
+  `ClusterMemberAnnouncer<UriEndPoint>` registered on the joining node announces it.
+- Pre-populate the same member list on every node before the first start. A
+  non-empty configuration ignores `coldStart`.
+
+`HttpBootstrapRecipeTests` checks both the hazard and the single-owner recipe.
+
+**Persisted configuration.** `PersistentClusterConfigurationStorage` holds the
+committed configuration baseline (see
+[Supported storage and crash model](#supported-storage-and-crash-model)). A
+configuration that has not been committed yet is held only in the WAL. Keep the
+WAL and the configuration storage together. A node restarted with both survives
+with `coldStart: true` unchanged and does not bootstrap again
+(`HttpBootstrapRecipeTests.PersistedConfigurationPreventsBootstrapOnRestart`).
+`InMemoryConfigurationStorage` forgets membership on restart. If it is not
+pre-populated, a restarted node with `coldStart: true` bootstraps a new
+single-node cluster. Never wipe a member's state and restart it with
+`coldStart: true`. Remove the member and add it again instead.
+
+**Timeout defaults (HTTP).**
+
+| Setting | Default |
+|---|---|
+| `lowerElectionTimeout` / `upperElectionTimeout` | 150 ms / 300 ms |
+| `requestTimeout` | `upperElectionTimeout` (300 ms) |
+| `rpcTimeout` | `upperElectionTimeout` / 2 (150 ms) |
+| connect timeout | `lowerElectionTimeout` (150 ms), only when no `IHttpMessageHandlerFactory` is registered |
+| `warmupRounds` | 10 |
+
+The defaults assume a low-latency network. TLS handshakes, mutual TLS, proxies or
+links across zones may need larger values. If you raise the election timeouts,
+raise `requestTimeout` and `rpcTimeout` with them. `rpcTimeout` must not exceed
+`requestTimeout`, or the node fails to start. Use the same values on every member.
+
 # HyParView
 List of supported features:
 * Network transport: HTTP 1.1, HTTP/2, HTTP/3

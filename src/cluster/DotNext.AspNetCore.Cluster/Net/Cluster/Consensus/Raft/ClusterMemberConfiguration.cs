@@ -54,9 +54,9 @@ public class ClusterMemberConfiguration : IClusterMemberConfiguration
     /// </summary>
     /// <remarks>
     /// The value is used only when the stored cluster configuration is empty. In that case the node stores
-    /// a configuration that contains only itself and elects itself. Exactly one node of a new cluster
+    /// a configuration that contains only itself and, unless it is a standby node, starts as the leader of that single-node cluster. Exactly one node of a new cluster
     /// should start with this value set to <see langword="true"/>; other nodes should start with <see langword="false"/>
-    /// and join through the leader. Every empty node started with <see langword="true"/> forms its own single-node cluster.
+    /// and join through the leader. Every empty node started with <see langword="true"/> stores its own single-node configuration, so such nodes do not form one cluster.
     /// When the configuration is non-empty, for example after a restart with persistent configuration storage and log,
     /// the value has no effect. The default is <see langword="true"/>.
     /// </remarks>

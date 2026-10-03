@@ -219,8 +219,10 @@ admit an authorized joining node before it becomes a member.
 
 **Exactly one node owns the cold start.** `coldStart` is `true` by default. It is
 used only when the node's stored configuration is empty. The node then stores a
-configuration that contains only itself and elects itself. Every empty node
-started with `coldStart: true` forms its own single-node cluster. The configuration
+configuration that contains only itself. Unless it is also configured with
+`standby: true`, it starts as the leader of that single-node cluster. Every empty
+node started with `coldStart: true` stores its own single-node configuration, so
+non-standby nodes form separate clusters. The configuration
 sample in the upstream guide has `"coldStart" : true`, which is correct for
 the first node only. Supported recipes:
 

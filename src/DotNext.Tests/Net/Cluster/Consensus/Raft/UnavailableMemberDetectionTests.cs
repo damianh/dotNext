@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
 
 namespace DotNext.Net.Cluster.Consensus.Raft;
 
@@ -83,6 +84,61 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
         Equal(1, callerState.ClearCount);
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task LeadershipLossIsLoggedAtDebug()
+    {
+        var logger = new CapturingLogger();
+        await using var cluster = new TestCluster(logger, useRealDetector: true);
+        await DetectAsync(cluster, new CallerStateIdentity(valid: true), TestToken);
+
+        DoesNotContain(logger.Entries, static entry =>
+            entry.EventName is "DotNext.Net.Cluster.FailedToProcessUnresponsiveMember");
+        var entry = Single(logger.Entries, static entry =>
+            entry.EventName is "DotNext.Net.Cluster.UnresponsiveMemberProcessingAbandoned");
+        Equal(LogLevel.Debug, entry.Level);
+        IsType<NotLeaderException>(entry.Exception);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task LeadershipTokenCancellationAfterAcquisitionIsLoggedAtDebug()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logger = new CapturingLogger();
+        await using var cluster = new TestCluster(logger, async (_, _, token) =>
+        {
+            callbackStarted.SetResult();
+            await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
+        });
+
+        var detection = DetectAsync(cluster, new CallerStateIdentity(valid: true), cancellation.Token);
+        await callbackStarted.Task.WaitAsync(DefaultTimeout, TestToken);
+        await cancellation.CancelAsync();
+        await detection;
+
+        DoesNotContain(logger.Entries, static entry =>
+            entry.EventName is "DotNext.Net.Cluster.FailedToProcessUnresponsiveMember");
+        var entry = Single(logger.Entries, static entry =>
+            entry.EventName is "DotNext.Net.Cluster.UnresponsiveMemberProcessingAbandoned");
+        Equal(LogLevel.Debug, entry.Level);
+        IsType<TaskCanceledException>(entry.Exception);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task GenuineDetectionFailureUsesFailureLog()
+    {
+        var logger = new CapturingLogger();
+        await using var cluster = new TestCluster(logger, static (_, _, _) => throw new InvalidOperationException());
+        await DetectAsync(cluster, new CallerStateIdentity(valid: true), TestToken);
+
+        DoesNotContain(logger.Entries, static entry =>
+            entry.EventName is "DotNext.Net.Cluster.UnresponsiveMemberProcessingAbandoned");
+        var entry = Single(logger.Entries, static entry =>
+            entry.EventName is "DotNext.Net.Cluster.FailedToProcessUnresponsiveMember");
+        Equal(LogLevel.Warning, entry.Level);
+        IsType<InvalidOperationException>(entry.Exception);
+    }
+
     private static Task DetectAsync(TestCluster cluster, CallerStateIdentity callerState, CancellationToken token)
         => ((IRaftStateMachine<TestMember>)cluster)
             .UnavailableMemberDetected(callerState, TestMember.Instance, term: 42L, token)
@@ -105,13 +161,35 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
     private sealed class TestCluster : RaftCluster<TestMember>
     {
         private readonly Func<TestMember, long, CancellationToken, ValueTask> detector;
+        private readonly ILogger logger;
+
         [SetsRequiredMembers]
         internal TestCluster(Func<TestMember, long, CancellationToken, ValueTask> detector = null)
+            : this(null, detector)
+        {
+        }
+
+        [SetsRequiredMembers]
+        internal TestCluster(CapturingLogger logger, Func<TestMember, long, CancellationToken, ValueTask> detector = null)
             : base(new Configuration())
         {
             AuditTrail = new ConsensusOnlyState();
+            this.logger = logger;
             this.detector = detector;
         }
+
+        [SetsRequiredMembers]
+        internal TestCluster(CapturingLogger logger, bool useRealDetector)
+            : this(logger)
+        {
+            if (useRealDetector)
+            {
+                detector = (member, term, token) =>
+                    UnavailableMemberDetected<EndPoint>(null, member.EndPoint, term, token);
+            }
+        }
+
+        protected override ILogger Logger => logger ?? base.Logger;
 
         protected override ValueTask UnavailableMemberDetected(TestMember member, long term, CancellationToken token)
             => detector?.Invoke(member, term, token) ?? base.UnavailableMemberDetected(member, term, token);
@@ -121,6 +199,33 @@ public sealed class UnavailableMemberDetectionTests : RaftTest
             if (disposing)
                 (AuditTrail as IDisposable)?.Dispose();
             base.Dispose(disposing);
+        }
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        internal readonly record struct Entry(LogLevel Level, string EventName, Exception Exception);
+
+        private readonly List<Entry> entries = [];
+
+        internal IReadOnlyList<Entry> Entries
+        {
+            get
+            {
+                lock (entries)
+                    return [.. entries];
+            }
+        }
+
+        IDisposable ILogger.BeginScope<TState>(TState state) => null;
+
+        bool ILogger.IsEnabled(LogLevel logLevel) => true;
+
+        void ILogger.Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception,
+            Func<TState, Exception, string> formatter)
+        {
+            lock (entries)
+                entries.Add(new(logLevel, eventId.Name, exception));
         }
     }
 

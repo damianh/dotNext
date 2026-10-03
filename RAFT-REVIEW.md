@@ -152,6 +152,12 @@ apply its whole log before loading the configuration, and append the change
 only if the leader's term is still the log's current term. See
 [Membership change semantics](#membership-change-semantics).
 
+**Follow-up (#51):** Losing leadership while the callback is running is an
+expected outcome, not a failure to process the member. `NotLeaderException`
+and cancellation of the leadership token after lock acquisition are logged at
+Debug (event 74047); genuine callback failures retain
+`FailedToProcessUnresponsiveMember` at Warning.
+
 ## Persistence and recovery
 
 Paths in this section are additionally relative to `StateMachine\`.

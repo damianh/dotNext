@@ -361,4 +361,12 @@ internal static partial class LogMessages
         EventName = $"{EventIdPrefix}.{nameof(LeaderLeaseActivationFailed)}"
     )]
     public static partial void LeaderLeaseActivationFailed(this ILogger logger, long writeBarrier, Exception e);
+
+    [LoggerMessage(
+        EventIdOffset + 47,
+        LogLevel.Debug,
+        "The leader stopped processing unresponsive member {RemoteEndPoint} because it is no longer the leader",
+        EventName = $"{EventIdPrefix}.{nameof(UnresponsiveMemberProcessingAbandoned)}"
+    )]
+    public static partial void UnresponsiveMemberProcessingAbandoned(this ILogger logger, EndPoint remoteEndPoint, Exception e);
 }

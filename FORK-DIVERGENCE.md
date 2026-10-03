@@ -112,6 +112,9 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
   started cluster that derives its configuration from the log. Upstream accepts both, and the leader then counts over a
   different member set than its followers. See
   [Configuration append paths](RAFT-REVIEW.md#configuration-append-paths).
+* **Leadership loss while processing an unresponsive member is logged at Debug** (#51). Upstream reports
+  `NotLeaderException` and leadership-token cancellation through `FailedToProcessUnresponsiveMember` at Warning.
+  The fork uses event 74047 for these expected outcomes; genuine failures keep the Warning event.
 * A `RaftCluster<TMember>` subclass that does not call `UseLogConfiguration` keeps the apply-time behaviour.
 * **A cancelled snapshot install no longer faults the WAL** (#73) when the state machine opts in through
   `IStateMachine.IsSnapshotInstallCancellationSafe`; `SimpleStateMachine` does. Upstream faults the WAL on any
@@ -194,7 +197,7 @@ unsupported WAL chunk sizes), #37 (lock upgrade deadlocks), #38 (complete flush 
 before replay), #44 (leadership test flake), #45 (acknowledged log durability), #46 (membership lock), #47 (stale
 configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
-#73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
+#51 (unavailable-member leadership-loss logging), #73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
 #106 (durable applied cluster configuration baseline).
 
 ## Upstream sync log

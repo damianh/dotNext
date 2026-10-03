@@ -1556,6 +1556,10 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         {
             // ignore cancellation of lock acquisition
         }
+        catch (Exception e) when (e is NotLeaderException || e is OperationCanceledException && token.IsCancellationRequested)
+        {
+            Logger.UnresponsiveMemberProcessingAbandoned(member.EndPoint, e);
+        }
         catch (Exception e)
         {
             Logger.FailedToProcessUnresponsiveMember(member.EndPoint, e);

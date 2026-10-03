@@ -72,6 +72,9 @@ ID remains in its local journal. Eviction, expiration, process restart, or a
 retry routed to another member removes that protection, so the message can be
 delivered again.
 
+A nonpositive `requestJournal:expiration` is rejected at startup; a value too
+large to add to the current time keeps entries until eviction or restart.
+
 This journal suppresses transport retries; it does not provide durable
 exactly-once delivery or business idempotency. Operations that must tolerate
 repeat execution should carry an application-level idempotency key and

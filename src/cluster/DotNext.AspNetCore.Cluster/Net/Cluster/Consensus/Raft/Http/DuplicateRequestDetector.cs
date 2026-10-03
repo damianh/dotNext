@@ -15,8 +15,16 @@ internal sealed class DuplicateRequestDetector : MemoryCache
     private readonly TimeSpan expiration;
 
     internal DuplicateRequestDetector(RequestJournalConfiguration config)
-        : base(Name, CreateConfiguration(config.PollingInterval, config.MemoryLimit), true)
+        : base(Name, CreateConfiguration(config.PollingInterval, config.MemoryLimit, config.Expiration), true)
         => expiration = config.Expiration;
+
+    // Validates expiration before the base cache is created, so a rejected value leaves nothing to dispose.
+    private static NameValueCollection CreateConfiguration(TimeSpan pollingTime, long memoryLimitMB, TimeSpan expiration)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(expiration, TimeSpan.Zero, nameof(RequestJournalConfiguration.Expiration));
+
+        return CreateConfiguration(pollingTime, memoryLimitMB);
+    }
 
     private static NameValueCollection CreateConfiguration(TimeSpan pollingTime, long memoryLimitMB)
     {
@@ -37,5 +45,9 @@ internal sealed class DuplicateRequestDetector : MemoryCache
         If cache returns the same value for this message then it was not added previously; otherwise, it is different message but with the same id
      */
     internal bool IsDuplicated(HttpMessage message)
-        => AddOrGetExisting(message.Id, valuePlaceholder, DateTimeOffset.Now + expiration) is not null;
+        => AddOrGetExisting(message.Id, valuePlaceholder, GetAbsoluteExpiration(DateTimeOffset.UtcNow, expiration)) is not null;
+
+    // An expiration past DateTimeOffset.MaxValue never expires; MemoryLimit trimming still bounds the journal.
+    private static DateTimeOffset GetAbsoluteExpiration(DateTimeOffset now, TimeSpan expiration)
+        => expiration < DateTimeOffset.MaxValue - now ? now + expiration : InfiniteAbsoluteExpiration;
 }

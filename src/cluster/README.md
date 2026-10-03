@@ -241,10 +241,13 @@ configuration that has not been committed yet is held only in the WAL. Keep the
 WAL and the configuration storage together. A node restarted with both survives
 with `coldStart: true` unchanged and does not bootstrap again
 (`HttpBootstrapRecipeTests.PersistedConfigurationPreventsBootstrapOnRestart`).
-`InMemoryConfigurationStorage` forgets membership on restart. If it is not
-pre-populated, a restarted node with `coldStart: true` bootstraps a new
-single-node cluster. Never wipe a member's state and restart it with
-`coldStart: true`. Remove the member and add it again instead.
+`InMemoryConfigurationStorage` loses the committed baseline on restart. If it is
+not pre-populated, a restarted node with `coldStart: true` stores a new
+single-node baseline. A newer configuration entry still in the WAL overrides that
+baseline, so the node recovers its membership only if such an entry has not been
+compacted away. Without one (for example, with a non-persistent or wiped WAL) the
+node bootstraps a new single-node cluster. Never wipe a member's state and restart
+it with `coldStart: true`. Remove the member and add it again instead.
 
 **Timeout defaults (HTTP).**
 

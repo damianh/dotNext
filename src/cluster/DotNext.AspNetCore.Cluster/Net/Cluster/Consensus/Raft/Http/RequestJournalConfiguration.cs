@@ -37,7 +37,11 @@ public sealed class RequestJournalConfiguration
     /// </summary>
     /// <remarks>
     /// After this interval, the same request identifier is accepted as a new delivery. The value
-    /// must be positive and small enough to produce a valid future <see cref="DateTimeOffset"/>.
+    /// must be greater than <see cref="TimeSpan.Zero"/>. A nonpositive value is rejected with
+    /// <see cref="ArgumentOutOfRangeException"/> when the journal is created, which happens when the
+    /// cluster member is constructed at host startup. There is no fixed upper bound: if the current
+    /// time plus this interval would exceed <see cref="DateTimeOffset.MaxValue"/>, the identifier
+    /// has no absolute expiration and is removed only by <see cref="MemoryLimit"/> trimming or a restart.
     /// </remarks>
     public TimeSpan Expiration { get; set; } = TimeSpan.FromSeconds(10);
 }

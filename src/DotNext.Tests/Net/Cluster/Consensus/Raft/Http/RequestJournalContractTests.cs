@@ -102,6 +102,32 @@ public sealed class RequestJournalContractTests : Test
         IsType<ArgumentException>(exception.InnerException);
     }
 
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(0L)]
+    [InlineData(-1L)]
+    [InlineData(long.MinValue)]
+    public static void NonPositiveExpirationIsRejected(long ticks)
+    {
+        var exception = Throws<TargetInvocationException>(
+            () => CreateDetector(expiration: TimeSpan.FromTicks(ticks)));
+
+        var inner = IsType<ArgumentOutOfRangeException>(exception.InnerException);
+        Equal(nameof(RequestJournalConfiguration.Expiration), inner.ParamName);
+    }
+
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(long.MaxValue)] // TimeSpan.MaxValue
+    [InlineData(TimeSpan.TicksPerDay * 3_000_000L)] // beyond DateTimeOffset.MaxValue from any current date
+    [InlineData(TimeSpan.TicksPerDay * 365_000L)] // large, but representable
+    public static void LargeExpirationDoesNotFailDelivery(long ticks)
+    {
+        using var detector = CreateDetector(expiration: TimeSpan.FromTicks(ticks));
+        var message = CreateMessage();
+
+        False(IsDuplicated(detector, message));
+        True(IsDuplicated(detector, message));
+    }
+
     private static Detector CreateDetector(
         TimeSpan? expiration = null,
         long? memoryLimit = null,

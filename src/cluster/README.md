@@ -63,6 +63,26 @@ tests recovery, not a physical power failure or a device that lies about flushes
 Custom `IPersistentState` implementations remain responsible for their own
 persistence guarantees; `ConsensusOnlyState` is intentionally in-memory.
 
+## One-way message deduplication
+
+The HTTP Raft transport keeps a bounded, expiring request journal in each
+process for one-way custom messages. A sender reuses the request ID when it
+retries the same message. The receiving member drops the retry only while that
+ID remains in its local journal. Eviction, expiration, process restart, or a
+retry routed to another member removes that protection, so the message can be
+delivered again.
+
+This journal suppresses transport retries; it does not provide durable
+exactly-once delivery or business idempotency. Operations that must tolerate
+repeat execution should carry an application-level idempotency key and
+deduplicate when applying the operation. In particular, a failed or cancelled
+`RaftCluster.ReplicateAsync` proposal has an unknown outcome and must not be
+made safe by relying on this request journal.
+
+The request ID is not a credential. The journal provides neither
+authentication nor cryptographic replay protection; those protections belong
+to the host and its transport security configuration.
+
 ## Supported storage and crash model
 
 **Crash model.** The guarantees above are for *process* failure: the process is

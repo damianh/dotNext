@@ -5,9 +5,8 @@ using static System.Globalization.CultureInfo;
 namespace DotNext.Net.Cluster.Consensus.Raft.Http;
 
 /*
-    HTTP-based reliable messaging can be implemented as at-least-once delivery pattern.
-    That's way we need to convert it into exactly-once delivery pattern through detection of duplicate messages
-    This class allows to detect duplicate HTTP requests and drop them
+    Suppresses transport retries while their request IDs remain in this process-local, bounded cache.
+    Expired or evicted IDs, and IDs received by a new detector instance, are accepted again.
  */
 internal sealed class DuplicateRequestDetector : MemoryCache
 {

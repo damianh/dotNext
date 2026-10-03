@@ -32,8 +32,13 @@ public class HttpClusterMemberConfiguration : ClusterMemberConfiguration, IClust
     }
 
     /// <summary>
-    /// Gets configuration of request journal.
+    /// Gets configuration of the bounded, process-local journal used to suppress repeated delivery
+    /// of one-way messages.
     /// </summary>
+    /// <remarks>
+    /// The journal does not provide durable exactly-once delivery. See
+    /// <see cref="RequestJournalConfiguration"/> for the retry, expiration, eviction, and restart behavior.
+    /// </remarks>
     public RequestJournalConfiguration RequestJournal { get; } = new();
 
     /// <summary>

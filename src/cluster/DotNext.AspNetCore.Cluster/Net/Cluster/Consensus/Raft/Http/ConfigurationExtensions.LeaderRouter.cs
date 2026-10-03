@@ -92,6 +92,11 @@ public static partial class ConfigurationExtensions
     /// <paramref name="applicationPortHint"/> used to highlight the real port of the application endpoints in the cluster.
     /// This parameter can be used if your deployment is based on Docker. If it is not specified then router trying to add
     /// local port of the TCP listener. This may be invalid due to port mappings in Docker.
+    ///
+    /// The Location header keeps the scheme, path and query of the incoming request and replaces only the host and port
+    /// with the leader's address, so a client cannot choose the redirect destination host.
+    /// The scheme comes from <see cref="HttpRequest.Scheme"/>, which forwarded-headers middleware may rewrite.
+    /// Accept forwarded headers only from trusted proxies, otherwise a client can choose between HTTP and HTTPS for the redirect.
     /// </remarks>
     /// <param name="builder">The request processing pipeline builder.</param>
     /// <param name="path">The path that a leader must handle.</param>

@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using System.Diagnostics.CodeAnalysis;
@@ -14,6 +14,7 @@ internal sealed class Startup(IConfiguration configuration)
 {
     internal const string OptimizedLogEntryTransferKey = "optimizedLogEntryTransfer";
     internal const string PersistentConfigurationPath = "persistentConfigPath";
+    internal const string LogLocationKey = "logLocation";
 
     public void Configure(IApplicationBuilder app)
     {
@@ -26,7 +27,7 @@ internal sealed class Startup(IConfiguration configuration)
             .AddSingleton(IStateMachine.CreateNoOp())
             .UsePersistentLog(new()
             {
-                Location = Test.GetTempPath(),
+                Location = configuration[LogLocationKey] is { Length: > 0 } logLocation ? logLocation : Test.GetTempPath(),
                 OptimizedLogEntryTransfer = configuration.GetValue(OptimizedLogEntryTransferKey, true),
             })
             .AddSingleton<IHttpMessageHandlerFactory, RaftClientHandlerFactory>()

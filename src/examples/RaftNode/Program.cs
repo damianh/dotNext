@@ -77,6 +77,12 @@ static async Task UseAspNetCoreHost(int port, string? persistentStorage, Cancell
     
     const string leaderResource = "/leader";
     const string valueResource = "/value";
+
+    // This sample does not authenticate peers and must not be exposed to untrusted networks.
+    // UseConsensusProtocolHandler is terminal: middleware registered after it never sees consensus requests.
+    // A real host registers its peer protection (for example, UseAuthentication and UseAuthorization with a policy
+    // that admits only cluster peers, or mutual TLS enforced by Kestrel) before UseConsensusProtocolHandler,
+    // or restricts the consensus endpoint at the network level. See src/cluster/README.md, "Host security".
     app.UseConsensusProtocolHandler()
         .RedirectToLeader(leaderResource)
         .UseRouting()

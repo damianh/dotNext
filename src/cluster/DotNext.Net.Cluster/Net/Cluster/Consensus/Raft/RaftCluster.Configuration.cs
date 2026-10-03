@@ -114,6 +114,17 @@ public partial class RaftCluster
         /// <summary>
         /// Gets or sets a value indicating that the initial node in the cluster is starting.
         /// </summary>
+        /// <remarks>
+        /// The value is used only when the stored cluster configuration is empty. In that case the node stores
+        /// a baseline configuration that contains only itself. A newer configuration entry retained in the log
+        /// takes precedence over that baseline; without one, the node starts as the leader of a single-node cluster
+        /// unless it is a standby node. Exactly one node of a new cluster should start with this value set to
+        /// <see langword="true"/>; other nodes should start with <see langword="false"/> and join through the leader.
+        /// Empty nodes started with <see langword="true"/> each store their own single-node baseline,
+        /// so they do not form one cluster.
+        /// When the configuration is non-empty, for example after a restart with persistent configuration storage and log,
+        /// the value has no effect. The default is <see langword="true"/>.
+        /// </remarks>
         public bool ColdStart { get; init; } = true;
 
         /// <summary>

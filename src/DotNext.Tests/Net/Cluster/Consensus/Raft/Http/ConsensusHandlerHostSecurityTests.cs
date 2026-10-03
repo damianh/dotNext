@@ -32,12 +32,12 @@ public sealed class ConsensusHandlerHostSecurityTests : RaftTest
     private const string CredentialHeader = "X-Test-Peer-Credential";
     private const string Credential = "test-peer-credential";
 
-    // The published ordering: the consensus handler first, authentication and authorization afterwards.
+    // Corrected ordering: authentication and authorization run before the terminal consensus handler.
     // Expected: the host's fallback policy rejects an unauthenticated consensus request.
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task UnauthenticatedConsensusRequestIsRejectedByHostProtection()
     {
-        using var host = CreateHost<PublishedOrderingStartup>();
+        using var host = CreateHost<CorrectedOrderingStartup>();
         await host.StartAsync(TestToken);
 
         using var response = await SendMetadataRequestAsync(credential: null);
@@ -46,6 +46,43 @@ public sealed class ConsensusHandlerHostSecurityTests : RaftTest
         await host.StopAsync(TestToken);
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task InvalidPeerCredentialIsRejectedByHostProtection()
+    {
+        using var host = CreateHost<CorrectedOrderingStartup>();
+        await host.StartAsync(TestToken);
+
+        using var response = await SendMetadataRequestAsync(credential: "forged");
+        Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        await host.StopAsync(TestToken);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task AuthenticatedConsensusRequestReachesHandler()
+    {
+        using var host = CreateHost<CorrectedOrderingStartup>();
+        await host.StartAsync(TestToken);
+
+        using var response = await SendMetadataRequestAsync(Credential);
+        Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await host.StopAsync(TestToken);
+    }
+
+    // Characterization of the published ordering: the consensus handler first, authentication and authorization afterwards.
+    // The handler is terminal, so the later middleware never sees the request and an unauthenticated peer reaches it.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task PublishedOrderingLetsUnauthenticatedRequestReachHandler()
+    {
+        using var host = CreateHost<PublishedOrderingStartup>();
+        await host.StartAsync(TestToken);
+
+        using var response = await SendMetadataRequestAsync(credential: null);
+        Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await host.StopAsync(TestToken);
+    }
     // The sender claims an arbitrary member ID. The ID is self-asserted and is not a credential.
     private static async Task<HttpResponseMessage> SendMetadataRequestAsync(string credential)
     {
@@ -89,6 +126,16 @@ public sealed class ConsensusHandlerHostSecurityTests : RaftTest
 
             services.AddAuthorization(static options =>
                 options.FallbackPolicy = new AuthorizationPolicyBuilder(SchemeName).RequireAuthenticatedUser().Build());
+        }
+    }
+
+    private sealed class CorrectedOrderingStartup : HostProtectionStartup
+    {
+        public void Configure(IApplicationBuilder app)
+        {
+            app.UseAuthentication();
+            app.UseAuthorization();
+            app.UseConsensusProtocolHandler();
         }
     }
 

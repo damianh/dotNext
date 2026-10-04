@@ -173,6 +173,15 @@ returns to follower with a randomized election timeout. Upstream ends the task s
 candidate with no election in progress. Failures during disposal are unchanged (Debug 74034). See
 [Failure signals and operator actions](RAFT-REVIEW.md#failure-signals-and-operator-actions-26).
 
+### Leader local read failure attribution (#115)
+
+When the leader fails to read its own log (or load the configuration) before sending a replication request to a
+peer, the failure is logged as Error 74049 `LocalLogReadFailed` with the peer endpoint, and the peer's failure
+detector is not consulted for that round. Upstream logs it as EventId 0 and counts it against the peer, so a healthy
+peer is reported as Warning 74037 and removed by the default implementation. Request and transport failures are
+unchanged. The leader is not stepped down for this; it steps down only on quorum loss. See
+[Failure signals and operator actions](RAFT-REVIEW.md#failure-signals-and-operator-actions-26).
+
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
@@ -208,7 +217,8 @@ before replay), #44 (leadership test flake), #45 (acknowledged log durability), 
 configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
 #51 (unavailable-member leadership-loss logging), #73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
-#106 (durable applied cluster configuration baseline), #26 (candidate voting supervision).
+#106 (durable applied cluster configuration baseline), #26 (candidate voting supervision), #115 (leader local read
+failure attribution).
 
 ## Upstream sync log
 

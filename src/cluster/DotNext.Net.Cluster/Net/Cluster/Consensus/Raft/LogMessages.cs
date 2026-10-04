@@ -377,4 +377,12 @@ internal static partial class LogMessages
         EventName = $"{EventIdPrefix}.{nameof(VotingFailed)}"
     )]
     public static partial void VotingFailed(this ILogger logger, long term, Exception e);
+
+    [LoggerMessage(
+        EventIdOffset + 49,
+        LogLevel.Error,
+        "The leader failed to read its own log to replicate to member {Member}. The member is not reported as unresponsive",
+        EventName = $"{EventIdPrefix}.{nameof(LocalLogReadFailed)}"
+    )]
+    public static partial void LocalLogReadFailed(this ILogger logger, EndPoint member, Exception e);
 }

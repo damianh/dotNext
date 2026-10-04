@@ -201,8 +201,12 @@ Event ids are `LogMessages` ids (offset 74000). The full inventory is in
   constructor throw `IntegrityException`; see the crash model above.
 - **Malformed peer input** is rejected with `RaftProtocolException` (TCP Error
   74028 with the remote endpoint, HTTP 500); the node stays available.
-- **Known gap (#115):** a failure of the leader's own log read for one peer is
-  logged with EventId 0 and reported as Warning 74037 against that peer.
+- **The leader failing to read its own log for a peer** is Error 74049
+  `LocalLogReadFailed`, with the peer endpoint and the exception, once per
+  replication round. The peer is not reported as unresponsive (74037) and is not
+  removed. The leader steps down only if it loses its majority. Investigate the
+  leader's storage, then call `ResignAsync` or restart the leader. A failure
+  while the transport reads entry payloads is still attributed to the peer.
 
 ## Host security
 

@@ -3,6 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using Microsoft.Extensions.Logging;
 
+using DotNext.Diagnostics;
+
 namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
 using IO;
@@ -30,9 +32,11 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
         TimeProvider timeProvider,
         TimeSpan electionTimeout,
         bool startFollower = true,
-        LeaseOptions lease = null)
+        LeaseOptions lease = null,
+        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null)
         : base(new Configuration(electionTimeout, lease))
     {
+        FailureDetectorFactory = failureDetectorFactory;
         this.network = network;
         TimeProvider = timeProvider;
         this.membership = membership.ToArray();
@@ -102,7 +106,8 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
             TimeProvider,
             ElectionTimeout,
             startFollower,
-            lease);
+            lease,
+            FailureDetectorFactory);
         await replacement.StartAsync(token).ConfigureAwait(false);
         return replacement;
     }

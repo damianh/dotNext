@@ -177,6 +177,33 @@ decoding and validation reject it.
   external damage, and now fail closed (#83): the WAL does not open and throws
   `IntegrityException` naming the file.
 
+## Failure signals and operator actions
+
+Event ids are `LogMessages` ids (offset 74000). The full inventory is in
+[RAFT-REVIEW.md](../../RAFT-REVIEW.md#failure-signals-and-operator-actions-26).
+
+- **Expected leadership loss** is logged at Debug (74000, and 74047 for
+  abandoned unavailable-member processing). No action is needed.
+- **A worker failure that the node survives** is logged at Error: 74035 for the
+  leader heartbeat, 74048 `VotingFailed` for candidate voting. The node returns to
+  follower and elections resume. Investigate the logged exception.
+- **Failure-induced standby** is Critical 74032. Fix the cause, then call
+  `RevertToNormalModeAsync` or restart.
+- **A failed follower or candidate transition** is Critical 74030 or 74031. The
+  node becomes a zombie: `Readiness` and the election and leadership waits fault
+  with the cause. Restart after fixing it.
+- **A terminal WAL failure** is not logged by the WAL. Every later read, append,
+  commit, apply wait and flush throws `WriteAheadLog.InternalException` (an
+  `IntegrityException`) wrapping the first failure. Fix storage, then reopen the
+  WAL by restarting the node. `Readiness` reflects it only once the node is a
+  zombie. Nothing recovers automatically from unknown storage failures.
+- **An integrity failure at open** makes the WAL or configuration storage
+  constructor throw `IntegrityException`; see the crash model above.
+- **Malformed peer input** is rejected with `RaftProtocolException` (TCP Error
+  74028 with the remote endpoint, HTTP 500); the node stays available.
+- **Known gap (#115):** a failure of the leader's own log read for one peer is
+  logged with EventId 0 and reported as Warning 74037 against that peer.
+
 ## Host security
 
 The library does not authenticate or authorize peers. Every Raft RPC

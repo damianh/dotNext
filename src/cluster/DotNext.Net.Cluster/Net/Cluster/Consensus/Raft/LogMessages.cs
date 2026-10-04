@@ -369,4 +369,12 @@ internal static partial class LogMessages
         EventName = $"{EventIdPrefix}.{nameof(UnresponsiveMemberProcessingAbandoned)}"
     )]
     public static partial void UnresponsiveMemberProcessingAbandoned(this ILogger logger, EndPoint remoteEndPoint, Exception e);
+
+    [LoggerMessage(
+        EventIdOffset + 48,
+        LogLevel.Error,
+        "Voting for term {Term} failed. The node returns to follower state",
+        EventName = $"{EventIdPrefix}.{nameof(VotingFailed)}"
+    )]
+    public static partial void VotingFailed(this ILogger logger, long term, Exception e);
 }

@@ -40,6 +40,15 @@ should account for the additional append latency and prefer batch appends
 where appropriate. Recovered uncommitted entries are neither committed nor
 applied until Raft subsequently commits them.
 
+During snapshot installation, TCP, UDP and HTTP payload-source failures cancel
+the request. A state machine that opts in through
+`IStateMachine.IsSnapshotInstallCancellationSafe` can roll back the incomplete
+transfer, keep the WAL usable and accept the leader's retransmission.
+`SimpleStateMachine` opts in and stages the payload in a temporary file before
+restoring it. Local staging failures, restore failures and arbitrary
+non-cancellation failures remain fail-closed; custom transports must cancel
+their request token when the snapshot payload source fails.
+
 The first durable update upgrades legacy raw-index/version-0 checkpoints and
 upstream dotNext 6.8 version-1 checkpoints to version 2. This is a
 **one-way store upgrade**: older binaries, including upstream dotNext, reject the new

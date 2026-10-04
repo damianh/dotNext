@@ -856,9 +856,12 @@ restored state that the WAL treats as routine.
   `InvalidOperationException`, so the WAL sees it as a real failure and fails
   closed rather than as a routine cancellation.
 
-**Not changed.** A restore failure still faults the WAL. A transport error
-(non-cancellation) during the transfer still faults it, because the WAL cannot
-tell it apart from a state machine error.
+**Not changed.** A restore failure still faults the WAL. A local storage error
+while staging the incoming snapshot also stays fail-closed. Built-in transports
+now cancel the request when its payload source fails (#90), so their connection
+errors and truncated payloads take the safe cancellation path described above.
+A custom transport must provide the same cancellation signal; an arbitrary
+non-cancellation exception from its payload source still faults the WAL.
 
 **Alternatives.** A WAL-owned staging area for the snapshot would remove the
 contract, but it is a larger change to the state machine interface. Dropping the
@@ -871,6 +874,44 @@ cases) and `SnapshotInstallCancellationTests` (the production path in the
 in-process harness). The in-process test sends the snapshot with a token it owns
 through the network to `RaftCluster.InstallSnapshotAsync`, because the token of a
 request dispatched by the leader's worker cannot be cancelled deterministically.
+
+## Snapshot transfer failure (#113)
+
+Issue #113 revisited whether every exception before snapshot restoration should
+be recoverable. The transport case had already been fixed by #90 / PR #98:
+`PayloadSourceScope` converts a TCP, UDP or HTTP payload-source failure into
+cancellation of the request. For an opted-in state machine, the #73 contract
+then rolls back the temporary snapshot, leaves the WAL unchanged and lets the
+leader retransmit. `ProtocolInputBudgetTcpTests` and
+`ProtocolInputBudgetHttpTests` cover disconnects and truncation for snapshot
+payloads; `PeerDisconnectMidSnapshotAllowsSimpleStateMachineRetransmission`
+additionally uses the real two-phase `SimpleStateMachine`, checks that its
+temporary file is removed and installs the retransmission.
+
+The remaining recoverable designs were rejected:
+
+| Option | Decision |
+|---|---|
+| Generalise the opt-in contract | Rejected. A marker exception would add public API for local I/O and custom transports only. A new boolean or a redefinition of `IsSnapshotInstallCancellationSafe` cannot distinguish transfer from restore and would make restore errors unsafe. |
+| WAL-owned staging | Rejected. `SimpleStateMachine` already stages the snapshot, so this would write every snapshot twice and change the streaming contract of `ApplyAsync`. |
+| Transport buffering | Rejected. #90 already converts source failures without buffering; buffering a snapshot would conflict with the bounded-allocation goal of #22. |
+| Keep fail-closed | Chosen for local storage and arbitrary non-cancellation failures. Built-in transport failures remain recoverable through #90. |
+
+A local failure before restore, such as disk full or a temp-file write or flush
+failure, stays fail-closed. It is evidence that the node cannot durably stage the
+snapshot, consistent with WAL storage errors and a failed
+`SnapshotWriter.Commit()` (#75). Retrying inside the WAL would not make progress:
+the leader would repeatedly stream the entire snapshot to the same unhealthy
+storage. A bounded retry would still escalate to fail-closed and would add policy
+and public configuration without improving the follower's ability to participate
+in consensus. The existing background-failure path therefore remains the visible
+signal; no new log event or metric is added.
+
+Custom transports should give `RaftCluster.InstallSnapshotAsync` a request token
+whose source they control, cancel it before surfacing a payload-read failure and
+report cancellation from the payload. Local storage failures and failures after
+restore starts must not be translated. The XML contract documents this rule.
+
 ## Failed background snapshot (#75)
 
 **Defect.** `SimpleStateMachine` runs a snapshot in the background

@@ -119,7 +119,9 @@ term (#49). See [Membership change semantics](RAFT-REVIEW.md#membership-change-s
 * **A cancelled snapshot install no longer faults the WAL** (#73) when the state machine opts in through
   `IStateMachine.IsSnapshotInstallCancellationSafe`; `SimpleStateMachine` does. Upstream faults the WAL on any
   exception from `IStateMachine.ApplyAsync` of a snapshot, including cancellation. `SimpleStateMachine` restores under
-  its lifetime token instead of the request token. Other errors stay fail-closed. See
+  its lifetime token instead of the request token. TCP, UDP and HTTP payload-source failures are converted to request
+  cancellation (#90), so a partial transfer rolls back and can be retransmitted. Local storage failures and arbitrary
+  non-cancellation failures stay fail-closed (#113); custom transports must provide the same cancellation signal. See
   [Snapshot install cancellation](RAFT-REVIEW.md#snapshot-install-cancellation-73).
 * **A failed background snapshot no longer poisons `SimpleStateMachine`** (#75). Upstream keeps the faulted or cancelled
   `BeginSnapshottingAsync` task, so every later apply and snapshot install rethrows it and the WAL fails closed until it

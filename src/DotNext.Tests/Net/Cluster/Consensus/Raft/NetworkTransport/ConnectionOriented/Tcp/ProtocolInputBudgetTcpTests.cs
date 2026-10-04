@@ -163,6 +163,58 @@ public sealed class ProtocolInputBudgetTcpTests : RaftTest
         }
     }
 
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static async Task PeerDisconnectMidSnapshotAllowsSimpleStateMachineRetransmission(bool reset)
+    {
+        var location = GetTempPath();
+        var snapshotLocation = new DirectoryInfo(Path.Combine(location, "snapshot"));
+        await using var machine = new ByteStateMachine(snapshotLocation);
+        await using var state = new WriteAheadLog(new() { Location = Path.Combine(location, "wal") }, machine);
+        await using var cluster = new RaftCluster(CreateConfiguration()) { AuditTrail = state };
+        await cluster.StartAsync(TestToken);
+
+        var sender = new ClusterMemberId(Random.Shared);
+        using (var peer = await ConnectAsync())
+        {
+            await peer.SendAsync(PartialInstallSnapshotRequest(sender), SocketFlags.None, TestToken);
+            await Task.Delay(StallLeadTime, TestToken);
+
+            if (reset)
+                peer.LingerState = new(true, 0);
+            else
+                peer.Shutdown(SocketShutdown.Send);
+
+            peer.Close();
+        }
+
+        await ProbeAsync(cluster, sender, expectBlocked: false);
+
+        Equal(0L, state.LastEntryIndex);
+        Equal(0L, state.LastCommittedEntryIndex);
+        Empty(machine.State);
+        Null(machine.As<IStateMachine>().Snapshot);
+        Empty(snapshotLocation.EnumerateFiles("*.tmp"));
+
+        var content = new byte[DeclaredPayloadLength];
+        Array.Fill(content, (byte)42);
+        var retransmission = await ((ILocalMember)cluster).InstallSnapshotAsync(
+            sender,
+            SenderTerm,
+            new ByteSnapshotEntry(content, SenderTerm),
+            10L,
+            0,
+            TestToken);
+
+        Equal(HeartbeatResult.ReplicatedWithLeaderTerm, retransmission.Value);
+        Equal(10L, state.LastEntryIndex);
+        Equal(10L, state.LastCommittedEntryIndex);
+        Equal(10L, state.LastAppliedIndex);
+        Equal(content, machine.State);
+        await AssertLogUsableAsync(state);
+    }
+
     // After a graceful close (FIN) mid-entry, the leader retransmits the complete entry at the same index and term.
     // The follower must store it in full (#97).
     [Fact(Timeout = TestTimeouts.Default)]

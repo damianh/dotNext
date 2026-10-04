@@ -40,7 +40,7 @@ should account for the additional append latency and prefer batch appends
 where appropriate. Recovered uncommitted entries are neither committed nor
 applied until Raft subsequently commits them.
 
-During snapshot installation, TCP, UDP and HTTP payload-source failures cancel
+During snapshot installation, TCP and HTTP payload-source failures cancel
 the request. A state machine that opts in through
 `IStateMachine.IsSnapshotInstallCancellationSafe` can roll back the incomplete
 transfer, keep the WAL usable and accept the leader's retransmission.

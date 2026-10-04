@@ -879,7 +879,7 @@ request dispatched by the leader's worker cannot be cancelled deterministically.
 
 Issue #113 revisited whether every exception before snapshot restoration should
 be recoverable. The transport case had already been fixed by #90 / PR #98:
-`PayloadSourceScope` converts a TCP, UDP or HTTP payload-source failure into
+`PayloadSourceScope` converts a TCP or HTTP payload-source failure into
 cancellation of the request. For an opted-in state machine, the #73 contract
 then rolls back the temporary snapshot, leaves the WAL unchanged and lets the
 leader retransmit. `ProtocolInputBudgetTcpTests` and

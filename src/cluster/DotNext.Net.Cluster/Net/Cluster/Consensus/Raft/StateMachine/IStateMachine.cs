@@ -41,6 +41,12 @@ public interface IStateMachine : ISnapshotManager
     /// can no longer roll it back once it is partially rebuilt; use a token that is not tied to the request for that
     /// step, for example, one that is canceled only when the state machine is disposed.
     /// <para>
+    /// Built-in transports cancel the request token when the payload source fails. A custom transport should provide
+    /// the snapshot handler with a token whose source it controls, cancel that source before surfacing a payload-read
+    /// failure, and report cancellation from the snapshot payload. This lets an opted-in state machine roll back a
+    /// transfer that did not reach restoration.
+    /// </para>
+    /// <para>
     /// A state machine that returns <see langword="true"/> but restores its state under the request token risks running
     /// with a partially restored state after the log stays usable. The default value is <see langword="false"/>, which
     /// keeps every cancellation of a snapshot installation fatal for the <see cref="WriteAheadLog"/>.

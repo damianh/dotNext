@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using Microsoft.Extensions.Logging;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
@@ -43,6 +44,10 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
     }
 
     internal EndPoint EndPoint { get; }
+
+    internal ILogger CapturedLogger { get; set; }
+
+    protected override ILogger Logger => CapturedLogger ?? base.Logger;
 
     internal ref readonly ClusterMemberId Id => ref id;
 

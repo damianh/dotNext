@@ -165,6 +165,14 @@ An existing file shorter than its 8-byte version header now throws
 guidance. It is never treated as version zero or overwritten. The persisted
 format is unchanged.
 
+### Candidate voting supervision (#26)
+
+An unexpected failure of the candidate's voting task (reading the last log term, a voter exception other than
+`MemberUnavailableException`, or the leader no-op append) is logged as Error 74048 `VotingFailed`, and the node
+returns to follower with a randomized election timeout. Upstream ends the task silently and the node stays a
+candidate with no election in progress. Failures during disposal are unchanged (Debug 74034). See
+[Failure signals and operator actions](RAFT-REVIEW.md#failure-signals-and-operator-actions-26).
+
 ### Direct I/O page checks
 * On Linux, `LinuxDirectPageManager.IsAllowed` checks `pageSize % sectorSize == 0`. Upstream 6.8.1 has the operands
   inverted (`sectorSize % pageSize`), which does not match the constructor's own validation. The fork fixed this.
@@ -200,7 +208,7 @@ before replay), #44 (leadership test flake), #45 (acknowledged log durability), 
 configuration barriers), #59 (leader lease timing), #66 (read barrier spin after leader step-down), #68 (log-derived active configuration),
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
 #51 (unavailable-member leadership-loss logging), #73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
-#106 (durable applied cluster configuration baseline).
+#106 (durable applied cluster configuration baseline), #26 (candidate voting supervision).
 
 ## Upstream sync log
 

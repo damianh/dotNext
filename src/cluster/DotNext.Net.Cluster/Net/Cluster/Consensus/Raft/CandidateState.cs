@@ -28,15 +28,25 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
     [AsyncMethodBuilder(typeof(SpawningAsyncTaskMethodBuilder))]
     private async Task VoteAsync(TimeSpan timeout)
     {
-        // Perf: reuse index and related term once for all members
-        var lastIndex = AuditTrail.LastEntryIndex;
-        var lastTerm = await AuditTrail.GetTermAsync(lastIndex, votingCancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Perf: reuse index and related term once for all members
+            var lastIndex = AuditTrail.LastEntryIndex;
+            var lastTerm = await AuditTrail.GetTermAsync(lastIndex, votingCancellationToken).ConfigureAwait(false);
 
-        // start voting in parallel
-        var voters = StartVoting(lastIndex, lastTerm);
-        var deadline = new VotingDeadline(votingCancellation, timeout, TimeProvider);
-        await using (deadline.ConfigureAwait(false))
-            await EndVoting(voters, deadline).ConfigureAwait(false);
+            // start voting in parallel
+            var voters = StartVoting(lastIndex, lastTerm);
+            var deadline = new VotingDeadline(votingCancellation, timeout, TimeProvider);
+            await using (deadline.ConfigureAwait(false))
+                await EndVoting(voters, deadline).ConfigureAwait(false);
+        }
+        catch (Exception e) when (!IsDisposingOrDisposed)
+        {
+            // Supervise the voting task like the leader heartbeat: report the failure and resume
+            // the election timer instead of remaining a candidate with no voting in progress.
+            Logger.VotingFailed(Term, e);
+            MoveToFollowerState(randomizeTimeout: true);
+        }
     }
     
     private IAsyncEnumerable<Task<(TMember, long, bool?)>> StartVoting(long lastIndex, long lastTerm)

@@ -38,6 +38,10 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
     // Unlike MemberResult, it doesn't distinguish replication of the leader's term, which is required for
     // commitment but not for catching up a new member.
     private long matchedIndex;
+
+    // Set immediately before the request to the member. A failure before that point is a failure of the
+    // leader's own log (or local preparation) and must not be attributed to the member.
+    private bool memberCallStarted;
     private bool available = true;
     private IFailureDetector? detector;
 
@@ -122,6 +126,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
             {
                 replicationIndex = member.State.PrecedingIndex;
                 matchedIndex = -1L;
+                memberCallStarted = false;
                 try
                 {
                     precedingTerm = await AuditTrail.GetTermAsync(replicationIndex, source.Token).ConfigureAwait(false);
@@ -147,6 +152,15 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
                     // the process has been interrupted, report this member as unavailable and disable failure detection
                     result = MemberResult.Unavailable;
                     detector = null;
+                }
+                catch (Exception e) when (!memberCallStarted)
+                {
+                    // The leader could not read its own log for this member. The member was not contacted,
+                    // so the failure detector is neither fed nor queried for this round. The round still
+                    // counts as unavailable, so the leader steps down if it cannot replicate to a majority.
+                    Logger.LocalLogReadFailed(member.EndPoint, e);
+                    result = MemberResult.Unavailable;
+                    continue;
                 }
                 catch (Exception e)
                 {
@@ -229,6 +243,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
         where TList : IReadOnlyList<TEntry>
     {
         Logger.ReplicaSize(member.EndPoint, entries.Count, replicationIndex, precedingTerm);
+        memberCallStarted = true;
         var result = member.AppendEntriesAsync<TEntry, TList>(Term, entries, replicationIndex, precedingTerm,
             AuditTrail.LastCommittedEntryIndex, token);
         replicationIndex += entries.Count;
@@ -244,6 +259,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
         Logger.InstallingSnapshot(member.EndPoint, replicationIndex = snapshotIndex);
 
         var (config, configVersion) = await LoadConfigurationAsync(token).ConfigureAwait(false);
+        memberCallStarted = true;
         var result = await member.InstallSnapshotAsync(Term, snapshot, snapshotIndex, config, configVersion, token)
             .ConfigureAwait(false);
 

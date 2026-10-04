@@ -447,7 +447,7 @@ confirmed core defects; overlapping consequences are not counted twice.
 | O2: failure-induced standby | Behavior confirmed; remedy overstated | Manual recovery is available and transition failure already logs at Critical. Automatically retrying after an unknown failure is not necessarily safe. |
 | O3: dangerous defaults | Conditional configuration risks; lease timing model established for #20 | Cold start acts on empty stored configuration; independently bootstrapped singletons do not prove split brain within one correctly configured membership. Leases are opt-in, elapsed heartbeat time is deducted, and an arbitrary drift factor is not a measured safety bound. A slow follower alone need not block majority replication. See [Leader lease timing model](#leader-lease-timing-model) for the supported assumptions, the two fixed lease defects, and the remaining snapshot hazard (#58). |
 | O4: deterministic core tests | Coverage gap confirmed | Election, lifecycle, and failure scenarios lack direct deterministic coverage. Existing component and integration tests must not be overlooked. |
-| O5: missing observability | Partial hardening | Dedicated rejection metrics would help, but malformed messages can already reach exception logging. See [Failure signals and operator actions](#failure-signals-and-operator-actions-26) (#26): the unsupervised candidate voting task is fixed, and the misattributed leader read failure is #115. |
+| O5: missing observability | Partial hardening | Dedicated rejection metrics would help, but malformed messages can already reach exception logging. See [Failure signals and operator actions](#failure-signals-and-operator-actions-26) (#26): the unsupervised candidate voting task and the misattributed leader read failure (#115) are fixed. |
 | O6: configuration/header validation | Mixed hardening; silent-degradation claim overstated | An underlying cache probe rejected several invalid settings, subject to the version caveat below. Explicit expiration validation and rejection of ambiguous singleton headers remain reasonable improvements; no authorization parser-differential exploit was established. Since #109 a nonpositive request journal `Expiration` is rejected at startup, and one past `DateTimeOffset.MaxValue` no longer fails delivery but leaves entries without an absolute expiration. |
 | O7: pooled connection state | Confirmed new finding 17 | A valid exact-boundary metadata response leaves its terminator unread and corrupts the next vote response. |
 
@@ -1161,12 +1161,14 @@ ids are `LogMessages` ids (offset 74000).
 | Failure-induced standby | Critical 74032 `TransitionToLeaderStateFailed`, then resumable standby (`RaftCluster.cs:1534-1535`) | Fix the cause, then `RevertToNormalModeAsync` or restart |
 | Failure-induced zombie | Critical 74030/74031 `TransitionTo{Follower,Candidate}StateFailed` (`RaftCluster.cs:1381,1474`); `Readiness`, election and leadership waits fault with the cause (`RaftCluster.cs:1301-1311`) | Fix the cause, then restart |
 | Worker failure, node keeps running | Error 74035 `LeaderStateExitedWithError` (#8, `LeaderState.cs:112`) or Error 74048 `VotingFailed` (`CandidateState.cs:47`), then follower | Investigate the logged exception; repeated failures escalate to 74030/74031 |
+| Leader cannot read its own log for a peer | Error 74049 `LocalLogReadFailed` with the peer endpoint and exception, once per replication round for that peer (#115, `ReplicationUtils\ReplicationProcess.cs`). The peer is not reported as unresponsive. If a majority cannot be replicated, the leader steps down on quorum loss (Debug 74000) | Investigate the leader's storage. The leader is not stepped down automatically while it keeps a majority: fix storage, then `ResignAsync` or restart the leader |
 | Terminal WAL failure | The WAL logs nothing; it keeps its first failure (`StateMachine\WriteAheadLog.Error.cs:14-22`). Read, append, commit, apply waits and flush throw `WriteAheadLog.InternalException` (an `IntegrityException`) with that failure as the inner exception (#13). Raft surfaces it through the transition or worker events above | Fix storage, then reopen the WAL (restart). `Readiness` reflects it only once the node is a zombie |
 | Integrity failure at open | The WAL or configuration storage constructor throws `IntegrityException` (#83, #106), or replay throws `HashMismatchException`/`MissingPageException`; the host fails to start | Restore from backup, or remove the member and re-add it with an empty WAL directory |
 | Malformed peer input | `RaftProtocolException`: TCP Error 74028 `FailedToProcessRequest` with the remote endpoint (`NetworkTransport\ConnectionOriented\Tcp\TcpServer.cs:149`), HTTP 500. Transport payload failures become request cancellation (#90) | None on the node; it stays available. Distinguish 74028 by exception type |
 
-Per worker: heartbeat and replication are supervised (#8, 74035); a per-peer replication failure is logged as
-EventId 0 (see G2). The WAL applier, flusher and cleanup report through `OnBackgroundTaskFailure` only. Background
+Per worker: heartbeat and replication are supervised (#8, 74035). A per-peer replication failure before the request to
+the peer is logged as Error 74049 (see G2); a failure of the request itself is still logged as EventId 0 and counts
+against the peer's failure detector. The WAL applier, flusher and cleanup report through `OnBackgroundTaskFailure` only. Background
 snapshots report through `SimpleStateMachine.OnSnapshotFailed` (#75). The unavailable-member detector logs 74037,
 74036 or 74047. Follower election timeouts go through `MoveToCandidateState` (74031 on failure). Standby and
 readiness are described above.
@@ -1179,11 +1181,32 @@ injected `IOException` left the node in `CandidateState` at term 1 after 10 elec
 resume. A failure during disposal is still reported at Debug 74034. A persistent storage failure is not retried
 indefinitely here: the next transition fails and the node becomes a zombie (74031).
 
-**G2, leader local read failure (open, #115).** When the leader cannot read its own log for one peer's range,
-`ReplicationUtils\ReplicationProcess.cs:150-154` logs EventId 0 without the peer endpoint and does not report a
-heartbeat, so the healthy peer is reported as Warning 74037 `UnresponsiveMemberDetected` and the default
-implementation removes it. Red evidence: `957bb6c1d` on branch `dh/issue-26-leader-read-attribution-red`,
-`LeaderReadFailureAttributionTests`. If every read fails, the leader steps down on quorum loss and no peer is blamed.
+**G2, leader local read failure (fixed, #115).** When the leader could not read its own log for one peer's range,
+`ReplicationUtils\ReplicationProcess.cs` logged EventId 0 without the peer endpoint and queried the peer's failure
+detector without a heartbeat. The healthy peer was then reported as Warning 74037 `UnresponsiveMemberDetected` and the
+default implementation removed it. Red evidence: `957bb6c1d` on branch `dh/issue-26-leader-read-attribution-red`,
+`LeaderReadFailureAttributionTests` (three EventId 0 entries, then 74037 for `node-2`).
+
+The replication process now records, per round, when it starts the request to the member: immediately before
+`AppendEntriesAsync`, and before `InstallSnapshotAsync` after the configuration is loaded. A failure before that point
+(the preceding-term read, `IAuditTrail.ReadAsync`, or the configuration load) is a local failure: it is logged as
+Error 74049 `LocalLogReadFailed` with the peer endpoint and the exception, the round reports the peer as unavailable
+for quorum, and the failure detector is neither fed nor queried. A failure after that point, including any transport
+exception, is handled as before (EventId 0, or `MemberUnavailableException`, then the failure detector and 74037).
+Cancellation is unchanged. The event replaces the EventId 0 entry one for one, so it is emitted once per round per
+peer, never per entry. If every read fails, the leader steps down on quorum loss and no peer is blamed.
+
+Residual gap: the WAL reads entry payloads lazily, while the transport serializes the request. A payload read failure
+at that stage is indistinguishable from a transport failure without changing the transports, and is still attributed
+to the peer. Eager failures, such as a terminal WAL failure (`WriteAheadLog.InternalException`), disposal, or a custom
+`IPersistentState` that fails in `ReadAsync`, are covered.
+
+Design choice: attribution only. A leader that can still replicate to a majority but not to one lagging peer stays
+leader. Stepping down instead (the #8 and #116 precedent) was rejected because it is an automatic retry of an unknown
+storage failure: the faulted node keeps the longest log and tends to be re-elected, so leadership churns without
+recovery. The risk is that a leader with a partially faulted WAL stays leader indefinitely while one peer cannot catch
+up, which reduces fault tolerance by one. Error 74049, repeated every round with the peer endpoint, is the signal; the
+operator fixes storage and calls `ResignAsync` or restarts the leader.
 
 **Not changed.** No automatic recovery from unknown storage failures, no WAL logger, no new metrics.
 

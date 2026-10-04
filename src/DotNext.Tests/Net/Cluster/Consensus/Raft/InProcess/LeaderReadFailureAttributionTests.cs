@@ -7,10 +7,13 @@ using IO.Log;
 using Membership;
 
 /// <summary>
-/// #26 probe: a local storage read failure on the leader must not be reported as an unresponsive healthy peer.
+/// #115: a local storage read failure on the leader must not be reported as an unresponsive healthy peer.
 /// </summary>
 public sealed class LeaderReadFailureAttributionTests : RaftTest
 {
+    private const int LocalLogReadFailedEventId = 74049;
+    private const int UnresponsiveMemberDetectedEventId = 74037;
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task LocalReadFailureIsNotAttributedToLaggingPeer()
     {
@@ -56,7 +59,95 @@ public sealed class LeaderReadFailureAttributionTests : RaftTest
         True(
             logger.Entries.Any(e => object.ReferenceEquals(injected, e.Exception) && e.EventId.Id is not 0),
             $"The local read failure was not reported with a dedicated event:{Environment.NewLine}{trace}");
+
+        var reported = logger.Entries.Where(static e => e.EventId.Id is LocalLogReadFailedEventId).ToArray();
+        NotEmpty(reported);
+        All(reported, e =>
+        {
+            Equal(LogLevel.Error, e.Level);
+            Same(injected, e.Exception);
+            Contains(cluster.Nodes[2].EndPoint.ToString(), e.Message);
+        });
+
+        // one event per failed replication round, not per entry
+        InRange(reported.Length, 1, 6);
+        DoesNotContain(logger.Entries, static e => e.EventId.Id is 0);
     }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task FullLocalReadFailureStepsDownWithoutBlamingPeers()
+    {
+        var storage = new ReadFaultingPersistentState();
+        var logger = new CapturingLogger();
+        var armed = new StrongBox<bool>();
+        await using var cluster = new InProcessClusterFixture(
+            3,
+            index => index is 0 ? storage : new ConsensusOnlyState(),
+            failureDetectorFactory: (_, _) => new MissCountingDetector(armed, threshold: 3));
+        cluster.Leader.CapturedLogger = logger;
+
+        await cluster.StartLeaderAsync();
+        foreach (var node in cluster.Nodes.Skip(1))
+            cluster.Network.Release(cluster.Leader.EndPoint, node.EndPoint);
+
+        var leadershipToken = cluster.Leader.LeadershipToken;
+        var injected = new IOException("Injected local read failure.");
+        storage.FailAllReads(injected);
+        armed.Value = true;
+
+        await ThrowsAsync<NotLeaderException>(
+            cluster.Leader.ForceReplicationAsync(TestToken).AsTask().WaitAsync(DefaultTimeout, TestToken));
+        True(leadershipToken.IsCancellationRequested);
+
+        var trace = Trace(logger);
+        DoesNotContain(logger.Entries, static e => e.EventId.Id is UnresponsiveMemberDetectedEventId);
+        DoesNotContain(logger.Entries, static e => e.EventId.Id is 0);
+        foreach (var node in cluster.Nodes.Skip(1))
+        {
+            True(
+                logger.Entries.Any(e => e.EventId.Id is LocalLogReadFailedEventId
+                                        && object.ReferenceEquals(injected, e.Exception)
+                                        && e.Message.Contains(node.EndPoint.ToString())),
+                $"No local read failure was reported for {node.EndPoint}:{Environment.NewLine}{trace}");
+        }
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task PeerTransportFailureIsStillReportedAsUnresponsive()
+    {
+        var logger = new CapturingLogger();
+        var armed = new StrongBox<bool>();
+        await using var cluster = new InProcessClusterFixture(
+            3,
+            failureDetectorFactory: (_, _) => new MissCountingDetector(armed, threshold: 3));
+        cluster.Leader.CapturedLogger = logger;
+
+        await cluster.StartLeaderAsync();
+        foreach (var node in cluster.Nodes.Skip(1))
+            cluster.Network.Release(cluster.Leader.EndPoint, node.EndPoint);
+
+        var peer = cluster.Nodes[2].EndPoint;
+        for (var i = 0; i < 6; i++)
+            _ = cluster.Network.FailNext(cluster.Leader.EndPoint, peer, RaftMessageType.AppendEntries,
+                new IOException("Injected transport failure."));
+        armed.Value = true;
+
+        for (var i = 0; i < 6; i++)
+            await cluster.Leader.ForceReplicationAsync(TestToken).AsTask().WaitAsync(DefaultTimeout, TestToken);
+
+        // unresponsive member processing is asynchronous
+        for (var i = 0; i < 20 && !logger.Entries.Any(static e => e.EventId.Id is UnresponsiveMemberDetectedEventId); i++)
+            await Task.Delay(50, TestToken);
+
+        var trace = Trace(logger);
+        True(
+            logger.Entries.Any(e => e.EventId.Id is UnresponsiveMemberDetectedEventId && e.Message.Contains(peer.ToString())),
+            $"A peer failing at the transport was not reported as unresponsive:{Environment.NewLine}{trace}");
+        DoesNotContain(logger.Entries, static e => e.EventId.Id is LocalLogReadFailedEventId);
+    }
+
+    private static string Trace(CapturingLogger logger)
+        => string.Join(Environment.NewLine, logger.Entries.Select(static e => $"{e.Level} {e.EventId.Id} {e.EventId.Name} {e.Message} {e.Exception?.GetType().Name}"));
 
     private sealed class StrongBox<T>
     {
@@ -109,9 +200,17 @@ public sealed class LeaderReadFailureAttributionTests : RaftTest
         private volatile Exception readFailure;
         private long failFromIndex = long.MaxValue;
 
+        private volatile bool failAll;
+
         internal void FailReadsFrom(long index, Exception exception)
         {
             failFromIndex = index;
+            readFailure = exception;
+        }
+
+        internal void FailAllReads(Exception exception)
+        {
+            failAll = true;
             readFailure = exception;
         }
 
@@ -158,7 +257,7 @@ public sealed class LeaderReadFailureAttributionTests : RaftTest
             long endIndex,
             CancellationToken token = default)
             => readFailure is { } failure && reader.GetType().Name.StartsWith("ReplicationProcess", StringComparison.Ordinal)
-                                         && startIndex <= endIndex && startIndex <= failFromIndex && endIndex >= failFromIndex
+                                         && (failAll || startIndex <= endIndex && startIndex <= failFromIndex && endIndex >= failFromIndex)
                 ? ValueTask.FromException<TResult>(failure)
                 : inner.ReadAsync(reader, startIndex, endIndex, token);
 

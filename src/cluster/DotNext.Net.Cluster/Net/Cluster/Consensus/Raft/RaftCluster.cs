@@ -725,9 +725,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <remarks>
     /// Built-in transports cancel <paramref name="token"/> before surfacing a failure while reading the snapshot
     /// payload. A custom transport should do the same so that a state machine which opts in through
-    /// <see cref="IStateMachine.IsSnapshotInstallCancellationSafe"/> can roll back the incomplete transfer without
-    /// faulting its <see cref="WriteAheadLog"/>. Local storage failures and failures after restoration starts must not
-    /// be converted to cancellation.
+    /// <see cref="StateMachine.IStateMachine.IsSnapshotInstallCancellationSafe"/> can roll back the incomplete transfer
+    /// without faulting its <see cref="StateMachine.WriteAheadLog"/>. Local storage failures and failures after
+    /// restoration starts must not be converted to cancellation.
     /// </remarks>
     protected async ValueTask<Result<HeartbeatResult>> InstallSnapshotAsync<TSnapshot>(ClusterMemberId sender, long senderTerm, TSnapshot snapshot,
         long snapshotIndex, int stateVersion, CancellationToken token)

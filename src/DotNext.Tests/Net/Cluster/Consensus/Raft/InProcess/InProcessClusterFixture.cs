@@ -1,4 +1,5 @@
 using System.Net;
+using DotNext.Diagnostics;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
@@ -13,7 +14,8 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
         int memberCount,
         Func<int, IPersistentState> stateFactory = null,
         InProcessCluster.LeaseOptions lease = null,
-        Func<int, TimeProvider, TimeProvider> clockFactory = null)
+        Func<int, TimeProvider, TimeProvider> clockFactory = null,
+        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null)
     {
         EndPoint[] membership = Enumerable.Range(0, memberCount)
             .Select(i => new DnsEndPoint($"node-{i}", 0)).ToArray();
@@ -22,7 +24,7 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
             .ToArray();
         Nodes = States.Select((state, i) => new InProcessCluster(
             Network, ((DnsEndPoint)membership[i]).Host, membership, state,
-            clockFactory?.Invoke(i, TimeProvider) ?? TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false, lease)).ToArray();
+            clockFactory?.Invoke(i, TimeProvider) ?? TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false, lease, failureDetectorFactory)).ToArray();
     }
 
     internal InProcessCluster Leader => Nodes[0];

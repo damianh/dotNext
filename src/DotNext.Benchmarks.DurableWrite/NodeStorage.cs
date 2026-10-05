@@ -145,6 +145,35 @@ internal static class NodeStorage
         return result;
     }
 
+    /// <summary>
+    /// Returns a node's history with the real term of every skipped entry that is still in its log.
+    /// </summary>
+    /// <remarks>
+    /// The log does not pass an entry without payload, such as the no-op of a new leader, to the state machine, so the
+    /// history records it as skipped, without a term. Its term is read back from the log here, so the final check can
+    /// compare it across nodes. An entry in the compacted prefix stays skipped: the snapshot keeps no terms.
+    /// </remarks>
+    internal static async Task<IReadOnlyList<AppliedEntry>> WithLogTermsAsync(WriteAheadLog log, IReadOnlyList<AppliedEntry> history,
+        CancellationToken token)
+    {
+        var first = 0;
+        while (first < history.Count && !history[first].IsSkipped)
+            first++;
+
+        if (first == history.Count)
+            return history;
+
+        var result = history.ToArray();
+        foreach (var entry in await ReadAsync(log, first + 1L, result.Length, token).ConfigureAwait(false))
+        {
+            // An entry with a write that the history skipped is a lost write, which the online check reports.
+            if (entry is { IsSkipped: false, Key: null } && result[entry.Index - 1L].IsSkipped)
+                result[entry.Index - 1L] = entry;
+        }
+
+        return result;
+    }
+
     internal static void Delete(string root)
     {
         for (var attempt = 0; ; attempt++)

@@ -226,6 +226,22 @@ internal sealed class OnlineHistoryChecker
         {
             try
             {
+                // An entry without payload has a term only where some node still has it in its log (see
+                // NodeStorage.WithLogTermsAsync); a skipped entry takes the term and write known at its index. Whether a
+                // node skipped an entry another node applied is checked online.
+                var known = new (long Term, WriteKey? Key)[prefixes.Select(static p => p?.Count ?? 0).DefaultIfEmpty().Max()];
+                for (var i = 0; i < known.Length && i < canonical.Count; i++)
+                    known[i] = (canonical[i].Term, canonical[i].Key);
+
+                foreach (var prefix in prefixes)
+                {
+                    for (var i = 0; prefix is not null && i < prefix.Count; i++)
+                    {
+                        if (known[i].Term is 0L && !prefix[i].IsSkipped)
+                            known[i] = (prefix[i].Term, prefix[i].Key);
+                    }
+                }
+
                 for (var node = 0; node < prefixes.Count; node++)
                 {
                     if (prefixes[node] is not { } prefix)
@@ -235,11 +251,8 @@ internal sealed class OnlineHistoryChecker
                     for (var i = 0; i < committed.Length; i++)
                     {
                         var entry = prefix[i];
-
-                        // A skipped entry has no term of its own: whether a node skipped an entry another node
-                        // applied is checked online, so here it takes the term and write applied at that index.
-                        if (entry.IsSkipped && i < canonical.Count && canonical[i] is { Term: not 0L } known)
-                            entry = entry with { Term = known.Term, Key = known.Key };
+                        if (entry.IsSkipped && known[i].Term is not 0L)
+                            entry = entry with { Term = known[i].Term, Key = known[i].Key };
 
                         committed[i] = new(entry.Index, entry.Term, WriteKey.ToPayloadString(entry.Key));
                     }

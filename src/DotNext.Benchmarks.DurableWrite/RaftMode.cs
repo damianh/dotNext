@@ -98,7 +98,16 @@ internal static class RaftMode
             run.Report.Oracles.Checked.AddRange([
                 OnlineHistoryChecker.ApplyOrder, OnlineHistoryChecker.PrefixAgreement,
                 OnlineHistoryChecker.AcknowledgedWrites, OnlineHistoryChecker.ElectionSafety]);
-            run.Checker.CheckFinal(nodes.Select(static n => n.StateMachine?.History).ToArray());
+            // The final check compares the terms of entries without payload too, read back from each node's log.
+            var prefixes = new IReadOnlyList<AppliedEntry>?[nodes.Length];
+            foreach (var node in nodes)
+            {
+                prefixes[node.Id] = node is { Wal: { } log, StateMachine: { } machine }
+                    ? await NodeStorage.WithLogTermsAsync(log, machine.History, run.RunToken).ConfigureAwait(false)
+                    : node.StateMachine?.History;
+            }
+
+            run.Checker.CheckFinal(prefixes);
 
             // What each log applied past the end of its history, read while the nodes still run.
             var applied = new (IReadOnlyList<AppliedEntry> History, long Index, IReadOnlyList<AppliedEntry> Tail)?[nodes.Length];
@@ -566,19 +575,36 @@ internal static class RaftMode
             disposed = true;
             if (Cluster is { } cluster)
             {
+                var stopped = false;
                 using (var timeout = new CancellationTokenSource(StopTimeout))
                 {
                     try
                     {
                         await cluster.StopAsync(timeout.Token).ConfigureAwait(false);
+                        stopped = true;
                     }
-                    catch (Exception e) when (e is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+                    catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException)
                     {
-                        // already stopped, or stopping took too long; disposal releases the rest
+                        // already stopped
+                        stopped = true;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // stopping took too long
                     }
                 }
 
-                await cluster.DisposeAsync().ConfigureAwait(false);
+                // DisposeAsync retries StopAsync without a deadline, so a node that did not stop in time is disposed
+                // synchronously instead: that releases its locks without waiting on them.
+                if (stopped)
+                {
+                    await cluster.DisposeAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    Console.Error.WriteLine($"node {id} did not stop within {StopTimeout.TotalSeconds:F0} s; forcing disposal");
+                    cluster.Dispose();
+                }
             }
 
             if (Wal is { } wal)

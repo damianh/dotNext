@@ -1124,7 +1124,7 @@ expected oracle. Dropping the apply of index 100 on a follower is caught by appl
 node 0 applied as 'm0-c4-s13'`). Applying index 100 after index 101 is caught by committed-prefix agreement. Followers that
 acknowledge without writing (`ConsensusOnlyState`, the "skip the flush before the ack" case) are caught by the durability oracle
 (`'m0-c7-s1' was acknowledged by node 0 at index 5, but only 1 of 3 voters recovered it from storage; a majority is 2`).
-`DurableWriteOracleTests` (26 tests) checks each oracle against synthetic good and bad histories.
+`DurableWriteOracleTests` (28 tests) checks each oracle against synthetic good and bad histories.
 
 **Bounds.** Fixed cells and durations; every cell also stops at 200,000 acknowledged writes or 2 GiB of payload; the run
 stops at 30 minutes. Cells are skipped below 2 GiB free on the work directory's volume and stopped below 1 GiB; a run cut

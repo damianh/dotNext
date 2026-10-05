@@ -166,6 +166,35 @@ public sealed class DurableWriteOracleTests : Test
     }
 
     [Fact]
+    public static void NoOpsWithDifferentTermsAtOneIndexAreDetected()
+    {
+        var checker = new OnlineHistoryChecker(2);
+        var log = Log(null, A);
+        ApplyAll(checker, 0, log);
+        ApplyAll(checker, 1, log);
+        Null(checker.Violation);
+
+        // The final check reads the term of each no-op back from the node's log: they differ at index 1.
+        checker.CheckFinal([[Entry(1L, null, term: 1L), log[1]], [Entry(1L, null, term: 2L), log[1]]]);
+
+        Equal(OnlineHistoryChecker.PrefixAgreement, checker.Violation?.Oracle);
+    }
+
+    [Fact]
+    public static void CompactedNoOpTakesTheKnownTerm()
+    {
+        var checker = new OnlineHistoryChecker(2);
+        var log = Log(null, A);
+        ApplyAll(checker, 0, log);
+        ApplyAll(checker, 1, log);
+
+        // Node 1 compacted index 1 into a snapshot, so the term of its no-op is unknown.
+        checker.CheckFinal([[Entry(1L, null, term: 2L), log[1]], log]);
+
+        Null(checker.Violation);
+    }
+
+    [Fact]
     public static void FirstViolationWins()
     {
         var checker = new OnlineHistoryChecker(1);

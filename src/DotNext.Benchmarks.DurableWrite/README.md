@@ -160,7 +160,7 @@ The history is checked **while the workload runs**. Each node's `HistoryStateMac
 | Oracle | Checked | Catches |
 |---|---|---|
 | apply order | on every apply and snapshot install | an index applied out of sequence or skipped while another node applied a write there; a write applied at two indexes; a closed-loop client's writes applied out of the order it sent them |
-| committed-prefix agreement | on every apply, and on all final prefixes through `SimulationHistory` | two nodes applying different terms or writes at one index |
+| committed-prefix agreement | on every apply, and on all final prefixes through `SimulationHistory`; leader no-ops (never applied) get their terms read back from each node's log at the end, but a no-op already compacted into a snapshot on every node cannot be compared | two nodes applying different terms or writes at one index |
 | acknowledged writes | on every acknowledgment, and at the end through `SimulationHistory` | an acknowledged write that no node has applied, or that is missing from or replaced in the final prefixes |
 | election safety | on every leader change, through `SimulationHistory` | two leaders in one term |
 | durability | after the cell | an acknowledged write that a majority does not recover from disk |

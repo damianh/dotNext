@@ -3,133 +3,153 @@
 <PageTitle>Leader election | dotNext Raft</PageTitle>
 
 <!--
-THESIS: A leader election is a blind typographic lineup; predict before the implementation reveals.
-OWN-WORLD: Paper, black ink, signal blue, ruled specimen grids, variable weight and width, square controls.
-STORY: Read the timing fact, commit a prediction, run real Raft, then inspect the causal wire trace.
-FIRST VIEWPORT: The question and three equal node glyphs dominate; prediction controls sit directly beneath.
-FORM: Seventh grounded structure, staged as a suspect lineup; surface seed 7cb5fb5c.
+DESIGN CONTRACT: PROTOCOL CONTROL MAP
+THESIS: A leader election is a live network control problem, not a typographic specimen.
+OWN-WORLD: The cluster map is the primary viewport; three stations sit on one mesh, traffic reads as routes/signals, and instructions sit in a compact control rail.
+STORY: Read the signal map, commit a prediction, run the real Raft election, and inspect the causal wire trace.
+FIRST VIEWPORT: The network board dominates the opening view; the control rail keeps the lesson, prediction, and verdict in reach.
+FORM: Diagram-first WebAssembly lab with readable route labels, strong focus states, and the same real execution semantics as the engine.
 -->
-<section class="chapter-intro" aria-labelledby="chapter-title">
-    <div class="chapter-index">
-        <span>Chapter 1 of 25</span>
-        <span>Election / fundamentals</span>
-    </div>
-    <h1 id="chapter-title">Who becomes<br />leader?</h1>
-    <div class="chapter-brief">
-        <p>
-            Ada's election timer expires first. Before the messages move, commit to what
-            you think the cluster will do.
-        </p>
-        <dl>
-            <div>
-                <dt>Nodes</dt>
-                <dd>3</dd>
-            </div>
-            <div>
-                <dt>Initial term</dt>
-                <dd>0</dd>
-            </div>
-            <div>
-                <dt>Network</dt>
-                <dd>Healthy</dd>
-            </div>
-        </dl>
-    </div>
-</section>
-
-<section class="experiment" aria-labelledby="prediction-title">
-    <div class="experiment-heading">
-        <div>
-            <h2 id="prediction-title">Make your prediction</h2>
-            <p>Choose one answer. The implementation stays hidden until you commit.</p>
+<section class="protocol-shell" aria-labelledby="chapter-title">
+    <div class="network-map" aria-label="Raft cluster control map">
+        <div class="network-header">
+            <span>Cluster control map</span>
+            <span>3 nodes / healthy quorum</span>
         </div>
-        <span class="axis-readout">weight axis / role</span>
+
+        <div class="map-layers" aria-hidden="true">
+            <div class="map-grid"></div>
+            <div class="signal signal-vote"><span>Vote</span></div>
+            <div class="signal signal-prevote"><span>PreVote</span></div>
+            <div class="signal signal-append"><span>AppendEntries</span></div>
+            <div class="quorum-ring"></div>
+        </div>
+
+        <fieldset class="node-lineup" disabled="@(running || result is not null)">
+            <legend class="visually-hidden">Which node becomes leader?</legend>
+            @foreach (var name in NodeNames)
+            {
+                var snapshot = result?.Nodes.First(node => node.Name == name);
+                <label class="node-specimen @NodeClass(name, snapshot)">
+                    <input type="radio"
+                           name="prediction"
+                           value="@name"
+                           checked="@(prediction == name)"
+                           @onchange="() => prediction = name" />
+                    <span class="node-meta">
+                        <span>station / @name.ToLowerInvariant()</span>
+                        <span>@NodeRole(snapshot)</span>
+                    </span>
+                    <span class="node-glyph" aria-hidden="true">@name[0]</span>
+                    <span class="node-name">@name</span>
+                    <span class="node-axis">
+                        <span>term</span>
+                        <span class="axis-line"><i></i></span>
+                        <strong>@(snapshot?.Term.ToString() ?? "—")</strong>
+                    </span>
+                </label>
+            }
+        </fieldset>
     </div>
 
-    <fieldset class="node-lineup" disabled="@(running || result is not null)">
-        <legend class="visually-hidden">Which node becomes leader?</legend>
-        @foreach (var name in NodeNames)
-        {
-            var snapshot = result?.Nodes.First(node => node.Name == name);
-            <label class="node-specimen @NodeClass(name, snapshot)">
-                <input type="radio"
-                       name="prediction"
-                       value="@name"
-                       checked="@(prediction == name)"
-                       @onchange="() => prediction = name" />
-                <span class="node-meta">
-                    <span>node / @name.ToLowerInvariant()</span>
-                    <span>@NodeRole(snapshot)</span>
-                </span>
-                <span class="node-glyph" aria-hidden="true">@name[0]</span>
-                <span class="node-name">@name</span>
-                <span class="node-axis">
-                    <span>term</span>
-                    <span class="axis-line"><i></i></span>
-                    <strong>@(snapshot?.Term.ToString() ?? "—")</strong>
-                </span>
-            </label>
-        }
-    </fieldset>
-
-    <div class="prediction-bar">
-        <label class="uncertain-choice">
-            <input type="radio"
-                   name="prediction"
-                   value="@UncertainPrediction"
-                   checked="@(prediction == UncertainPrediction)"
-                   disabled="@(running || result is not null)"
-                   @onchange="() => prediction = UncertainPrediction" />
-            <span>I cannot know from this information</span>
-        </label>
-
-        @if (result is null)
-        {
-            <button class="primary-action"
-                    @onclick="RunElectionAsync"
-                    disabled="@(running || prediction is null)">
-                <span>@(running ? "Running real Raft" : "Test my prediction")</span>
-                <span aria-hidden="true">→</span>
-            </button>
-        }
-        else
-        {
-            <button class="secondary-action" @onclick="Reset">
-                <span>Try another prediction</span>
-                <span aria-hidden="true">↺</span>
-            </button>
-        }
-    </div>
-
-    @if (running)
-    {
-        <div class="running-state" role="status">
-            <span></span>
-            <p>Election in progress. Pre-votes, votes, and heartbeats are moving through the simulated network.</p>
-        </div>
-    }
-    else if (error is not null)
-    {
-        <div class="error-state" role="alert">
-            <strong>The election could not finish.</strong>
-            <span>@error</span>
-            <button @onclick="Reset">Reset the experiment</button>
-        </div>
-    }
-    else if (result is not null)
-    {
-        <div class="verdict" aria-live="polite">
-            <div class="verdict-mark">@(PredictionWasCorrect ? "✓" : "×")</div>
-            <div>
-                <p class="verdict-label">@(PredictionWasCorrect ? "Prediction confirmed" : "Prediction challenged")</p>
-                <h2>@result.Leader becomes leader.</h2>
+    <aside class="control-rail" aria-label="Election lesson controls">
+        <div class="chapter-intro">
+            <div class="chapter-index">
+                <span>Chapter 1 of 25</span>
+                <span>Election / fundamentals</span>
+            </div>
+            <h1 id="chapter-title">Who becomes<br />leader?</h1>
+            <div class="chapter-brief">
                 <p>
-                    You chose <strong>@PredictionLabel</strong>. Ada's timer fired first,
-                    then a majority granted the votes needed for term 1.
+                    Ada's election timer expires first. Before the messages move, commit to what
+                    you think the cluster will do.
                 </p>
+                <dl>
+                    <div>
+                        <dt>Nodes</dt>
+                        <dd>3</dd>
+                    </div>
+                    <div>
+                        <dt>Initial term</dt>
+                        <dd>0</dd>
+                    </div>
+                    <div>
+                        <dt>Network</dt>
+                        <dd>Healthy</dd>
+                    </div>
+                </dl>
             </div>
         </div>
-    }
+
+        <section class="experiment" aria-labelledby="prediction-title">
+            <div class="experiment-heading">
+                <div>
+                    <h2 id="prediction-title">Make your prediction</h2>
+                    <p>Choose one answer. The implementation stays hidden until you commit.</p>
+                </div>
+                <span class="axis-readout">signal / role</span>
+            </div>
+
+            <div class="prediction-bar">
+                <label class="uncertain-choice">
+                    <input type="radio"
+                           name="prediction"
+                           value="@UncertainPrediction"
+                           checked="@(prediction == UncertainPrediction)"
+                           disabled="@(running || result is not null)"
+                           @onchange="() => prediction = UncertainPrediction" />
+                    <span>I cannot know from this information</span>
+                </label>
+
+                @if (result is null)
+                {
+                    <button class="primary-action"
+                            @onclick="RunElectionAsync"
+                            disabled="@(running || prediction is null)">
+                        <span>@(running ? "Running real Raft" : "Test my prediction")</span>
+                        <span aria-hidden="true">→</span>
+                    </button>
+                }
+                else
+                {
+                    <button class="secondary-action" @onclick="Reset">
+                        <span>Try another prediction</span>
+                        <span aria-hidden="true">↺</span>
+                    </button>
+                }
+            </div>
+
+            @if (running)
+            {
+                <div class="running-state" role="status">
+                    <span></span>
+                    <p>Election in progress. Pre-votes, votes, and heartbeats are moving through the simulated network.</p>
+                </div>
+            }
+            else if (error is not null)
+            {
+                <div class="error-state" role="alert">
+                    <strong>The election could not finish.</strong>
+                    <span>@error</span>
+                    <button @onclick="Reset">Reset the experiment</button>
+                </div>
+            }
+            else if (result is not null)
+            {
+                <div class="verdict" aria-live="polite">
+                    <div class="verdict-mark">@(PredictionWasCorrect ? "✓" : "×")</div>
+                    <div>
+                        <p class="verdict-label">@(PredictionWasCorrect ? "Prediction confirmed" : "Prediction challenged")</p>
+                        <h2>@result.Leader becomes leader.</h2>
+                        <p>
+                            You chose <strong>@PredictionLabel</strong>. Ada's timer fired first,
+                            then a majority granted the votes needed for term 1.
+                        </p>
+                    </div>
+                </div>
+            }
+        </section>
+    </aside>
 </section>
 
 <section class="trace" aria-labelledby="trace-title">

@@ -518,7 +518,7 @@ code {
     display: grid;
     gap: clamp(1rem, 2vw, 2rem);
     grid-area: rail;
-    grid-template-columns: minmax(18rem, .8fr) minmax(28rem, 1.2fr);
+    grid-template-columns: minmax(22rem, 1fr) minmax(26rem, 1fr);
 }
 
 .chapter-intro {

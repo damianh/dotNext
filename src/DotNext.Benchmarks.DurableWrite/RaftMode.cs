@@ -89,7 +89,7 @@ internal static class RaftMode
             }
             catch (LivenessFailureException)
             {
-                run.Checker.CheckFinal(nodes.Select(static n => n.StateMachine?.History).ToArray());
+                await CheckFinalAfterLivenessAsync(run, nodes).ConfigureAwait(false);
                 throw;
             }
 
@@ -98,16 +98,7 @@ internal static class RaftMode
             run.Report.Oracles.Checked.AddRange([
                 OnlineHistoryChecker.ApplyOrder, OnlineHistoryChecker.PrefixAgreement,
                 OnlineHistoryChecker.AcknowledgedWrites, OnlineHistoryChecker.ElectionSafety]);
-            // The final check compares the terms of entries without payload too, read back from each node's log.
-            var prefixes = new IReadOnlyList<AppliedEntry>?[nodes.Length];
-            foreach (var node in nodes)
-            {
-                prefixes[node.Id] = node is { Wal: { } log, StateMachine: { } machine }
-                    ? await NodeStorage.WithLogTermsAsync(log, machine.History, run.RunToken).ConfigureAwait(false)
-                    : node.StateMachine?.History;
-            }
-
-            run.Checker.CheckFinal(prefixes);
+            run.Checker.CheckFinal(await ReadFinalPrefixesAsync(nodes, run.RunToken).ConfigureAwait(false));
 
             // What each log applied past the end of its history, read while the nodes still run.
             var applied = new (IReadOnlyList<AppliedEntry> History, long Index, IReadOnlyList<AppliedEntry> Tail)?[nodes.Length];
@@ -160,6 +151,48 @@ internal static class RaftMode
             await StopAsync(nodes).ConfigureAwait(false);
         }
     }
+
+    private static async Task CheckFinalAfterLivenessAsync(CellRun run, Node[] nodes)
+    {
+        IReadOnlyList<AppliedEntry>?[] prefixes;
+        try
+        {
+            prefixes = await ReadFinalPrefixesAsync(nodes, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception e) when (IsWalTermReadFailure(e))
+        {
+            Console.Error.WriteLine($"could not read WAL terms before reporting liveness: {e.Message}");
+            prefixes = ReadRawPrefixes(nodes);
+        }
+
+        run.Checker.CheckFinal(prefixes);
+    }
+
+    // The final check compares the terms of entries without payload too, read back from each node's log.
+    private static async Task<IReadOnlyList<AppliedEntry>?[]> ReadFinalPrefixesAsync(Node[] nodes, CancellationToken token)
+    {
+        var prefixes = new IReadOnlyList<AppliedEntry>?[nodes.Length];
+        foreach (var node in nodes)
+        {
+            prefixes[node.Id] = node is { Wal: { } log, StateMachine: { } machine }
+                ? await NodeStorage.WithLogTermsAsync(log, machine.History, token).ConfigureAwait(false)
+                : node.StateMachine?.History;
+        }
+
+        return prefixes;
+    }
+
+    private static IReadOnlyList<AppliedEntry>?[] ReadRawPrefixes(Node[] nodes)
+    {
+        var prefixes = new IReadOnlyList<AppliedEntry>?[nodes.Length];
+        foreach (var node in nodes)
+            prefixes[node.Id] = node.StateMachine?.History;
+
+        return prefixes;
+    }
+
+    private static bool IsWalTermReadFailure(Exception e)
+        => e is IOException or UnauthorizedAccessException or ObjectDisposedException or InvalidOperationException or OperationCanceledException;
 
     private static async Task CreateNodesAsync(CellRun run, Node[] nodes)
     {

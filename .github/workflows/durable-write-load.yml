@@ -233,11 +233,12 @@ jobs:
             echo ""
             echo '```'
             lsblk -o NAME,TYPE,SIZE,ROTA,MODEL,FSTYPE,MOUNTPOINTS || true
+            for queue in /sys/block/*/queue/write_cache; do echo "$queue: $(cat "$queue")"; done 2> /dev/null || true
             echo '```'
             echo ""
-            echo "| Cell | Acks (short, long) | fsync | fdatasync | rename* | unlink* |"
-            echo "|---|---|---|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "| Cell | Acks (short, long) | fsync | fdatasync | msync | rename* | unlink* |"
+            echo "|---|---|---|---|---|---|---|"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           for spec in "wal-append-128B-c1:--mode wal --sizes 128 --concurrency 1" \
                       "raft-closed-3v-128B-c1:--mode raft --voters 3 --sizes 128 --concurrency 1"; do
             cell="${spec%%:*}"; read -r -a extra <<< "${spec#*:}"
@@ -251,7 +252,7 @@ jobs:
               done
               awk -v d="$((total2 - total1))" -v a="$((a2 - a1))" 'BEGIN { if (a > 0) printf "%.2f", d / a; else print "n/a" }'
             }
-            echo "| $cell | $a1, $a2 | $(per fsync) | $(per fdatasync) | $(per rename renameat renameat2) | $(per unlink unlinkat) |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| $cell | $a1, $a2 | $(per fsync) | $(per fdatasync) | $(per msync) | $(per rename renameat renameat2) | $(per unlink unlinkat) |" | tee -a "$GITHUB_STEP_SUMMARY"
           done
 
       - name: Summarize

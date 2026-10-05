@@ -27,16 +27,29 @@ partial class WriteAheadLog
     private static void RecordLockWait(in TagList measurementTags, string lockName, string cause, long startTimestamp)
     {
         var duration = Stopwatch.GetElapsedTime(startTimestamp).TotalMilliseconds;
-        if (LockWaitDurationMeter.Enabled)
-        {
-            var tags = measurementTags;
-            tags.Add(LockMeterAttribute, lockName);
-            tags.Add(CauseMeterAttribute, cause);
-            LockWaitDurationMeter.Record(duration, tags);
-        }
 
-        WriteAheadLogEventSource.Log.LockWait(lockName, cause, duration);
+        // A listener that throws must not fail, or leak a lock from, the operation it observes.
+        try
+        {
+            if (LockWaitDurationMeter.Enabled)
+            {
+                var tags = measurementTags;
+                tags.Add(LockMeterAttribute, lockName);
+                tags.Add(CauseMeterAttribute, cause);
+                LockWaitDurationMeter.Record(duration, tags);
+            }
+
+            WriteAheadLogEventSource.Log.LockWait(lockName, cause, duration);
+        }
+        catch (Exception e)
+        {
+            OnListenerFault(e);
+        }
     }
+
+    // Diagnostics are best-effort: a fault of a listener is reported to the debugger only.
+    private static void OnListenerFault(Exception e)
+        => Debug.WriteLine($"WriteAheadLog diagnostics listener fault: {e}");
 
     private ValueTask AcquirePersistenceLockAsync(string cause, CancellationToken token)
         => IsLockTracingEnabled ? AcquirePersistenceLockTracedAsync(cause, token) : persistenceLock.AcquireAsync(token);
@@ -51,8 +64,14 @@ partial class WriteAheadLog
 
     private void ReleasePersistenceLock()
     {
-        persistenceTrace.OnLockReleasing();
-        persistenceLock.Release();
+        try
+        {
+            persistenceTrace.OnLockReleasing();
+        }
+        finally
+        {
+            persistenceLock.Release();
+        }
     }
 
     internal const string PersistenceLockName = "persistence";
@@ -91,15 +110,22 @@ partial class WriteAheadLog
             var now = Stopwatch.GetTimestamp();
             var duration = Stopwatch.GetElapsedTime(phaseMark, now).TotalMilliseconds;
             phaseMark = now;
-            if (PersistPhaseDurationMeter.Enabled)
+            try
             {
-                var tags = measurementTags;
-                tags.Add(PhaseMeterAttribute, phase);
-                tags.Add(CauseMeterAttribute, cause);
-                PersistPhaseDurationMeter.Record(duration, tags);
-            }
+                if (PersistPhaseDurationMeter.Enabled)
+                {
+                    var tags = measurementTags;
+                    tags.Add(PhaseMeterAttribute, phase);
+                    tags.Add(CauseMeterAttribute, cause);
+                    PersistPhaseDurationMeter.Record(duration, tags);
+                }
 
-            WriteAheadLogEventSource.Log.PersistPhase(phase, cause, duration);
+                WriteAheadLogEventSource.Log.PersistPhase(phase, cause, duration);
+            }
+            catch (Exception e)
+            {
+                OnListenerFault(e);
+            }
         }
 
         internal void Stop() => phaseMark = 0L;
@@ -117,15 +143,22 @@ partial class WriteAheadLog
 
             var duration = Stopwatch.GetElapsedTime(lockAcquiredAt).TotalMilliseconds;
             lockAcquiredAt = 0L;
-            if (LockHoldDurationMeter.Enabled)
+            try
             {
-                var tags = measurementTags;
-                tags.Add(LockMeterAttribute, PersistenceLockName);
-                tags.Add(CauseMeterAttribute, lockCause);
-                LockHoldDurationMeter.Record(duration, tags);
-            }
+                if (LockHoldDurationMeter.Enabled)
+                {
+                    var tags = measurementTags;
+                    tags.Add(LockMeterAttribute, PersistenceLockName);
+                    tags.Add(CauseMeterAttribute, lockCause);
+                    LockHoldDurationMeter.Record(duration, tags);
+                }
 
-            WriteAheadLogEventSource.Log.LockHold(PersistenceLockName, lockCause, duration);
+                WriteAheadLogEventSource.Log.LockHold(PersistenceLockName, lockCause, duration);
+            }
+            catch (Exception e)
+            {
+                OnListenerFault(e);
+            }
         }
     }
 }

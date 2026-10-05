@@ -1182,7 +1182,7 @@ and hypotheses (H1–H4) are those of the issue.
 | strace `-f -c` differential (Linux CI, no privileges) | durability system calls per acknowledged write: `fsync`, `msync`, `rename`, `unlink` | whether the kernel sent a device flush |
 | `/proc/diskstats` (Linux) | device write and flush requests in the window | per process: it is system-wide |
 | `GetProcessIoCounters` (Windows) | bytes and write operations of the process | flushes: `otherOps` mixes them with every other control call, so it is an upper bound only |
-| The tool's `MetricsCollector` and new per-second timeline | acks, backlog, the longest broadcast and heartbeat gap, the longest lock waits and the transitions, per second, against the leader claims and their terms | causality inside one second |
+| The tool's `MetricsCollector` and new per-second timeline | acks, backlog, the longest broadcast round and follower election-timer refresh gap, the longest lock waits and the transitions, per second, against the leader claims and their terms | causality inside one second; a leader message from a same-term vote grant (both reset the timer) |
 
 ETW and `dotnet-trace` need a session that this host could not open without administration (ETW) or the global tool
 (not installed); they were not needed: the in-process listener reads the same EventSource. The lock wait against hold
@@ -1336,20 +1336,25 @@ start an election.
 | ack p50 / p99 | 1.12 s / – | 4.7 s / 6.5 s |
 | unknown / overloaded outcomes | 0 / 0 | 6,707 / 4,327 of 15,977 |
 | largest uncommitted backlog | 585 | 4,095 (the tool's in-flight cap) |
-| longest broadcast round / heartbeat gap | 1,184 / 1,710 ms | 3,201 / 3,206 ms |
+| longest broadcast round / follower refresh gap | 1,184 / 1,710 ms | 3,201 / 3,206 ms |
 | longest commit-lock wait | 656 ms | 2,590 ms |
 | longest persistence-lock wait | 14 ms | 18 ms |
 | re-elections / role transitions | 0 / 0 | 2 (terms 3 and 5) / 20 |
+
+The follower refresh gap is the time between two resets of a follower's election timer, which the tool reads from the
+`incoming-heartbeats-count` counter. A leader message resets the timer, but so does a vote granted in the follower's
+current term, so the gap is a lower bound on the time between leader messages; it is the interval the election timer
+itself sees, and the conclusions below hold a fortiori.
 
 The Linux timeline, one row per second: the uncommitted backlog grows by about 700 per second; the longest round is
 1.4 s in second 1, 2.2 s in second 4 and 3.2 s in second 10, with commit-lock waits of 880, 1,340 and 2,590 ms in the
 same seconds; leaders claim term 3 at 7.2 s and term 5 at 15.0 s, and after each the backlog falls to 0 and grows
 again. The persistence lock never waits more than 18 ms in any second, so the device is not the stall: the queue in
 front of the lock is. On Windows the cycle is 3.6 times longer, so 120% of the ceiling is fewer writes per second, the
-queue grows more slowly (34 to 585 over the run) and the 1.7 s heartbeat gap stayed just under the election timeouts in
+queue grows more slowly (34 to 585 over the run) and the 1.7 s refresh gap stayed just under the election timeouts in
 this run; the #118 baseline, with a longer queue, went through 3 terms and 2,133 unknown outcomes.
 
-At 50% and 90% of the ceiling the longest heartbeat gap was 56 and 124 ms on Linux (146 and 64 ms on Windows): no
+At 50% and 90% of the ceiling the longest refresh gap was 56 and 124 ms on Linux (146 and 64 ms on Windows): no
 starvation below saturation. There is no backpressure in the library: `ReplicateAsync` accepts every proposal, and the
 only bound in these runs is the tool's own cap of 4,096 writes in flight, which the Linux run reached.
 

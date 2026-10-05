@@ -133,7 +133,8 @@ dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile
 
 - `--cells <text>[,<text>...]` keeps only the cells whose name contains one of the texts as whole dash-separated
   parts: `3v-128B` selects every 3-voter 128-byte cell, and `wal-append-128B-c1` does not select
-  `wal-append-128B-c16-private`. An open-loop cell still needs its closed-loop reference cell in the same run.
+  `wal-append-128B-c16-private`. A selected open-loop cell brings along the closed-loop cells with its voters and entry
+  size, whose throughput sets its offered rate. A selection that matches no cell is a usage error (exit 2).
 - `--repeat <n>` (1 to 20) runs the selected matrix n times, round by round, and names each round's cells with a
   suffix `-r1` to `-rn`. `repeats[]` in the JSON gives, for each cell, the min, median, max, mean, coefficient of
   variation and range (as a percentage of the median) of the throughput, the ack p50 and p99, and the leader
@@ -141,14 +142,19 @@ dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile
 - `--diagnostics` subscribes to the opt-in WAL instruments and the Raft meters, and adds `cells[].diagnostics`:
   - `persistCycles[]`: per node and cause (`append` is the persist inside `AppendAsync`; `flush` is the background
     flusher after a commit or apply). Each has the cycles, cycles per acknowledged write, entries per cycle (the
-    group-commit factor), total ms and ms per ack, plus a duration summary per phase: `pages` (write and flush of the
+    group-commit factor; `append` cycles only, null for `flush` because an append cycle also checkpoints the commit
+    index, so the committed counter cannot be split by cause), total ms and ms per ack, plus a duration summary per
+    phase: `pages` (write and flush of the
     dirty pages), `data-directory` and `metadata-directory` (`FlushDirectory`), and the three checkpoint steps
     `checkpoint-intent`, `checkpoint-slot`, `checkpoint-commit`.
   - `locks[]`: per node, lock and cause, the wait (from the acquire call to the grant) and the hold (from the grant to
     the release). The hold is reported for the `persistence` lock only; the WAL read and write locks record the wait.
-  - `raft`: per node, `broadcast-time`, the gap between broadcast rounds, the gap between heartbeats received, and the
-    state transitions; `response-time` per message type and remote node; the late-response count; and the maximum
-    broadcast and heartbeat gaps of the cell against the election timeout.
+  - `raft`: per node, `broadcast-time`, the gap between broadcast rounds, the `heartbeatGap` and the state
+    transitions; `response-time` per message type and remote node; the late-response count; and the maximum
+    broadcast and heartbeat gaps of the cell against the election timeout. The heartbeat gap is the time between two
+    resets of the follower's election timer (`incoming-heartbeats-count`): a leader message resets it, and so does a
+    vote granted in the current term, so it is a lower bound on the time between leader messages and exactly the
+    interval the election timer sees.
   - `events[]` (at most 500, `eventsDropped` counts the rest): leader claims with the term, and state transitions,
     each with the time since the measured window started.
   - `seconds[]`: one row per second of the measured window, with acks, the maximum uncommitted backlog, the longest

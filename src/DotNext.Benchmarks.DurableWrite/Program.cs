@@ -9,9 +9,11 @@ const int ExitOk = 0, ExitError = 1, ExitUsage = 2, ExitViolation = 3, ExitLiven
 const long MinFreeBytesPerCell = 2L << 30;
 
 RunOptions options;
+IReadOnlyList<CellSpec> cells;
 try
 {
     options = RunOptions.Parse(args);
+    cells = Profiles.Build(options);
 }
 catch (UsageException e)
 {
@@ -68,7 +70,6 @@ try
         Console.WriteLine($"sync probe: directory flush p50 {syncProbe.DirectoryFlush.P50Us} us; publish p50 {syncProbe.Publish.P50Us} us; delete+flush p50 {syncProbe.DeleteAndFlush.P50Us} us");
     }
 
-    var cells = Profiles.Build(options);
     Console.WriteLine($"{cells.Count} cells, profile {report.Profile}");
     Console.WriteLine();
 

@@ -79,7 +79,7 @@ internal static class Profiles
 
         IReadOnlyList<CellSpec> cells = BuildMatrix(options);
         if (options.Cells is { } filter)
-            cells = cells.Where(c => filter.Any(f => MatchesSegments(c.Name, f))).ToList();
+            cells = Select(cells, filter);
 
         if (options.Repeat <= 1)
             return cells;
@@ -93,6 +93,26 @@ internal static class Profiles
         }
 
         return rounds;
+    }
+
+    // An open-loop cell offers a fraction of a measured closed-loop rate, so a selected open-loop cell brings the
+    // closed-loop cells with its voters and entry size along. The matrix order puts them first.
+    internal static IReadOnlyList<CellSpec> Select(IReadOnlyList<CellSpec> matrix, string[] filter)
+    {
+        var selected = matrix.Where(c => filter.Any(f => MatchesSegments(c.Name, f))).ToHashSet();
+        if (selected.Count is 0)
+            throw new UsageException($"--cells {string.Join(',', filter)} selects no cell of this matrix");
+
+        foreach (var open in selected.Where(static c => c.Kind is CellKind.RaftOpen).ToArray())
+        {
+            if (!selected.Any(c => IsReference(c, open)))
+                selected.UnionWith(matrix.Where(c => IsReference(c, open)));
+        }
+
+        return matrix.Where(selected.Contains).ToList();
+
+        static bool IsReference(CellSpec closed, CellSpec open)
+            => closed is { Kind: CellKind.RaftClosed } && closed.Voters == open.Voters && closed.EntrySize == open.EntrySize;
     }
 
     // The filter must cover whole dash-separated segments of the name, so that "c1" does not select "c16".

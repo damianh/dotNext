@@ -313,12 +313,8 @@ internal sealed class DiagnosticsCollector : IDisposable
             var cycles = group.FirstOrDefault(static p => p.Key.Phase is "pages").Value?.Count ?? group.Max(static p => p.Value.Count);
             var totalMs = group.Sum(static p => TotalMs(p.Value));
             var counters = result.Nodes.FirstOrDefault(n => n.Node == group.Key.Node);
-            long? entries = group.Key.Cause switch
-            {
-                "append" => counters?.Appended,
-                "flush" => counters?.Committed,
-                _ => null,
-            };
+            // The committed counter cannot be split by cause: an append cycle also checkpoints the commit index.
+            long? entries = group.Key.Cause is "append" ? counters?.Appended : null;
 
             result.PersistCycles.Add(new()
             {
@@ -562,7 +558,8 @@ internal readonly record struct IoSample(string Source, long ReadOps, long Write
 
             // Field 8 is writes completed; field 18, from Linux 5.5, is flush requests completed.
             long? writes = long.TryParse(fields[7], NumberStyles.None, CultureInfo.InvariantCulture, out var w) ? w : null;
-            long? flushes = fields.Length >= 19 && long.TryParse(fields[17], NumberStyles.None, CultureInfo.InvariantCulture, out var f) ? f : null;
+            // 0-based: 7 is writes completed; 18 is flush requests completed (kernel 5.5+), 17 is the time spent discarding
+            long? flushes = fields.Length >= 19 && long.TryParse(fields[18], NumberStyles.None, CultureInfo.InvariantCulture, out var f) ? f : null;
             return (fields[2], writes, flushes);
         }
 

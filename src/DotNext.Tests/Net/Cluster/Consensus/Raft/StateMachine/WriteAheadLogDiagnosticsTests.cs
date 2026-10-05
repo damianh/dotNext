@@ -81,6 +81,51 @@ public sealed class WriteAheadLogDiagnosticsTests : Test
         All(listener.Events, static e => True(e.Duration >= 0D));
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ThrowingListenerDoesNotFailOrBlockOperations()
+    {
+        var id = Guid.NewGuid().ToString();
+        var faults = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = static (instrument, l) =>
+        {
+            if (instrument.Meter.Name is "DotNext.IO.WriteAheadLog" && instrument.Name is "persist-phase-duration" or "lock-wait-duration" or "lock-hold-duration")
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<double>((_, _, tags, _) =>
+        {
+            foreach (var (key, tag) in tags)
+            {
+                if (key is TagName && tag as string == id)
+                {
+                    Interlocked.Increment(ref faults);
+                    throw new InvalidOperationException("listener fault");
+                }
+            }
+        });
+        listener.Start();
+
+        await using (var wal = new WriteAheadLog(CreateOptions(id), IStateMachine.CreateNoOp()))
+        {
+            await wal.AppendAsync(new TestLogEntry("first"), TestToken);
+            await wal.AppendAsync(new TestLogEntry("second"), TestToken);
+            await wal.CommitAsync(2L, TestToken);
+            await wal.WaitForApplyAsync(2L, TestToken);
+            await wal.FlushAsync(TestToken);
+            using (var reader = await wal.ReadAsync(1L, 2L, TestToken))
+                Equal(2, reader.Count);
+
+            // no lock was leaked by a faulted recording
+            await wal.AppendAsync(new TestLogEntry("third"), TestToken);
+            await wal.CommitAsync(3L, TestToken);
+            await wal.WaitForApplyAsync(3L, TestToken);
+            await wal.FlushAsync(TestToken);
+            Equal(3L, wal.LastEntryIndex);
+        }
+
+        True(Volatile.Read(in faults) > 0);
+    }
+
     private static WriteAheadLog.Options CreateOptions(string id)
         => new()
         {

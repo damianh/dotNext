@@ -45,7 +45,8 @@ internal sealed class PersistCycleReport
     public double CyclesPerSecond { get; init; }
     public double CyclesPerAck { get; init; }
 
-    // Entries appended per append cycle, or committed per flush cycle: the effective group commit.
+    // Entries appended per append cycle: the effective group commit. Null for flush cycles, because an append cycle also
+    // checkpoints the commit index and the committed counter cannot be split by cause.
     public double? EntriesPerCycle { get; init; }
     public double TotalMs { get; init; }
     public double MsPerAck { get; init; }
@@ -75,7 +76,8 @@ internal sealed class RaftDiagnostics
     // The lower bound of the randomized election timeout: a follower that hears nothing for longer may start an election.
     public double ElectionTimeoutMs { get; init; }
 
-    // The longest time between two successful broadcast rounds of a leader, and between two heartbeats a follower received.
+    // The longest time between two successful broadcast rounds of a leader, and between two resets of a follower's
+    // election timer (see RaftNodeReport.HeartbeatGap).
     public double MaxBroadcastGapMs { get; set; }
     public double MaxHeartbeatGapMs { get; set; }
 
@@ -97,7 +99,8 @@ internal sealed class RaftNodeReport
     // Time between the ends of two successful broadcast rounds of the same leadership.
     public LatencySummary? BroadcastGap { get; init; }
 
-    // Time between two heartbeats the node received as a follower.
+    // Time between two resets of the follower's election timer (incoming-heartbeats-count). A leader message resets it,
+    // and so does a vote granted in the current term: a lower bound on the time between leader messages.
     public LatencySummary? HeartbeatGap { get; init; }
     public long ToLeader { get; init; }
     public long ToCandidate { get; init; }

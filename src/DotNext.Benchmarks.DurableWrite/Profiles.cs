@@ -103,11 +103,9 @@ internal static class Profiles
         if (selected.Count is 0)
             throw new UsageException($"--cells {string.Join(',', filter)} selects no cell of this matrix");
 
+        // Always all of them: the offered rate is a fraction of the busiest one, which a partial selection could miss.
         foreach (var open in selected.Where(static c => c.Kind is CellKind.RaftOpen).ToArray())
-        {
-            if (!selected.Any(c => IsReference(c, open)))
-                selected.UnionWith(matrix.Where(c => IsReference(c, open)));
-        }
+            selected.UnionWith(matrix.Where(c => IsReference(c, open)));
 
         return matrix.Where(selected.Contains).ToList();
 

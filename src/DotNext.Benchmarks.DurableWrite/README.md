@@ -133,8 +133,9 @@ dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile
 
 - `--cells <text>[,<text>...]` keeps only the cells whose name contains one of the texts as whole dash-separated
   parts: `3v-128B` selects every 3-voter 128-byte cell, and `wal-append-128B-c1` does not select
-  `wal-append-128B-c16-private`. A selected open-loop cell brings along the closed-loop cells with its voters and entry
-  size, whose throughput sets its offered rate. A selection that matches no cell is a usage error (exit 2).
+  `wal-append-128B-c16-private`. A selected open-loop cell always brings along all the closed-loop cells with its voters
+  and entry size, because its offered rate is a fraction of the busiest of them. A selection that matches no cell is a
+  usage error (exit 2).
 - `--repeat <n>` (1 to 20) runs the selected matrix n times, round by round, and names each round's cells with a
   suffix `-r1` to `-rn`. `repeats[]` in the JSON gives, for each cell, the min, median, max, mean, coefficient of
   variation and range (as a percentage of the median) of the throughput, the ack p50 and p99, and the leader

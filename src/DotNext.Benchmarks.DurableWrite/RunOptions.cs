@@ -89,8 +89,8 @@ internal sealed class RunOptions
                                         cell (default: 1)
           --cells <text,...>            Run only the cells whose name contains one of these texts as whole
                                         dash-separated parts ("3v-128B" or "c1", which does not select c16). An
-                                        open-loop cell brings the closed-loop cells with its voters and entry size,
-                                        whose rate it is a fraction of. A selection of no cell is a usage error.
+                                        open-loop cell brings all the closed-loop cells with its voters and entry size,
+                                        the busiest of which sets its rate. A selection of no cell is a usage error.
 
         Exit codes: 0 ok, 1 unexpected error, 2 usage, 3 safety oracle violation, 4 liveness failure,
         5 incomplete (--max-duration reached, or a cell skipped for lack of disk space).

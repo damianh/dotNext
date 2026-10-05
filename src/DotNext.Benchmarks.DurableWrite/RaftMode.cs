@@ -368,7 +368,16 @@ internal static class RaftMode
             var key = new WriteKey(WriteKey.OpenLoop, 0, ++seq);
             pending.Add(SendAsync(key, due));
             if (pending.Count >= 1024)
+            {
+                // Await the completed sends before dropping them, so a faulted one fails the cell.
+                foreach (var task in pending)
+                {
+                    if (task.IsCompleted)
+                        await task.ConfigureAwait(false);
+                }
+
                 pending.RemoveAll(static t => t.IsCompleted);
+            }
         }
 
         await Task.WhenAll(pending).ConfigureAwait(false);

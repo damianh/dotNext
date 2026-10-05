@@ -1,21 +1,25 @@
 :root {
-    color-scheme: light;
-    --paper: #f4f3ef;
-    --surface: #ecebe7;
-    --ink: #111111;
-    --muted: #5d5d5a;
-    --line: #b9b8b3;
-    --soft-line: #d8d7d2;
-    --signal: #1748d1;
-    --signal-dark: #0e339d;
-    --danger: #a52a2a;
+    color-scheme: dark;
+    --atlas-950: #030914;
+    --atlas-900: #071524;
+    --atlas-800: #0b1c32;
+    --atlas-700: #0f2a4a;
+    --atlas-600: #12355d;
+    --paper: #ebf5ff;
+    --panel: rgba(9, 18, 34, 0.76);
+    --panel-strong: rgba(13, 25, 44, 0.96);
+    --ink: #edf5ff;
+    --muted: #a8bad5;
+    --line: rgba(122, 157, 212, 0.42);
+    --soft-line: rgba(145, 181, 238, 0.24);
+    --signal: #7dd6ff;
+    --signal-strong: #3db9ff;
+    --signal-deep: #1c85ff;
+    --success: #8ef2c8;
+    --danger: #ff8c8c;
     --white: #ffffff;
-    --quiet: #898985;
-    --selected-muted: #cdd9ff;
-    --disabled: #cfceca;
-    --disabled-ink: #747470;
-    --success: #258f45;
-    --warning: #fff2b8;
+    --disabled: rgba(160, 176, 208, 0.24);
+    --disabled-ink: rgba(218, 226, 250, 0.64);
     --display: "Segoe UI Variable Display", "Arial Narrow", Arial, sans-serif;
     --specimen: "Segoe UI Variable Text", "Aptos Mono", ui-monospace, "Cascadia Mono", monospace;
 }
@@ -25,7 +29,7 @@
 }
 
 html {
-    background: var(--paper);
+    background: radial-gradient(circle at top, #0c2340 0%, var(--atlas-950) 42%, #020813 100%);
     color: var(--ink);
     font-family: var(--specimen);
     scroll-behavior: smooth;
@@ -51,7 +55,7 @@ a {
 }
 
 code {
-    color: var(--signal-dark);
+    color: var(--signal);
     font-family: var(--specimen);
     font-size: .92em;
 }
@@ -68,10 +72,15 @@ code {
 
 .site-header {
     align-items: stretch;
-    border-bottom: 1px solid var(--ink);
+    background: rgba(2, 9, 18, 0.7);
+    border-bottom: 1px solid var(--line);
     display: grid;
     grid-template-columns: minmax(16rem, 1fr) auto minmax(16rem, 1fr);
     min-height: 5.25rem;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    backdrop-filter: blur(18px);
 }
 
 .brand,
@@ -89,7 +98,7 @@ code {
 .brand strong {
     font-family: var(--display);
     font-size: 1.25rem;
-    font-variation-settings: "wght" 730;
+    font-variation-settings: "wght" 720;
     letter-spacing: -.045em;
 }
 
@@ -100,6 +109,7 @@ code {
     line-height: 1.25;
     max-width: 8rem;
     padding-left: 1.15rem;
+    text-transform: uppercase;
 }
 
 .site-header nav {
@@ -135,11 +145,11 @@ code {
 }
 
 .site-header nav span {
-    color: var(--quiet);
+    color: rgba(168, 186, 213, 0.7);
 }
 
 .source-link {
-    border-left: 1px solid var(--ink);
+    border-left: 1px solid var(--line);
     gap: 1.5rem;
     justify-content: space-between;
     justify-self: end;
@@ -163,18 +173,25 @@ code {
 }
 
 .chapter-intro {
-    border-bottom: 1px solid var(--ink);
+    border-bottom: 1px solid var(--line);
+    background:
+        radial-gradient(circle at 5% 20%, rgba(81, 161, 237, 0.18), transparent 30%),
+        linear-gradient(135deg, rgba(10, 20, 38, 0.96), rgba(3, 10, 20, 0.98));
     display: grid;
-    grid-template-columns: 1fr minmax(17rem, 30%);
+    gap: clamp(2rem, 5vw, 4rem);
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.35fr);
     min-height: calc(100vh - 5.25rem);
+    padding: clamp(5rem, 7vw, 7rem) 0 0;
     position: relative;
 }
 
 .chapter-index {
     display: flex;
     font-size: .65rem;
+    gap: 1rem;
     justify-content: space-between;
     left: 0;
+    letter-spacing: .12em;
     position: absolute;
     right: 0;
     text-transform: uppercase;
@@ -185,16 +202,23 @@ code {
     color: var(--muted);
 }
 
+.chapter-copy {
+    align-self: center;
+    display: grid;
+    gap: 2rem;
+    padding-bottom: 2rem;
+}
+
 .chapter-intro h1 {
     align-self: center;
     font-family: var(--display);
-    font-size: clamp(4.8rem, 11vw, 10.5rem);
-    font-variation-settings: "wdth" 82, "wght" 520;
-    font-weight: 520;
-    letter-spacing: -.065em;
-    line-height: .78;
-    margin: 2rem 0 0;
-    max-width: 8ch;
+    font-size: clamp(4.4rem, 10vw, 9.4rem);
+    font-variation-settings: "wdth" 82, "wght" 560;
+    font-weight: 560;
+    letter-spacing: -.075em;
+    line-height: .76;
+    margin: 0;
+    max-width: 7.5ch;
 }
 
 h1[tabindex="-1"]:focus {
@@ -202,18 +226,18 @@ h1[tabindex="-1"]:focus {
 }
 
 .chapter-brief {
-    align-self: end;
-    border-left: 1px solid var(--ink);
-    margin-bottom: 2.75rem;
-    padding: 1.5rem 0 0 2rem;
+    border-left: 1px solid var(--line);
+    margin-left: 1rem;
+    padding-left: clamp(1.25rem, 2vw, 2.25rem);
 }
 
 .chapter-brief > p {
+    color: rgba(237, 245, 255, 0.82);
     font-family: var(--display);
-    font-size: clamp(1.05rem, 1.6vw, 1.35rem);
-    line-height: 1.45;
-    margin: 0 0 3rem;
-    max-width: 34ch;
+    font-size: clamp(1.1rem, 1.4vw, 1.5rem);
+    line-height: 1.5;
+    margin: 0 0 2.5rem;
+    max-width: 28rem;
 }
 
 .chapter-brief dl,
@@ -228,24 +252,118 @@ h1[tabindex="-1"]:focus {
     border-bottom: 1px solid var(--line);
     display: flex;
     justify-content: space-between;
-    padding: .75rem 0;
+    padding: .8rem 0;
 }
 
 dt {
     color: var(--muted);
     font-size: .65rem;
+    letter-spacing: .12em;
     text-transform: uppercase;
 }
 
 dd {
-    font-size: .75rem;
+    color: var(--ink);
+    font-size: .8rem;
     margin: 0;
+}
+
+.cluster-scene {
+    align-self: center;
+    background: linear-gradient(180deg, rgba(13, 25, 45, 0.9), rgba(9, 17, 30, 0.95));
+    border: 1px solid var(--line);
+    display: grid;
+    min-height: 31rem;
+    padding: 1.25rem 1.25rem 0;
+    position: relative;
+    box-shadow: inset 0 0 0 1px rgba(129, 179, 255, 0.08), 0 30px 80px rgba(2, 10, 20, 0.55);
+}
+
+.cluster-header,
+.cluster-readout div {
+    display: flex;
+    justify-content: space-between;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+.cluster-header {
+    color: var(--muted);
+    font-size: .62rem;
+    padding: 0 0 1rem;
+}
+
+.cluster-scene svg {
+    display: block;
+    height: auto;
+    width: 100%;
+}
+
+.cluster-grid path {
+    fill: none;
+    stroke: rgba(130, 169, 228, 0.32);
+    stroke-width: 1;
+}
+
+.cluster-routes path {
+    fill: none;
+    stroke: url(#gridGlow), rgba(125, 214, 255, 0.86);
+    stroke-width: 2;
+    stroke-linecap: round;
+}
+
+.chart-node circle {
+    fill: rgba(9, 20, 33, 0.4);
+    stroke: rgba(125, 214, 255, 0.9);
+    stroke-width: 2;
+}
+
+.chart-node .node-core {
+    fill: var(--signal);
+    stroke: rgba(255, 255, 255, 0.9);
+    stroke-width: 1.8;
+}
+
+.chart-node text {
+    fill: var(--paper);
+    font-family: var(--display);
+    font-size: 16px;
+    letter-spacing: .02em;
+    text-anchor: middle;
+}
+
+.chart-node text:last-child {
+    fill: var(--signal);
+    font-family: var(--specimen);
+    font-size: 12px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+}
+
+.cluster-readout {
+    border-top: 1px solid var(--line);
+    display: grid;
+    gap: .5rem;
+    margin: 0;
+    padding: 1rem 0 1.5rem;
+}
+
+.cluster-readout div {
+    color: var(--muted);
+    font-size: .62rem;
+}
+
+.cluster-readout dd {
+    color: var(--ink);
+    font-size: .7rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
 }
 
 .experiment,
 .trace,
 .implementation-note {
-    border-bottom: 1px solid var(--ink);
+    border-bottom: 1px solid var(--line);
     padding: clamp(4rem, 8vw, 7rem) 0;
 }
 
@@ -261,8 +379,8 @@ dd {
 .trace-heading h2 {
     font-family: var(--display);
     font-size: clamp(2rem, 4vw, 4.25rem);
-    font-variation-settings: "wdth" 90, "wght" 520;
-    font-weight: 520;
+    font-variation-settings: "wdth" 88, "wght" 540;
+    font-weight: 540;
     letter-spacing: -.055em;
     line-height: .95;
     margin: 0 0 .65rem;
@@ -281,35 +399,35 @@ dd {
 .trace-heading > span {
     color: var(--muted);
     font-size: .65rem;
+    letter-spacing: .12em;
     text-transform: uppercase;
 }
 
 .node-lineup {
     border: 0;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: 0;
     padding: 0;
 }
 
 .node-specimen {
+    background: rgba(10, 19, 36, 0.72);
     border: 1px solid var(--line);
-    border-right: 0;
     cursor: pointer;
     display: grid;
-    grid-template-rows: auto 1fr auto auto;
-    min-height: 31rem;
-    padding: 1.25rem;
+    gap: .75rem;
+    grid-template-rows: auto auto 1fr auto auto;
+    min-height: 26rem;
+    padding: 1.25rem 1.25rem 1.4rem;
     position: relative;
-    transition: background-color 180ms ease-out, border-color 180ms ease-out, color 180ms ease-out;
-}
-
-.node-specimen:last-child {
-    border-right: 1px solid var(--line);
+    transition: background-color 180ms ease-out, border-color 180ms ease-out, transform 180ms ease-out, box-shadow 180ms ease-out;
 }
 
 .node-specimen:hover {
-    background: var(--white);
+    border-color: rgba(125, 214, 255, 0.7);
+    transform: translateY(-2px);
 }
 
 .node-specimen:focus-within {
@@ -319,9 +437,9 @@ dd {
 }
 
 .node-specimen.selected {
-    background: var(--signal);
-    border-color: var(--signal);
-    color: white;
+    background: rgba(30, 96, 161, 0.28);
+    border-color: rgba(125, 214, 255, 0.9);
+    box-shadow: inset 0 0 0 1px rgba(125, 214, 255, 0.3);
 }
 
 .node-specimen input {
@@ -333,8 +451,9 @@ dd {
 
 .node-meta {
     display: flex;
-    font-size: .65rem;
+    font-size: .6rem;
     justify-content: space-between;
+    letter-spacing: .12em;
     text-transform: uppercase;
 }
 
@@ -343,76 +462,77 @@ dd {
 }
 
 .selected .node-meta span:last-child {
-    color: var(--selected-muted);
+    color: rgba(188, 222, 255, 0.9);
 }
 
 .node-glyph {
     align-self: center;
+    color: rgba(231, 244, 255, 0.95);
     font-family: var(--display);
-    font-size: clamp(9rem, 17vw, 17rem);
-    font-variation-settings: "wdth" 72, "wght" 330;
-    font-weight: 330;
+    font-size: clamp(7rem, 13vw, 12rem);
+    font-variation-settings: "wdth" 72, "wght" 320;
     justify-self: center;
-    letter-spacing: -.09em;
-    line-height: .75;
-    transition: font-variation-settings 600ms cubic-bezier(.16, 1, .3, 1), transform 600ms cubic-bezier(.16, 1, .3, 1);
+    letter-spacing: -.085em;
+    line-height: .7;
+    transition: transform 600ms cubic-bezier(.16, 1, .3, 1), font-variation-settings 600ms cubic-bezier(.16, 1, .3, 1), color 600ms ease;
 }
 
 .node-specimen.selected .node-glyph {
-    font-variation-settings: "wdth" 95, "wght" 620;
-    font-weight: 620;
+    color: var(--signal);
+    font-variation-settings: "wdth" 92, "wght" 620;
 }
 
 .node-specimen.leader {
-    background: var(--signal);
-    border-color: var(--signal);
-    color: var(--white);
+    background: linear-gradient(180deg, rgba(51, 142, 224, 0.34), rgba(18, 42, 70, 0.8));
+    border-color: rgba(125, 214, 255, 0.9);
+    box-shadow: inset 0 0 0 1px rgba(125, 214, 255, 0.24), 0 0 26px rgba(34, 121, 255, 0.18);
 }
 
 .node-specimen.leader .node-glyph {
-    font-variation-settings: "wdth" 110, "wght" 900;
-    font-weight: 900;
-    transform: scale(1.06);
+    color: var(--signal);
+    transform: scale(1.04);
+    font-variation-settings: "wdth" 102, "wght" 900;
 }
 
 .node-specimen.follower:not(.selected) .node-glyph {
-    font-variation-settings: "wdth" 72, "wght" 310;
-    font-weight: 310;
+    color: rgba(211, 226, 242, 0.88);
 }
 
 .node-name {
-    border-top: 1px solid currentColor;
+    border-top: 1px solid rgba(227, 240, 255, 0.48);
     font-family: var(--display);
-    font-size: 1.15rem;
-    padding-top: .65rem;
+    font-size: 1.1rem;
+    margin-top: .25rem;
+    padding-top: .7rem;
 }
 
 .node-axis {
     align-items: center;
     display: grid;
-    font-size: .65rem;
+    font-size: .6rem;
     gap: .7rem;
     grid-template-columns: auto 1fr auto;
-    margin-top: 1.5rem;
+    letter-spacing: .12em;
+    margin-top: .4rem;
     text-transform: uppercase;
 }
 
 .axis-line {
-    background: currentColor;
+    background: rgba(178, 210, 245, 0.75);
     height: 1px;
     position: relative;
 }
 
 .axis-line i {
-    background: currentColor;
+    background: var(--signal);
     border-radius: 50%;
-    height: .55rem;
+    height: .5rem;
     left: 18%;
     position: absolute;
     top: 50%;
     transform: translate(-50%, -50%);
     transition: left 600ms cubic-bezier(.16, 1, .3, 1);
-    width: .55rem;
+    width: .5rem;
 }
 
 .leader .axis-line i {
@@ -421,9 +541,9 @@ dd {
 
 .prediction-bar {
     align-items: stretch;
-    border-bottom: 1px solid var(--ink);
-    border-left: 1px solid var(--ink);
-    border-right: 1px solid var(--ink);
+    border-bottom: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
     display: grid;
     grid-template-columns: 1fr minmax(17rem, 31%);
     min-height: 5.5rem;
@@ -435,11 +555,12 @@ dd {
     display: flex;
     font-size: .75rem;
     gap: .9rem;
+    letter-spacing: .04em;
     padding: 1.25rem;
 }
 
 .uncertain-choice input {
-    accent-color: var(--signal);
+    accent-color: var(--signal-strong);
     height: 1.15rem;
     width: 1.15rem;
 }
@@ -448,7 +569,7 @@ dd {
 .secondary-action {
     align-items: center;
     border: 0;
-    border-left: 1px solid var(--ink);
+    border-left: 1px solid var(--line);
     cursor: pointer;
     display: flex;
     justify-content: space-between;
@@ -457,12 +578,12 @@ dd {
 }
 
 .primary-action {
-    background: var(--signal);
-    color: white;
+    background: linear-gradient(180deg, var(--signal-strong), var(--signal-deep));
+    color: var(--white);
 }
 
 .primary-action:hover:not(:disabled) {
-    background: var(--signal-dark);
+    background: linear-gradient(180deg, #58c7ff, #1a7dff);
 }
 
 .primary-action:disabled {
@@ -472,12 +593,12 @@ dd {
 }
 
 .secondary-action {
-    background: transparent;
+    background: rgba(8, 17, 29, 0.5);
     color: var(--ink);
 }
 
 .secondary-action:hover {
-    background: white;
+    background: rgba(18, 36, 57, 0.9);
 }
 
 .primary-action:focus-visible,
@@ -494,9 +615,9 @@ dd {
 .running-state,
 .error-state,
 .verdict {
-    border-bottom: 1px solid var(--ink);
-    border-left: 1px solid var(--ink);
-    border-right: 1px solid var(--ink);
+    border-bottom: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
     display: grid;
     padding: 1.5rem;
 }
@@ -532,7 +653,7 @@ dd {
 }
 
 .error-state button {
-    background: transparent;
+    background: rgba(8, 17, 29, 0.4);
     border: 1px solid currentColor;
     color: inherit;
     cursor: pointer;
@@ -558,6 +679,7 @@ dd {
 .verdict-label {
     color: var(--signal);
     font-size: .65rem;
+    letter-spacing: .12em;
     margin: 0 0 .6rem;
     text-transform: uppercase;
 }
@@ -565,7 +687,7 @@ dd {
 .verdict h2 {
     font-family: var(--display);
     font-size: clamp(2rem, 4vw, 4.25rem);
-    font-weight: 650;
+    font-weight: 640;
     letter-spacing: -.05em;
     margin: 0 0 .75rem;
 }
@@ -605,12 +727,12 @@ dd {
 
 .trace-empty span,
 .sequence {
-    color: var(--quiet);
+    color: rgba(227, 239, 255, 0.78);
     font-size: .65rem;
 }
 
 .trace-empty i {
-    background: var(--soft-line);
+    background: rgba(143, 186, 254, 0.28);
     display: block;
     height: .5rem;
 }
@@ -681,6 +803,7 @@ dd {
 }
 
 .implementation-note p {
+    color: rgba(237, 245, 255, 0.82);
     font-family: var(--display);
     font-size: 1rem;
     line-height: 1.55;
@@ -689,7 +812,7 @@ dd {
 }
 
 .site-footer {
-    color: var(--muted);
+    color: rgba(168, 186, 213, 0.8);
     display: flex;
     font-size: .65rem;
     justify-content: space-between;
@@ -720,18 +843,14 @@ dd {
 
     .chapter-intro {
         grid-template-columns: 1fr;
-        min-height: calc(100vh - 5.25rem);
-        padding-top: 5rem;
-    }
-
-    .chapter-intro h1 {
-        align-self: center;
+        min-height: auto;
+        padding-top: 5.5rem;
     }
 
     .chapter-brief {
         border-left: 0;
-        border-top: 1px solid var(--ink);
-        margin-bottom: 2rem;
+        border-top: 1px solid var(--line);
+        margin: 0;
         padding: 1.5rem 0 0;
     }
 
@@ -739,12 +858,8 @@ dd {
         margin-bottom: 1.5rem;
     }
 
-    .node-specimen {
-        min-height: 25rem;
-    }
-
-    .node-glyph {
-        font-size: clamp(7rem, 19vw, 12rem);
+    .cluster-scene {
+        min-height: 22rem;
     }
 }
 
@@ -776,7 +891,7 @@ dd {
     }
 
     .chapter-intro {
-        min-height: calc(100svh - 4.25rem);
+        min-height: auto;
     }
 
     .chapter-intro h1 {
@@ -799,7 +914,7 @@ dd {
         display: flex;
         overflow-x: auto;
         scroll-snap-type: x mandatory;
-        scrollbar-color: var(--signal) var(--soft-line);
+        scrollbar-color: var(--signal) rgba(143, 186, 254, 0.18);
     }
 
     .node-specimen {
@@ -814,10 +929,6 @@ dd {
         border-left: 0;
     }
 
-    .node-glyph {
-        font-size: 9rem;
-    }
-
     .prediction-bar {
         grid-template-columns: 1fr;
     }
@@ -825,7 +936,7 @@ dd {
     .primary-action,
     .secondary-action {
         border-left: 0;
-        border-top: 1px solid var(--ink);
+        border-top: 1px solid var(--line);
         min-height: 4.5rem;
     }
 
@@ -857,6 +968,17 @@ dd {
     .event-list code {
         grid-column: 2;
         justify-self: start;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+
+    *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
     }
 
     .implementation-note > div {

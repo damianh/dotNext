@@ -3,35 +3,104 @@
 <PageTitle>Leader election | dotNext Raft</PageTitle>
 
 <!--
-THESIS: A leader election is a blind typographic lineup; predict before the implementation reveals.
-OWN-WORLD: Paper, black ink, signal blue, ruled specimen grids, variable weight and width, square controls.
-STORY: Read the timing fact, commit a prediction, run real Raft, then inspect the causal wire trace.
-FIRST VIEWPORT: The question and three equal node glyphs dominate; prediction controls sit directly beneath.
-FORM: Seventh grounded structure, staged as a suspect lineup; surface seed 7cb5fb5c.
+STAR ATLAS / SPATIAL PROTOCOL CHART:
+A deep navy map, bright coordinate anchors, and inspectable RPC arcs define the lesson.
+Nodes remain equal until protocol state emerges; term, role, and vote paths read like chart coordinates instead of decorative labels.
+STORY: Read the cluster map, commit to a prediction, then compare the real election outcome with the traced message flow.
+FIRST VIEWPORT: The live chart dominates the fold, with the lesson text supporting the cluster geometry rather than overriding it.
+FORM: navigate the chart as a space of coordinates and causal paths, not as a sterile card grid; keep every visual signal readable in text.
 -->
 <section class="chapter-intro" aria-labelledby="chapter-title">
     <div class="chapter-index">
         <span>Chapter 1 of 25</span>
         <span>Election / fundamentals</span>
     </div>
-    <h1 id="chapter-title">Who becomes<br />leader?</h1>
-    <div class="chapter-brief">
-        <p>
-            Ada's election timer expires first. Before the messages move, commit to what
-            you think the cluster will do.
-        </p>
-        <dl>
+
+    <div class="chapter-copy">
+        <h1 id="chapter-title">Who becomes<br />leader?</h1>
+        <div class="chapter-brief">
+            <p>
+                Ada's election timer expires first. Before the messages move, commit to what
+                you think the cluster will do.
+            </p>
+            <dl>
+                <div>
+                    <dt>Nodes</dt>
+                    <dd>3</dd>
+                </div>
+                <div>
+                    <dt>Initial term</dt>
+                    <dd>0</dd>
+                </div>
+                <div>
+                    <dt>Network</dt>
+                    <dd>Healthy</dd>
+                </div>
+            </dl>
+        </div>
+    </div>
+
+    <div class="cluster-scene" aria-labelledby="cluster-title">
+        <div class="cluster-header">
+            <span>cluster chart</span>
+            <span>term 0 / all followers</span>
+        </div>
+
+        <svg viewBox="0 0 680 420" role="img" aria-labelledby="cluster-title cluster-desc">
+            <title id="cluster-title">Raft cluster map</title>
+            <desc id="cluster-desc">Three peers form a triangle. The leader is still undecided; all nodes are followers and are connected by vote RPC paths.</desc>
+            <defs>
+                <linearGradient id="gridGlow" x1="0%" x2="100%" y1="0%" y2="100%">
+                    <stop offset="0%" stop-color="#7ed5ff" stop-opacity="0.5" />
+                    <stop offset="100%" stop-color="#2563eb" stop-opacity="0.1" />
+                </linearGradient>
+            </defs>
+
+            <g class="cluster-grid" aria-hidden="true">
+                <path d="M80 60 L600 60 M80 140 L600 140 M80 220 L600 220 M80 300 L600 300 M80 380 L600 380" />
+                <path d="M120 40 L120 380 M220 40 L220 380 M320 40 L320 380 M420 40 L420 380 M520 40 L520 380" />
+            </g>
+
+            <g class="cluster-routes" aria-hidden="true">
+                <path d="M184 164 L330 240" />
+                <path d="M184 164 L486 206" />
+                <path d="M330 240 L486 206" />
+            </g>
+
+            <g class="chart-node chart-node--ada" aria-label="Node Ada at coordinates 1.8/2.1 term 0 follower">
+                <circle cx="184" cy="164" r="16" />
+                <circle class="node-core" cx="184" cy="164" r="8" />
+                <text x="184" y="128">Ada</text>
+                <text x="184" y="220">term 0</text>
+            </g>
+
+            <g class="chart-node chart-node--grace" aria-label="Node Grace at coordinates 4.8/2.7 term 0 follower">
+                <circle cx="330" cy="240" r="16" />
+                <circle class="node-core" cx="330" cy="240" r="8" />
+                <text x="330" y="204">Grace</text>
+                <text x="330" y="276">term 0</text>
+            </g>
+
+            <g class="chart-node chart-node--linus" aria-label="Node Linus at coordinates 6.8/2.2 term 0 follower">
+                <circle cx="486" cy="206" r="16" />
+                <circle class="node-core" cx="486" cy="206" r="8" />
+                <text x="486" y="170">Linus</text>
+                <text x="486" y="252">term 0</text>
+            </g>
+        </svg>
+
+        <dl class="cluster-readout">
             <div>
-                <dt>Nodes</dt>
-                <dd>3</dd>
+                <dt>Election</dt>
+                <dd>waiting for timer</dd>
             </div>
             <div>
-                <dt>Initial term</dt>
-                <dd>0</dd>
+                <dt>Leader</dt>
+                <dd>undecided</dd>
             </div>
             <div>
-                <dt>Network</dt>
-                <dd>Healthy</dd>
+                <dt>Quorum</dt>
+                <dd>2 / 3</dd>
             </div>
         </dl>
     </div>

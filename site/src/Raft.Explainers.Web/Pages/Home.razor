@@ -1,0 +1,104 @@
+﻿@page "/"
+
+<PageTitle>Raft, step by step</PageTitle>
+
+<section class="hero">
+    <p class="eyebrow">DOTNEXT RAFT EXPLAINERS · FEASIBILITY SPIKE</p>
+    <h1>Watch a leader emerge.</h1>
+    <p class="lede">
+        Three real <code>RaftCluster&lt;TMember&gt;</code> instances run inside your browser.
+        Ada starts an election; the messages below come from dotNext's production state machine.
+    </p>
+    <button class="run-button" @onclick="RunElectionAsync" disabled="@running">
+        @(running ? "Electing…" : result is null ? "Run the election" : "Run it again")
+    </button>
+</section>
+
+<section class="cluster" aria-live="polite" aria-label="Raft cluster state">
+    @if (result is null)
+    {
+        @foreach (var name in new[] { "Ada", "Grace", "Linus" })
+        {
+            <article class="node waiting">
+                <span class="term">TERM —</span>
+                <div class="node-mark">@name[0]</div>
+                <h2>@name</h2>
+                <p>Follower</p>
+            </article>
+        }
+    }
+    else
+    {
+        @foreach (var node in result.Nodes)
+        {
+            <article class="node @(node.Role == "Leader" ? "leader" : "")">
+                <span class="term">TERM @node.Term</span>
+                <div class="node-mark">@node.Name[0]</div>
+                <h2>@node.Name</h2>
+                <p>@node.Role</p>
+            </article>
+        }
+    }
+</section>
+
+<section class="trace">
+    <div class="section-heading">
+        <div>
+            <p class="eyebrow">WIRE TRACE</p>
+            <h2>What just happened</h2>
+        </div>
+        @if (result is not null)
+        {
+            <span class="result-pill">@result.Leader is leader</span>
+        }
+    </div>
+
+    @if (error is not null)
+    {
+        <p class="error">@error</p>
+    }
+    else if (result is null)
+    {
+        <p class="empty">Run the election to see pre-votes, votes, and replication.</p>
+    }
+    else
+    {
+        <ol class="event-list">
+            @foreach (var item in result.Events)
+            {
+                <li>
+                    <span class="sequence">@item.Sequence.ToString("00")</span>
+                    <strong>@item.Source</strong>
+                    <span class="arrow">→</span>
+                    <strong>@item.Target</strong>
+                    <code>@item.Message</code>
+                </li>
+            }
+        </ol>
+    }
+</section>
+
+@code {
+    private ElectionResult? result;
+    private bool running;
+    private string? error;
+
+    private async Task RunElectionAsync()
+    {
+        running = true;
+        error = null;
+
+        try
+        {
+            result = await ElectionDemo.RunAsync();
+        }
+        catch (Exception exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            running = false;
+        }
+    }
+}

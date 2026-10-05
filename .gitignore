@@ -13,4 +13,5 @@ launchSettings.json
 *.user
 *.coverage
 TestResults/
+.impeccable/
 dotnet-tools.json

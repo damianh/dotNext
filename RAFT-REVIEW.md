@@ -1167,6 +1167,259 @@ transports and real networks; membership changes and I/O faults under load; lead
 which the public API does not expose. A baseline is one machine, filesystem and device; compare runs on the same host
 only. Stage 3 of #118 covers real-process fault and burn-in campaigns.
 
+## Durable-write latency investigation, #123
+
+Part of #123: measurement only. It changes no durability semantics, default setting or code path. The questions (Q1–Q4)
+and hypotheses (H1–H4) are those of the issue.
+
+**Sources, and what each can attribute.**
+
+| Source | Attributes | Cannot attribute |
+|---|---|---|
+| `DotNext.IO.WriteAheadLog` meter (existing counters and `checkpoint-flush-duration`) | entries appended, committed and flushed per node; the duration of the whole flusher cycle | the append path's persist cycle; any phase; lock wait or hold |
+| Raft meters (existing: `broadcast-time`, `response-time`, transitions) | the leader's broadcast round duration; the response time per message type | why a round was slow; the gap between rounds or between heartbeats |
+| New opt-in instruments, this PR (below) | the persist cycle per cause (append or flush) and its six phases; wait and hold of the persistence lock; wait of the WAL lock per cause | which fsync inside a phase was slow; the device queue |
+| strace `-f -c` differential (Linux CI, no privileges) | durability system calls per acknowledged write: `fsync`, `msync`, `rename`, `unlink` | whether the kernel sent a device flush |
+| `/proc/diskstats` (Linux) | device write and flush requests in the window | per process: it is system-wide |
+| `GetProcessIoCounters` (Windows) | bytes and write operations of the process | flushes: `otherOps` mixes them with every other control call, so it is an upper bound only |
+| The tool's `MetricsCollector` and new per-second timeline | acks, backlog, the longest broadcast round and follower election-timer refresh gap, the longest lock waits and the transitions, per second, against the leader claims and their terms | causality inside one second; a leader message from a same-term vote grant (both reset the timer) |
+
+ETW and `dotnet-trace` need a session that this host could not open without administration (ETW) or the global tool
+(not installed); they were not needed: the in-process listener reads the same EventSource. The lock wait against hold
+time and the time of each phase are not observable from outside the process, so they need production
+instrumentation. The smallest that answers them, and the one added:
+
+- `WriteAheadLog.Diagnostics.cs`: three histograms on the existing `DotNext.IO.WriteAheadLog` meter
+  (`persist-phase-duration`, tagged with phase and cause; `lock-wait-duration`, tagged with lock and cause;
+  `lock-hold-duration`) and an EventSource `DotNext-IO-WriteAheadLog` (keyword `0x1`) with the same three events.
+- Cost when nothing listens: an `Instrument.Enabled` and an `EventSource.IsEnabled` check per lock acquisition and per
+  persist cycle, and a null check per phase; no timestamp and no allocation. The per-log trace state is allocated once,
+  with the log.
+- The WAL tests (410) pass unchanged; `WriteAheadLogDiagnosticsTests` checks that the instruments report every phase
+  and cause and stay silent without a listener.
+
+The tool's `--diagnostics` subscribes to them and adds `cells[].diagnostics` to the JSON (schema 3); `--repeat` and
+`--cells` repeat a subset. Without `--diagnostics` the cells, settings, oracles and exit codes are unchanged
+([README](src/DotNext.Benchmarks.DurableWrite/README.md#diagnostics---diagnostics---repeat---cells-123)).
+
+**Runs.** Windows: i9-14900K x32, Windows 10.0.26300, NTFS on a local fixed disk, .NET 10.0.12; the full profile
+with `--diagnostics` (revision 5c2ce67a, all 37 cells, every oracle passed) and a repeat run (below). Linux: GitHub
+`ubuntu-24.04` runner, AMD EPYC 7763 x4, ext4 on `/dev/root` (Azure managed disk), .NET 10.0.12; the full profile with
+`--diagnostics` (revision f48b8657, every oracle passed), a strace differential on two cells, and a repeat run. The
+sync probe on the two hosts:
+
+| Probe (p50 / p99) | Windows NTFS | Linux ext4 |
+|---|---:|---:|
+| 4 KiB write + `Flush(true)` | 480 / 987 µs | 389 / 789 µs |
+| directory flush | 507 / 889 µs | 13 / 35 µs |
+| publish (write, flush, rename, directory flush) | 1,959 / 6,511 µs | 671 / 1,051 µs |
+| delete + directory flush | 595 / 907 µs | 337 / 469 µs |
+
+### What one persist cycle costs (Q1)
+
+`PersistAppendAsync`, and the flusher after it, run the same cycle under `persistenceLock`:
+
+1. `pages`: write and flush the dirty data and metadata pages (2 `msync` + 2 `fsync` on Linux);
+2. `data-directory` and `metadata-directory`: `FlushDirectory` twice (2 `fsync`);
+3. `checkpoint-intent`: publish a 64-byte intent record: write a temporary file, flush it, rename it, flush the
+   directory (2 `fsync`, 1 `rename`);
+4. `checkpoint-slot`: write the 64 KiB checkpoint slot and flush it (1 `fsync`);
+5. `checkpoint-commit`: delete the intent and flush the directory (1 `fsync`, 1 `unlink`).
+
+That is **8 `fsync`, 2 `msync`, 1 `rename` and 1 `unlink` per cycle**, and 64 KiB written for the slot whatever the
+entry size. The strace differential (15 s minus 5 s runs of the same cell on Linux) confirms it exactly:
+
+| Linux cell | fsync / ack | msync / ack | rename / ack | unlink / ack | cycles / ack |
+|---|---:|---:|---:|---:|---:|
+| `wal-append-128B-c1` | 16.0 | 4.02 | 2.0 | 2.0 | 2 |
+| `raft-closed-3v-128B-c1` (3 nodes, one process) | 31.7 | 7.96 | 3.96 | 3.98 | 4 |
+
+On Windows the process wrote 131 KB per acknowledged 128-byte write in `wal-append-128B-c1` (4 write operations, two
+64 KiB slots), so the write amplification at the device is about 1,000 times the payload, which the tool's
+`writeAmplification` (log bytes only) does not show.
+
+Phase durations at p50 (p99), `wal-append-128B-c1`, append cycle:
+
+| Phase | Windows NTFS | Linux ext4 |
+|---|---:|---:|
+| pages | 1.18 (1.64) ms | 0.37 (0.89) ms |
+| data-directory | 0.19 (0.51) | 0.01 (0.02) |
+| metadata-directory | 0.17 (0.46) | 0.01 (0.01) |
+| checkpoint-intent | 2.16 (3.13) | 0.56 (1.39) |
+| checkpoint-slot | 0.68 (1.03) | 0.30 (0.61) |
+| checkpoint-commit | 0.69 (1.23) | 0.27 (0.50) |
+| **cycle (mean)** | **5.2 ms** | **1.61 ms** (flush cycle 1.21: its pages are already clean) |
+
+**Answer to Q1.** A write costs two cycles of 8 `fsync` each, not one fsync: 16 fsync-equivalents per
+acknowledged write on one node, and 32 across a 3-voter cluster at c1. On Windows the checkpoint accounts for 3.5 of the
+5.2 ms of a cycle, and the intent alone (a create-flush-rename-flush) for 2.2 ms; the two directory flushes cost 0.36 ms,
+less than the 1 ms the probe suggests, because the directory is often clean. Two cycles of 5.2 ms are the 10.3 ms p50 of
+`wal-append-128B-c1`. A batch of 16 pays the same two cycles, which is why it also takes about 10 ms.
+
+Caveat on Linux: `/proc/diskstats` counted 0 device flush requests against 16 `fsync` calls per acknowledged write (run
+37322321254, partition `sda1`: 15.1 device write requests per ack on `wal-append-128B-c1`, 30.4 on
+`raft-closed-3v-128B-c1`). The
+runner's disk (`sda`) reports `write through` in `/sys/block/sda/queue/write_cache` (logged by the strace step,
+run 37316770014, which also reproduced 16.01 `fsync` and 4.02 `msync` per ack): it declares no volatile write cache, so
+the kernel sends no flush command and `fsync` costs only the journal write. Linux CI absolute times are therefore not
+those of a consumer NVMe device with a volatile cache; the cycle structure and the ratios are.
+
+### H1: two serialized persist cycles per write — confirmed
+
+| Cell, c1 | Windows | Linux |
+|---|---|---|
+| `wal-append-128B-c1` | 95.7/s, p50 10.3 ms; append 1.000 + flush 0.999 cycles/ack | 345/s, p50 2.8 ms; append 1.000 + flush 1.000 cycles/ack (1.61 + 1.21 ms/ack) |
+| `raft-closed-1v-128B-c1` | 97.6/s, p50 10.0 ms; 1.000 + 0.990 | 392/s, p50 2.5 ms; 1.000 + 1.000 |
+| `raft-closed-3v-128B-c1` | 56.4/s, p50 17.3 ms (repeat median); leader 1.00 + 0.99 cycles/ack, each follower 1.00 + ~0.01 | 231/s, p50 4.2 ms; leader 1.00 + 0.95, each follower 1.00 + ~0 |
+
+At c1 the applier sets the flusher's trigger after each apply, and the flusher runs a full second cycle to make the commit
+index durable. The two cycles serialize on `persistenceLock`: in `wal-append-128B-c1` on Linux the append waits a p50
+of 1.2 ms for the flusher, and the flusher 1.6 ms for the next append. On Windows the 3-voter c1 path is sequential:
+the leader's append waits 5.2 ms for the previous write's flush cycle, runs its own 5.1 ms cycle, and then the
+followers run theirs (7.2 ms: two followers flushing at once on the same device slow each other), which adds up to the
+17.3 ms p50. A follower has almost no flush cycles at c1, because
+the next append's checkpoint already carries the commit index it learned. At c16 and above the flush cycles fall to
+0.002 to 0.07 per acknowledged write on both hosts: the trigger coalesces while the lock is busy.
+
+### H2: no group commit for concurrent appends — confirmed
+
+In every unbatched cell the leader (or the lone WAL) runs 1.00 append cycles per acknowledged write and writes one entry
+per cycle, at any concurrency. Throughput therefore plateaus at one cycle time:
+
+| Cell | Windows c1 / c16 / c64 | Linux c1 / c16 / c64 |
+|---|---|---|
+| `wal-append-128B` | 96 / 183 / 151 | 345 / 639 / 661 |
+| `raft-closed-1v-128B` | 98 / 192 / 164 | 392 / 651 / 677 |
+| `raft-closed-3v-128B` | 56 / 147 / 157 | 231 / 608 / 665 |
+| `raft-closed-5v-128B` | – / 143 / 155 | 205 / 570 / 649 |
+| ceiling, 1 / append cycle | ≈ 190/s | ≈ 690/s |
+| `wal-batch-128B` b16 / b256 (entries/s) | 842 / 4,681 | 5,905 / 72,222 |
+
+An explicit batch writes 16 or 256 entries per cycle (0.062 and 0.004 cycles per entry), which is where the throughput is.
+Followers do group: one AppendEntries carries every entry the leader appended since the previous round, so a follower
+writes 7.6 entries per cycle at c16 and 31.6 at c64 on Linux (31.5 on Windows). That is why a 3-voter cluster reaches the
+single-node ceiling rather than staying below it: the follower cycles are amortized, and only the leader runs one cycle
+per write. `RaftCluster.ReplicateAsync` appends one entry per call, so a client cannot reach the batch path.
+
+### H3: commit flushes contend with appends (Q2) — refuted as stated; the cause is lock queueing
+
+Commit flushes do not compete at high concurrency: at c16 and c64 they run 0.001 to 0.004 times per write on a single
+node, and the append path's `persistenceLock` wait is 0 at p50. The persistence lock is not the queue. The queue is the
+WAL append lock, which the append holds across its whole persist cycle, and the WAL read lock that the flusher, the
+applier and the log reader need:
+
+| Linux, `wal-append-128B` | c16 | c64 |
+|---|---:|---:|
+| append-lock wait, p50 | 11.8 ms | 48.8 ms |
+| flusher read-lock wait, p50 | 17.7 ms | 86 ms |
+| persistence-lock wait (append), p50 | 0 | 0 |
+
+The append-lock wait is the queue length times the cycle (c64: 64 × 1.45 ms / 2 ≈ 46 ms). The read lock is compatible
+with an append, but `QueuedSynchronizer` drains its wait queue strictly in order and stops at the first waiter it cannot
+grant, so a read request queued behind an append waits for every append ahead of it. On Windows the flusher's read wait
+is 66 ms at c16 and 322 ms at c64, and the c64 ack p99 reaches 1.4 to 1.6 s on one node.
+
+**Answer to Q2.** A single node does not get systematically slower with clients. With diagnostics on, Windows measured
+98 / 192 / 164 per second at c1 / c16 / c64, and Linux 392 / 651 / 677. Its throughput is capped by H2 (one cycle per
+write), and its tail grows with the FIFO queue. The baseline's 95/s at c16 and 47/s at c64 are not reproduced in the
+same matrix; they are run-to-run spread (Q4).
+
+### H4: heartbeats and replication delayed behind the append path (Q3) — confirmed
+
+At 120% open-loop load the leader's broadcast round, which also carries the heartbeat, reads the entries it sends under
+the WAL read lock, so it queues behind every pending append (the FIFO order above). On Linux the leader's read-lock wait
+was 230 ms at p50 and 2.59 s at p99, and its append-lock wait 1.33 s at p50. The rounds stretch with the queue (about the
+queue depth times the 1.4 ms cycle), and once a round exceeds the followers' election timeout (1,000 to 2,000 ms) they
+start an election.
+
+| `raft-open-3v-128B-120pct` | Windows | Linux |
+|---|---:|---:|
+| offered / completed per second | 188.8 / 164.5 | 798.5 / 145.7 |
+| ack p50 / p99 | 1.12 s / – | 4.7 s / 6.5 s |
+| unknown / overloaded outcomes | 0 / 0 | 6,707 / 4,327 of 15,977 |
+| largest uncommitted backlog | 585 | 4,095 (the tool's in-flight cap) |
+| longest broadcast round / follower refresh gap | 1,184 / 1,710 ms | 3,201 / 3,206 ms |
+| longest commit-lock wait | 656 ms | 2,590 ms |
+| longest persistence-lock wait | 14 ms | 18 ms |
+| re-elections / role transitions | 0 / 0 | 2 (terms 3 and 5) / 20 |
+
+The follower refresh gap is the time between two resets of a follower's election timer, which the tool reads from the
+`incoming-heartbeats-count` counter. A leader message resets the timer, but so does a vote granted in the follower's
+current term, so the gap is a lower bound on the time between leader messages; it is the interval the election timer
+itself sees, and the conclusions below hold a fortiori.
+
+The Linux timeline, one row per second: the uncommitted backlog grows by about 700 per second; the longest round is
+1.4 s in second 1, 2.2 s in second 4 and 3.2 s in second 10, with commit-lock waits of 880, 1,340 and 2,590 ms in the
+same seconds; leaders claim term 3 at 7.2 s and term 5 at 15.0 s, and after each the backlog falls to 0 and grows
+again. The persistence lock never waits more than 18 ms in any second, so the device is not the stall: the queue in
+front of the lock is. On Windows the cycle is 3.6 times longer, so 120% of the ceiling is fewer writes per second, the
+queue grows more slowly (34 to 585 over the run) and the 1.7 s refresh gap stayed just under the election timeouts in
+this run; the #118 baseline, with a longer queue, went through 3 terms and 2,133 unknown outcomes.
+
+At 50% and 90% of the ceiling the longest refresh gap was 56 and 124 ms on Linux (146 and 64 ms on Windows): no
+starvation below saturation. There is no backpressure in the library: `ReplicateAsync` accepts every proposal, and the
+only bound in these runs is the tool's own cap of 4,096 writes in flight, which the Linux run reached.
+
+### Q4: run-to-run spread
+
+The same cells, three rounds each on one host, run round by round (`--repeat 3`), both at revision f48b8657. Windows
+with `--diagnostics`; Linux without it, which also shows that the listener does not move the numbers:
+the Linux medians are within 4% of the diagnostics run above.
+
+| Cell | Windows acked/s min / median / max (CV) | Linux acked/s min / median / max (CV) |
+|---|---|---|
+| `wal-append-128B-c1` | 93 / 97 / 98 (2.5%) | 333 / 348 / 387 (7.8%) |
+| `wal-append-128B-c16` | 176 / 180 / 194 (5.2%) | 659 / 661 / 679 (1.6%) |
+| `wal-append-128B-c16-private` | 170 / 186 / 200 (8.1%) | 702 / 716 / 733 (2.2%) |
+| `raft-closed-1v-128B-c16` | 171 / 178 / 185 (3.8%) | – |
+| `raft-closed-3v-128B-c1` | 55 / 56 / 57 (1.9%) | 218 / 224 / 225 (1.6%) |
+| `raft-closed-3v-128B-c16` | 160 / 161 / 163 (0.9%) | 592 / 593 / 601 (0.8%) |
+| `raft-closed-3v-128B-c64` | – | 658 / 661 / 663 (0.3%) |
+| `raft-closed-3v-16KiB-c1` | 54 / 56 / 58 (3.8%) | – |
+| `raft-open-3v-128B` 50% / 90% | – | CV 0.3% / 0.3% |
+| `raft-open-3v-128B-120pct` | – | **317** / 623 / 640 (34.5%) |
+| `slow-follower-3v-128B-c16` | – | 524 / 613 / 613 (8.9%) |
+
+Back to back, the closed-loop cells repeat within 1 to 8%. The large differences come from two sources, and the
+diagnostics tell them apart:
+
+- **The device or host, in episodes.** In the Windows full run, five cells close together (positions 13 and 18 to 21:
+  `wal-append-16KiB-c16-private`, the three `raft-closed-1v-16KiB` cells and `raft-closed-3v-128B-c1`)
+  ran persist cycles of 18 to 29 ms instead of 5 to 7 ms. Every phase grew several-fold together, including the
+  64-byte intent publish (8.3 ms) and the data-directory flush (2.4 ms instead of 0.19 ms), and no cell re-elected
+  (one leader change each, the initial election). The code
+  path was the same; the device was slower. That is the run in which `raft-closed-3v-128B-c1` measured 14.4/s, against
+  55 to 57/s in every repeat round, and the 1-voter 16 KiB cells 25 to 50/s, against 82 to 191/s for the same sizes on
+  the WAL alone. The source of the episode is outside the process (the tool cannot see the device queue or other
+  processes); it is consistent with the #118 baseline's 6/s against 58/s for `raft-closed-3v-16KiB-c1`, which had no
+  diagnostics to tell. On Linux CI no such episode appeared.
+- **Elections, at overload only.** At 120% the Linux round with two re-elections completed 317/s with 7,000 unknown
+  outcomes; the two rounds without completed 623 and 640/s with none. Whether a round crosses the 1 to 2 s randomized
+  election timeout (H4) decides the result. No closed-loop cell and no open-loop cell below saturation had a
+  re-election on either host.
+- **The tool** contributes little: the same cell repeats within a few percent when the device is steady. The
+  slow-follower cell varies by up to 15% with where the injected pause and the snapshots fall.
+
+**Answer to Q4.** Compare cells only within one run and check the cycle time in `--diagnostics`; repeat a cell with
+`--repeat` before reading a difference into it. A cell whose phases are all several times slower than its neighbours'
+measured the device, not the code.
+
+### Candidate follow-ups (not filed; ranked by expected gain against risk)
+
+Each would be its own issue with a measured before and after, and must keep every oracle green.
+
+| # | Change | Expected gain | Risk to the durability contract |
+|---|---|---|---|
+| 1 | Group commit: coalesce concurrent `AppendAsync` calls (and leader proposals from `ReplicateAsync`) into one persist cycle | Up to N times at concurrency N: toward the batch rates (Windows 842/s at b16, Linux 5,905/s), and the end of the FIFO queue that drives H4 | Medium: each caller must be released only after the cycle that covers its entry, so publish-after-durable must hold per batch; the batch boundary needs the same crash tests as `ILogEntryProducer` batches |
+| 2 | Lock fairness for compatible waiters: let read (flusher, applier, replication) and commit waiters pass queued appends, or stop holding the append lock across the persist | Removes the heartbeat and replication starvation behind the append queue (H4); bounds the read wait to one cycle | Low for durability (the persistence lock still orders the cycles); a liveness risk if appends starve under continuous reads, so it needs a bound |
+| 3 | Fold the commit flush into the next append cycle, or skip it when an append persist already covered the commit index | About 2 times at c1 on a single node or leader (two cycles per write become one) | Low to medium: the commit index must still become durable before anything relies on it after a crash; with no next append, the flusher must still run |
+| 4 | Cheaper checkpoint: a smaller slot write than 64 KiB, and an intent that does not need its own create-flush-rename-flush | Up to 5 of the 8 fsyncs and 3.5 of the 5.2 ms of a Windows cycle; 1,000 times less device write per small write | Medium: the intent and the two slots are what make a torn checkpoint recoverable (#24); any change needs the torn-write and recovery tests again |
+| 5 | Flush the directories only when a file was created, extended or renamed | 2 of 8 fsyncs; 0.36 ms of a 5.2 ms cycle on Windows, about 0.02 ms on Linux | Low, if every create, extend and rename is covered |
+| 6 | Backpressure on proposals, and a heartbeat that does not wait for the append queue | Bounded latency and no elections at overload; `ReplicateAsync` fails fast instead of producing unknown outcomes | Low: rejecting a proposal before it is appended is safe; the heartbeat must still carry a consistent commit index |
+
+1 and 2 attack the queue that the H2 and H4 numbers show; 3 halves the c1 latency; 4 and 5 shorten every cycle.
+Leader-side proposal batching (an issue direction) is part of 1.
+
 ## Protocol input budgets (#22)
 
 **Question.** Can a peer that sends a malformed, inconsistent or stalled request make a node allocate memory

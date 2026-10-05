@@ -9,9 +9,11 @@ const int ExitOk = 0, ExitError = 1, ExitUsage = 2, ExitViolation = 3, ExitLiven
 const long MinFreeBytesPerCell = 2L << 30;
 
 RunOptions options;
+IReadOnlyList<CellSpec> cells;
 try
 {
     options = RunOptions.Parse(args);
+    cells = Profiles.Build(options);
 }
 catch (UsageException e)
 {
@@ -61,7 +63,13 @@ try
     Console.WriteLine($"fsync probe: flushed 4 KiB write p50 {probe.Flushed.P50Us} us, p99 {probe.Flushed.P99Us} us; buffered p50 {probe.Buffered.P50Us} us"
         + (probe.Distinguishable ? string.Empty : " (a flush is not distinguishable from a buffered write on this device)"));
 
-    var cells = Profiles.Build(options);
+    if (options.Diagnostics)
+    {
+        var syncProbe = SyncProbe.Run(runDirectory);
+        report.SyncProbe = syncProbe;
+        Console.WriteLine($"sync probe: directory flush p50 {syncProbe.DirectoryFlush.P50Us} us; publish p50 {syncProbe.Publish.P50Us} us; delete+flush p50 {syncProbe.DeleteAndFlush.P50Us} us");
+    }
+
     Console.WriteLine($"{cells.Count} cells, profile {report.Profile}");
     Console.WriteLine();
 
@@ -92,10 +100,12 @@ try
         {
             if (spec.IsReplicated)
             {
-                // The open loop is offered as a fraction of the busiest closed-loop cell with the same voters and entry size.
+                // The open loop is offered as a fraction of the busiest closed-loop cell with the same voters and entry
+                // size, in the same --repeat round.
                 var reference = spec.Kind is CellKind.RaftOpen
                     ? report.Cells
-                        .Where(c => c.Kind is nameof(CellKind.RaftClosed) && c.Voters == spec.Voters && c.EntrySize == spec.EntrySize && c.CompletedPerSecond > 0D)
+                        .Where(c => c.Kind is nameof(CellKind.RaftClosed) && c.Voters == spec.Voters && c.EntrySize == spec.EntrySize && c.CompletedPerSecond > 0D
+                            && c.Repeat == spec.Repeat)
                         .MaxBy(static c => c.CompletedPerSecond)
                     : null;
 
@@ -142,6 +152,9 @@ try
         if (exitCode is not ExitOk)
             break;
     }
+
+    if (options.Repeat > 1)
+        report.Repeats = SummarizeRepeats(cells, report.Cells);
 }
 catch (Exception e)
 {
@@ -211,5 +224,66 @@ static void PrintCell(CellReport cell)
 
     Console.WriteLine(line);
 
+    if (cell.Diagnostics is { } diagnostics)
+    {
+        // The leader (or the single WAL) carries the client path; the followers show the group commit of replication.
+        var roles = cell.Nodes.ToDictionary(static n => n.Node, static n => n.Role);
+        var shown = cell.Nodes.FirstOrDefault(static n => n.Role is "leader" or "single")?.Node ?? 0;
+        foreach (var cycle in diagnostics.PersistCycles)
+        {
+            var role = roles.GetValueOrDefault(cycle.Node, "?");
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"    node {cycle.Node} {role,-15} {cycle.Cause,-6} cycles {cycle.Cycles,7} ({cycle.CyclesPerAck:F2}/ack, {cycle.EntriesPerCycle?.ToString("F1", CultureInfo.InvariantCulture) ?? "-"} entries/cycle) {cycle.MsPerAck:F3} ms/ack: ")
+                + string.Join(", ", cycle.Phases.Select(static p => string.Create(CultureInfo.InvariantCulture, $"{p.Phase} {Us(p.Duration.P50Us)}"))));
+        }
+
+        foreach (var l in diagnostics.Locks.Where(l => l.Node == shown && l.Wait.Count > 0L))
+        {
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"    node {shown} lock {l.Lock,-12} {l.Cause,-8} n {l.Wait.Count,7} wait p50 {Us(l.Wait.P50Us),8} p99 {Us(l.Wait.P99Us),8} max {Us(l.Wait.MaxUs),8}")
+                + (l.Hold is { } hold ? string.Create(CultureInfo.InvariantCulture, $" hold p50 {Us(hold.P50Us),8} p99 {Us(hold.P99Us),8}") : string.Empty));
+        }
+
+        if (diagnostics.Raft is { } raft)
+        {
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"    raft max round gap {raft.MaxBroadcastGapMs:F1} ms, max heartbeat gap {raft.MaxHeartbeatGapMs:F1} ms (election timeout >= {raft.ElectionTimeoutMs:F0} ms), transitions {raft.Nodes.Sum(static n => n.ToLeader + n.ToCandidate + n.ToFollower)}"));
+        }
+
+        if (diagnostics.Io is { } io)
+        {
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"    io {io.Source}: write ops {io.WriteOps}, other ops {io.OtherOps?.ToString(CultureInfo.InvariantCulture) ?? "-"} ({io.OtherOpsPerAck?.ToString("F1", CultureInfo.InvariantCulture) ?? "-"}/ack), device flushes {io.DeviceFlushes?.ToString(CultureInfo.InvariantCulture) ?? "-"} ({io.DeviceFlushesPerAck?.ToString("F1", CultureInfo.InvariantCulture) ?? "-"}/ack)"));
+        }
+    }
+
     static string Us(long? value) => value is { } us ? us >= 10_000L ? $"{us / 1000D:F1}ms" : $"{us}us" : "-";
+}
+
+static List<RepeatSummary> SummarizeRepeats(IReadOnlyList<CellSpec> specs, IReadOnlyList<CellReport> cells)
+{
+    var baseNames = specs.ToDictionary(static s => s.Name, static s => s.BaseName, StringComparer.Ordinal);
+    var result = new List<RepeatSummary>();
+    foreach (var group in cells
+        .Where(static c => c.MeasuredSeconds > 0D)
+        .GroupBy(c => baseNames.GetValueOrDefault(c.Name, c.Name), StringComparer.Ordinal)
+        .Where(static g => g.Count() > 1))
+    {
+        var rounds = group.ToList();
+        var summary = new RepeatSummary
+        {
+            Cell = group.Key,
+            Rounds = rounds.Count,
+            CompletedPerSecond = SpreadReport.Of(rounds.Select(static c => c.CompletedPerSecond).ToList()),
+            AckP50Us = SpreadReport.Of(rounds.Select(static c => (double)(c.AckLatency?.P50Us ?? 0L)).ToList()),
+            AckP99Us = SpreadReport.Of(rounds.Select(static c => (double)(c.AckLatency?.P99Us ?? 0L)).ToList()),
+            LeaderChanges = SpreadReport.Of(rounds.Select(static c => (double)c.LeaderChanges).ToList()),
+        };
+
+        result.Add(summary);
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"spread {summary.Cell,-40} x{summary.Rounds} done/s median {summary.CompletedPerSecond.Median:F0} cv {summary.CompletedPerSecond.CvPercent:F1}% range {summary.CompletedPerSecond.RangePercent:F1}%; ack p50 cv {summary.AckP50Us.CvPercent:F1}%; ack p99 median {summary.AckP99Us.Median:F0}us range {summary.AckP99Us.RangePercent:F1}%; leader changes {summary.LeaderChanges.Min:F0}..{summary.LeaderChanges.Max:F0}"));
+    }
+
+    return result;
 }

@@ -1,9 +1,11 @@
 namespace DotNext.Benchmarks.DurableWrite;
 
 // The JSON report. Property names are serialized in camelCase; the schema version changes when a field changes meaning.
+// Version 3 (#123) adds the optional diagnostics fields: syncProbe, repeats, and per cell repeat and diagnostics. They are
+// absent unless --diagnostics or --repeat is given; every version 2 field keeps its meaning.
 internal sealed class RunReport
 {
-    public int SchemaVersion => 2;
+    public int SchemaVersion => 3;
     public string Tool => "DotNext.Benchmarks.DurableWrite";
     public required DateTimeOffset StartedUtc { get; init; }
     public DateTimeOffset? FinishedUtc { get; set; }
@@ -14,7 +16,13 @@ internal sealed class RunReport
     public required DurabilitySettings Durability { get; init; }
     public required EnvironmentInfo Environment { get; init; }
     public FsyncProbe? FsyncProbe { get; set; }
+
+    // With --diagnostics: the cost of a directory flush, a checkpoint publish and a delete with a directory flush.
+    public SyncProbe? SyncProbe { get; set; }
     public List<CellReport> Cells { get; } = [];
+
+    // With --repeat: the spread of the same cell over the rounds.
+    public List<RepeatSummary>? Repeats { get; set; }
     public ViolationReport? Violation { get; set; }
     public string? LivenessFailure { get; set; }
 
@@ -68,6 +76,8 @@ internal sealed class CellReport
     public long SnapshotInterval { get; init; }
     public string? Injection { get; init; }
 
+    // With --repeat: the round of this cell, from 1.
+    public int? Repeat { get; init; }
     public double MeasuredSeconds { get; set; }
     public string StoppedBy { get; set; } = "duration";
 
@@ -99,6 +109,9 @@ internal sealed class CellReport
 
     // The acknowledgment is cheaper than a synchronous flush measured on this device: the numbers may describe buffered writes.
     public bool SuspectBuffered { get; set; }
+
+    // With --diagnostics only.
+    public CellDiagnostics? Diagnostics { get; set; }
 }
 
 internal sealed class BacklogReport

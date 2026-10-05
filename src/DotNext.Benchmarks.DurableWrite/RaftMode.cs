@@ -257,12 +257,14 @@ internal static class RaftMode
 
             var cluster = new RaftCluster(configuration) { AuditTrail = state };
             var id = node.Id;
+            run.Diagnostics?.RegisterNode(id, node.Public.ToString());
             cluster.LeaderChanged += (sender, leader) =>
             {
                 if (leader is { IsRemote: false })
                 {
                     node.OnLeaderClaim();
                     run.Checker.OnLeaderClaim(id, sender.AuditTrail.Term);
+                    run.Diagnostics?.OnLeaderClaim(id, sender.AuditTrail.Term);
                 }
             };
 

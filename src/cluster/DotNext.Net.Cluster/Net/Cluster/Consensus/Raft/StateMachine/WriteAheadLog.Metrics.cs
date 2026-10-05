@@ -25,5 +25,13 @@ partial class WriteAheadLog
             description: "Amount of Time Required to Write Committed Log Entries to Disk");
         ApplyDurationMeter = meter.CreateHistogram<double>("entries-apply-duration", unit: "ms",
             description: "Amount of Time Required to Apply Committed Log Entries to State Machine");
+
+        // Opt-in persistence diagnostics, see WriteAheadLog.Diagnostics.cs
+        PersistPhaseDurationMeter = meter.CreateHistogram<double>("persist-phase-duration", unit: "ms",
+            description: "Amount of Time Spent in Each Phase of a Persist Cycle");
+        LockWaitDurationMeter = meter.CreateHistogram<double>("lock-wait-duration", unit: "ms",
+            description: "Amount of Time Spent Waiting for a Write-Ahead Log Lock");
+        LockHoldDurationMeter = meter.CreateHistogram<double>("lock-hold-duration", unit: "ms",
+            description: "Amount of Time the Persistence Lock is Held");
     }
 }

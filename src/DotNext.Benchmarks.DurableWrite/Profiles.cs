@@ -55,6 +55,12 @@ internal sealed record CellSpec(string Name, CellKind Kind)
 
     internal FailureInjection Injection { get; init; }
 
+    // With --repeat: the round, from 1.
+    internal int? Repeat { get; init; }
+
+    // The name without the round suffix.
+    internal string BaseName { get; init; } = Name;
+
     internal bool IsReplicated => Kind is not (CellKind.WalAppend or CellKind.WalBatch);
 }
 
@@ -71,6 +77,59 @@ internal static class Profiles
         if (options.Injection is not FailureInjection.None)
             return [Inject(options)];
 
+        IReadOnlyList<CellSpec> cells = BuildMatrix(options);
+        if (options.Cells is { } filter)
+            cells = Select(cells, filter);
+
+        if (options.Repeat <= 1)
+            return cells;
+
+        // Round after round, so that a drift of the host spreads over every cell instead of biasing one.
+        var rounds = new List<CellSpec>(cells.Count * options.Repeat);
+        for (var round = 1; round <= options.Repeat; round++)
+        {
+            foreach (var cell in cells)
+                rounds.Add(cell with { Name = $"{cell.Name}-r{round}", BaseName = cell.Name, Repeat = round });
+        }
+
+        return rounds;
+    }
+
+    // An open-loop cell offers a fraction of a measured closed-loop rate, so a selected open-loop cell brings the
+    // closed-loop cells with its voters and entry size along. The matrix order puts them first.
+    internal static IReadOnlyList<CellSpec> Select(IReadOnlyList<CellSpec> matrix, string[] filter)
+    {
+        var selected = matrix.Where(c => filter.Any(f => MatchesSegments(c.Name, f))).ToHashSet();
+        if (selected.Count is 0)
+            throw new UsageException($"--cells {string.Join(',', filter)} selects no cell of this matrix");
+
+        // Always all of them: the offered rate is a fraction of the busiest one, which a partial selection could miss.
+        foreach (var open in selected.Where(static c => c.Kind is CellKind.RaftOpen).ToArray())
+            selected.UnionWith(matrix.Where(c => IsReference(c, open)));
+
+        return matrix.Where(selected.Contains).ToList();
+
+        static bool IsReference(CellSpec closed, CellSpec open)
+            => closed is { Kind: CellKind.RaftClosed } && closed.Voters == open.Voters && closed.EntrySize == open.EntrySize;
+    }
+
+    // The filter must cover whole dash-separated segments of the name, so that "c1" does not select "c16".
+    internal static bool MatchesSegments(string name, string filter)
+    {
+        for (var start = name.IndexOf(filter, StringComparison.Ordinal);
+             start >= 0;
+             start = name.IndexOf(filter, start + 1, StringComparison.Ordinal))
+        {
+            var end = start + filter.Length;
+            if ((start is 0 || name[start - 1] is '-') && (end == name.Length || name[end] is '-'))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static List<CellSpec> BuildMatrix(RunOptions options)
+    {
         var full = options.Profile is Profile.Full;
         var sizes = options.EntrySizes ?? [Small, Large];
         var voters = options.Voters ?? (full ? [1, 3, 5] : [1, 3]);

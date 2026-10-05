@@ -380,14 +380,16 @@ internal static class RaftMode
             pending.Add(SendAsync(key, due));
             if (pending.Count >= 1024)
             {
-                // Await the completed sends before dropping them, so a faulted one fails the cell.
-                foreach (var task in pending)
+                // Await each completed send before removing it, so a faulted one fails the cell.
+                for (var i = pending.Count - 1; i >= 0; i--)
                 {
+                    var task = pending[i];
                     if (task.IsCompleted)
+                    {
                         await task.ConfigureAwait(false);
+                        pending.RemoveAt(i);
+                    }
                 }
-
-                pending.RemoveAll(static t => t.IsCompleted);
             }
         }
 

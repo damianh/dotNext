@@ -28,7 +28,7 @@ partial class WriteAheadLog
         {
             // Ensure that the appender is not running with the snapshot installation process concurrently
             lockManager.SetCallerInformation(ApplierCallerInfo);
-            await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
+            await lockManager.AcquireReadLockAsync(ApplyCause, token).ConfigureAwait(false);
             try
             {
                 // The target and the published progress must both be observed under the lock. Otherwise, a

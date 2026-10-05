@@ -272,8 +272,12 @@ partial class WriteAheadLog
 
         private static long SlotOffset(int slot) => (slot + 1L) * BlockSize;
 
+        // Opt-in persist phase diagnostics; see WriteAheadLog.Diagnostics.cs.
+        public PersistenceTrace? Trace { get; set; }
+
         public async ValueTask UpdateAsync(CheckpointVersion2 checkpoint, CancellationToken token)
         {
+            var trace = Trace;
             ObjectDisposedException.ThrowIf(handle is null || handle.IsClosed, this);
             Validate(checkpoint);
             if (Generation == long.MaxValue || checkpoint.Generation != Generation + 1L)
@@ -283,6 +287,7 @@ partial class WriteAheadLog
             if (Version is CheckpointVersion0.Version or CheckpointVersion1.Version)
             {
                 await UpgradeAsync(checkpoint, token).ConfigureAwait(false);
+                trace?.Phase(CheckpointUpgradePhase);
             }
             else if (Version == CheckpointVersion2.Version)
             {
@@ -294,11 +299,13 @@ partial class WriteAheadLog
                 BinaryPrimitives.WriteInt64LittleEndian(pending.AsSpan(40), checkpoint.Generation);
                 Seal(pending);
                 PublishRecord(PendingFileName, pending);
+                trace?.Phase(CheckpointIntentPhase);
 
                 FormatSlot(checkpoint);
                 await RandomAccess.WriteAsync(handle!, buffer,
                     SlotOffset((int)(checkpoint.Generation & 1L)), token).ConfigureAwait(false);
                 FlushFile(handle!);
+                trace?.Phase(CheckpointSlotPhase);
 
                 // Removing the intent, including its directory entry, certifies
                 // both slots as complete. Recovery permits fallback only while
@@ -307,6 +314,8 @@ partial class WriteAheadLog
                 FlushDirectory(location);
                 if (OperatingSystem.IsMacOS())
                     FlushFile(handle!);
+
+                trace?.Phase(CheckpointCommitPhase);
             }
             else
             {

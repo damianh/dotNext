@@ -43,11 +43,11 @@ partial class WriteAheadLog
                 // index and the flushing boundary at once, and a pass built from a mixture of both states can
                 // ask for squashed indices or persist a checkpoint that goes backwards.
                 lockManager.SetCallerInformation("Flush Pages");
-                await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
+                await lockManager.AcquireReadLockAsync(FlushCause, token).ConfigureAwait(false);
                 long newSnapshot;
                 try
                 {
-                    await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                    await AcquirePersistenceLockAsync(FlushCause, token).ConfigureAwait(false);
                     try
                     {
                         ThrowOnInternalError();
@@ -59,17 +59,29 @@ partial class WriteAheadLog
                         if (newIndex >= fromIndex)
                         {
                             var ts = new Timestamp();
-                            await Flush(fromIndex, newIndex, token).ConfigureAwait(false);
-                            Checkpoint.FlushDirectory(dataLocation);
-                            Checkpoint.FlushDirectory(metadataLocation);
-                            await PersistCheckpointAsync(long.Max(LastEntryIndex, newSnapshot), newIndex,
-                                newSnapshot, durableState.WritePosition, token).ConfigureAwait(false);
+                            persistenceTrace.Start(FlushCause);
+                            try
+                            {
+                                await Flush(fromIndex, newIndex, token).ConfigureAwait(false);
+                                persistenceTrace.Phase(PagesPhase);
+                                Checkpoint.FlushDirectory(dataLocation);
+                                persistenceTrace.Phase(DataDirectoryPhase);
+                                Checkpoint.FlushDirectory(metadataLocation);
+                                persistenceTrace.Phase(MetadataDirectoryPhase);
+                                await PersistCheckpointAsync(long.Max(LastEntryIndex, newSnapshot), newIndex,
+                                    newSnapshot, durableState.WritePosition, token).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                persistenceTrace.Stop();
+                            }
+
                             FlushDurationMeter.Record(ts.ElapsedMilliseconds);
                         }
                     }
                     finally
                     {
-                        persistenceLock.Release();
+                        ReleasePersistenceLock();
                     }
 
                 }

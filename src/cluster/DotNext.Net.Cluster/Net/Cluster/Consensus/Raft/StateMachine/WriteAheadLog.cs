@@ -102,6 +102,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         {
             ConcurrencyLevel = configuration.ConcurrencyLevel,
             MeasurementTags = configuration.MeasurementTags,
+            DiagnosticTags = configuration.MeasurementTags,
         };
         bufferAllocator = configuration.Allocator ?? ArrayPool<byte>.Shared.ToAllocator();
         this.stateMachine = stateMachine;
@@ -112,10 +113,11 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         };
         state = new(rootPath, flushDirectory);
         measurementTags = configuration.MeasurementTags;
+        persistenceTrace = new(in measurementTags);
 
         // checkpoint
         long lastReliablyWrittenEntryIndex;
-        checkpoint = new(rootPath, out var version);
+        checkpoint = new(rootPath, out var version) { Trace = persistenceTrace };
         switch (version)
         {
             case CheckpointVersion0 cp:
@@ -312,7 +314,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         try
         {
             currentIndex = LastEntryIndex + 1L;
-            await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+            await AcquirePersistenceLockAsync(AppendCause, token).ConfigureAwait(false);
             var mutationStarted = false;
             var payloadCanceled = false;
             try
@@ -347,7 +349,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             }
             finally
             {
-                persistenceLock.Release();
+                ReleasePersistenceLock();
             }
         }
         finally
@@ -367,7 +369,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
             try
             {
-                await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                await AcquirePersistenceLockAsync(AppendCause, token).ConfigureAwait(false);
                 var mutationStarted = false;
                 try
                 {
@@ -387,7 +389,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 }
                 finally
                 {
-                    persistenceLock.Release();
+                    ReleasePersistenceLock();
                 }
             }
             finally
@@ -503,7 +505,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 if (startIndex <= LastCommittedEntryIndex)
                     throw new InvalidOperationException(ExceptionMessages.InvalidAppendIndex);
                 
-                await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                await AcquirePersistenceLockAsync(SnapshotCause, token).ConfigureAwait(false);
                 var mutationStarted = false;
                 var applyCanceled = false;
                 try
@@ -530,7 +532,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
 
                     LastCommittedEntryIndex = long.Max(LastCommittedEntryIndex, snapshotIndex);
                     stagedLastIndex = long.Max(tailIndex, LastCommittedEntryIndex);
-                    await PersistAppendAsync(snapshotIndex).ConfigureAwait(false);
+                    await PersistAppendAsync(snapshotIndex, SnapshotCause).ConfigureAwait(false);
                     OnSnapshotInstalled(snapshotIndex);
                 }
                 catch (Exception e) when (mutationStarted && !applyCanceled)
@@ -540,7 +542,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 }
                 finally
                 {
-                    persistenceLock.Release();
+                    ReleasePersistenceLock();
                 }
             }
             else
@@ -557,7 +559,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                         break;
                 }
 
-                await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+                await AcquirePersistenceLockAsync(AppendCause, token).ConfigureAwait(false);
                 var mutationStarted = false;
                 var payloadCanceled = false;
                 try
@@ -591,7 +593,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 }
                 finally
                 {
-                    persistenceLock.Release();
+                    ReleasePersistenceLock();
                 }
             }
         }
@@ -636,7 +638,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         CancellationToken token, bool preserveMatching = false)
         where TEntry : IRaftLogEntry
     {
-        await persistenceLock.AcquireAsync(token).ConfigureAwait(false);
+        await AcquirePersistenceLockAsync(AppendCause, token).ConfigureAwait(false);
         var mutationStarted = false;
         var canceledAfterMutation = false;
         var payloadCanceled = false;
@@ -751,7 +753,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         }
         finally
         {
-            persistenceLock.Release();
+            ReleasePersistenceLock();
         }
 
         // The written prefix is durable and the log remains usable; the outcome for the rest is unknown to the caller.

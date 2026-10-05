@@ -123,24 +123,57 @@ partial class WriteAheadLog
             }
         }
 
+        // Node tags of the opt-in lock wait diagnostics, see WriteAheadLog.Diagnostics.cs.
+        private readonly TagList diagnosticTags;
+
+        public TagList DiagnosticTags
+        {
+            init => diagnosticTags = value;
+        }
+
+        private ValueTask AcquireTracedAsync(LockType type, string lockName, string cause, CancellationToken token)
+            => IsLockTracingEnabled ? AcquireTracedCoreAsync(type, lockName, cause, token) : AcquireAsync(type, token);
+
+        private async ValueTask AcquireTracedCoreAsync(LockType type, string lockName, string cause, CancellationToken token)
+        {
+            var start = Stopwatch.GetTimestamp();
+            await AcquireAsync(type, token).ConfigureAwait(false);
+            RecordLockWait(in diagnosticTags, lockName, cause, start);
+        }
+
         public ValueTask AcquireReadLockAsync(CancellationToken token = default)
-            => AcquireAsync(LockType.Read, token);
+            => AcquireReadLockAsync(ReadCause, token);
+
+        public ValueTask AcquireReadLockAsync(string cause, CancellationToken token = default)
+            => AcquireTracedAsync(LockType.Read, "read", cause, token);
 
         public void ReleaseReadLock() => Release(LockType.Read);
         
         public ValueTask AcquireReadBarrierAsync(CancellationToken token = default)
-            => AcquireAsync(LockType.ReadBarrier, token);
+            => AcquireTracedAsync(LockType.ReadBarrier, "read-barrier", CleanupCause, token);
 
         public ValueTask AcquireAppendLockAsync(CancellationToken token = default)
-            => AcquireAsync(LockType.Append, token);
+            => AcquireTracedAsync(LockType.Append, "append", AppendCause, token);
 
         public void ReleaseAppendLock() => Release(LockType.Append);
 
         public ValueTask AcquireCommitLockAsync(CancellationToken token = default)
-            => AcquireAsync(LockType.Commit, token);
+            => AcquireTracedAsync(LockType.Commit, "commit", CommitCause, token);
 
         public bool TryAcquireCommitLock()
-            => TryAcquire(LockType.Commit);
+        {
+            if (!IsLockTracingEnabled)
+                return TryAcquire(LockType.Commit);
+
+            var start = Stopwatch.GetTimestamp();
+            var acquired = TryAcquire(LockType.Commit);
+
+            // A failed attempt is followed by AcquireCommitLockAsync, which records the wait.
+            if (acquired)
+                RecordLockWait(in diagnosticTags, "commit", CommitCause, start);
+
+            return acquired;
+        }
         
         public void ReleaseCommitLock() => Release(LockType.Commit);
 

@@ -27,19 +27,31 @@ partial class WriteAheadLog
     }
 
     // Publishes the staged entries. Like PrepareAppendAsync, it ignores request cancellation.
-    private async ValueTask PersistAppendAsync(long firstIndex)
+    private async ValueTask PersistAppendAsync(long firstIndex, string cause = AppendCause)
     {
         var token = CancellationToken.None;
         var snapshotIndex = SnapshotIndex;
         var lastIndex = long.Max(stagedLastIndex, snapshotIndex);
         firstIndex = GetFlushStartIndex(firstIndex, snapshotIndex);
-        if (firstIndex <= lastIndex)
-            await Flush(firstIndex, lastIndex, token).ConfigureAwait(false);
+        persistenceTrace.Start(cause);
+        try
+        {
+            if (firstIndex <= lastIndex)
+                await Flush(firstIndex, lastIndex, token).ConfigureAwait(false);
 
-        Checkpoint.FlushDirectory(dataLocation);
-        Checkpoint.FlushDirectory(metadataLocation);
-        await PersistCheckpointAsync(lastIndex, long.Max(LastCommittedEntryIndex, snapshotIndex),
-            snapshotIndex, dataPages.LastWrittenAddress, token).ConfigureAwait(false);
+            persistenceTrace.Phase(PagesPhase);
+            Checkpoint.FlushDirectory(dataLocation);
+            persistenceTrace.Phase(DataDirectoryPhase);
+            Checkpoint.FlushDirectory(metadataLocation);
+            persistenceTrace.Phase(MetadataDirectoryPhase);
+            await PersistCheckpointAsync(lastIndex, long.Max(LastCommittedEntryIndex, snapshotIndex),
+                snapshotIndex, dataPages.LastWrittenAddress, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            persistenceTrace.Stop();
+        }
+
         LastEntryIndex = lastIndex;
         overwriteJournal.Clear();
     }

@@ -8,7 +8,7 @@ DESIGN CONTRACT: PROTOCOL CONTROL MAP / RAFTSCOPE HYBRID
 THESIS: Leader election is understood by operating the timeline, not by seeing a finished diagram.
 OWN-WORLD: A dark network control map, timer arcs, directional RPC routes, and a compact instrument rail.
 STORY: Read the configured timeouts, commit a prediction, then play the real captured election one message at a time.
-FIRST VIEWPORT: The live three-station map dominates; prediction and the persistent event inspector share the right rail.
+FIRST VIEWPORT: The prediction question leads; the cluster map and the inspector-driven wire trace operate side by side below it.
 FORM: RaftScope-inspired event playback with logic-analyzer discipline, readable route geometry, native controls, and truthful derived state.
 -->
 <section class="protocol-shell" aria-labelledby="chapter-title">
@@ -185,6 +185,23 @@ FORM: RaftScope-inspired event playback with logic-analyzer discipline, readable
             }
         </section>
 
+        @if (result is not null && RevealComplete)
+        {
+            <div class="verdict" aria-live="polite">
+                <div class="verdict-mark">@(PredictionWasCorrect ? "✓" : "×")</div>
+                <div>
+                    <p class="verdict-label">@(PredictionWasCorrect ? "Prediction confirmed" : "Prediction challenged")</p>
+                    <h2>@result.Leader becomes leader.</h2>
+                    <p>
+                        You chose <strong>@PredictionLabel</strong>. Ada's timer fired first,
+                        then a majority granted the votes needed for term 1.
+                    </p>
+                </div>
+            </div>
+        }
+    </aside>
+
+    <div class="signal-column">
         @if (result is not null)
         {
             <section class="event-inspector" aria-labelledby="inspector-title">
@@ -238,66 +255,51 @@ FORM: RaftScope-inspired event playback with logic-analyzer discipline, readable
                     @PlaybackAnnouncement
                 </p>
             </section>
-
-            @if (RevealComplete)
-            {
-                <div class="verdict" aria-live="polite">
-                    <div class="verdict-mark">@(PredictionWasCorrect ? "✓" : "×")</div>
-                    <div>
-                        <p class="verdict-label">@(PredictionWasCorrect ? "Prediction confirmed" : "Prediction challenged")</p>
-                        <h2>@result.Leader becomes leader.</h2>
-                        <p>
-                            You chose <strong>@PredictionLabel</strong>. Ada's timer fired first,
-                            then a majority granted the votes needed for term 1.
-                        </p>
-                    </div>
-                </div>
-            }
         }
-    </aside>
-</section>
 
-<section class="trace" aria-labelledby="trace-title">
-    <div class="trace-heading">
-        <div>
-            <h2 id="trace-title">The wire, in order</h2>
-            <p>Every row below is emitted by the in-browser transport around the real state machine.</p>
+        <section class="trace" aria-labelledby="trace-title">
+        <div class="trace-heading">
+            <div>
+                <h2 id="trace-title">The wire, in order</h2>
+                <p>Every row below is emitted by the in-browser transport around the real state machine.</p>
+            </div>
+            <span>@TraceStatus</span>
         </div>
-        <span>@TraceStatus</span>
+
+        @if (result is null)
+        {
+            <div class="trace-empty" aria-hidden="true">
+                @for (var index = 1; index <= 4; index++)
+                {
+                    <div>
+                        <span>@index.ToString("00")</span>
+                        <i></i>
+                        <i></i>
+                        <i></i>
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <ol class="event-list">
+                @foreach (var item in VisibleEvents)
+                {
+                    <li class="@(item.Sequence == CurrentEvent?.Sequence ? "current" : null)"
+                        aria-current="@(item.Sequence == CurrentEvent?.Sequence ? "step" : null)">
+                        <span class="sequence">@item.Sequence.ToString("00")</span>
+                        <span class="route">
+                            <strong>@item.Source</strong>
+                            <span aria-hidden="true">→</span>
+                            <strong>@item.Target</strong>
+                        </span>
+                        <code>@item.Message</code>
+                    </li>
+                }
+            </ol>
+        }
+        </section>
     </div>
-
-    @if (result is null)
-    {
-        <div class="trace-empty" aria-hidden="true">
-            @for (var index = 1; index <= 4; index++)
-            {
-                <div>
-                    <span>@index.ToString("00")</span>
-                    <i></i>
-                    <i></i>
-                    <i></i>
-                </div>
-            }
-        </div>
-    }
-    else
-    {
-        <ol class="event-list">
-            @foreach (var item in VisibleEvents)
-            {
-                <li class="@(item.Sequence == CurrentEvent?.Sequence ? "current" : null)"
-                    aria-current="@(item.Sequence == CurrentEvent?.Sequence ? "step" : null)">
-                    <span class="sequence">@item.Sequence.ToString("00")</span>
-                    <span class="route">
-                        <strong>@item.Source</strong>
-                        <span aria-hidden="true">→</span>
-                        <strong>@item.Target</strong>
-                    </span>
-                    <code>@item.Message</code>
-                </li>
-            }
-        </ol>
-    }
 </section>
 
 <details class="implementation-note">

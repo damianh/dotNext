@@ -740,7 +740,7 @@ dd {
 }
 
 .control-rail .verdict {
-    grid-column: 1;
+    grid-column: 1 / -1;
 }
 
 .inspector-heading {
@@ -1143,9 +1143,6 @@ dd {
         min-height: 24rem;
     }
 
-    .control-rail .verdict {
-        grid-column: 2;
-    }
 }
 
 @media (max-width: 760px) {
@@ -1161,8 +1158,7 @@ dd {
         grid-template-columns: 1fr;
     }
 
-    .chapter-intro,
-    .control-rail .verdict {
+    .chapter-intro {
         grid-column: auto;
         grid-row: auto;
     }

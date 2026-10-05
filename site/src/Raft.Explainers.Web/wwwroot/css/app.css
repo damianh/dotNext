@@ -212,13 +212,13 @@ code {
 .chapter-intro h1 {
     align-self: center;
     font-family: var(--display);
-    font-size: clamp(4.4rem, 10vw, 9.4rem);
+    font-size: clamp(3.6rem, 8vw, 6rem);
     font-variation-settings: "wdth" 82, "wght" 560;
     font-weight: 560;
-    letter-spacing: -.075em;
-    line-height: .76;
+    letter-spacing: -.04em;
+    line-height: .82;
     margin: 0;
-    max-width: 7.5ch;
+    max-width: 8ch;
 }
 
 h1[tabindex="-1"]:focus {
@@ -307,9 +307,15 @@ dd {
 
 .cluster-routes path {
     fill: none;
-    stroke: url(#gridGlow), rgba(125, 214, 255, 0.86);
+    stroke: url(#gridGlow);
     stroke-width: 2;
     stroke-linecap: round;
+    transition: filter 240ms ease-out;
+}
+
+.cluster-routes--captured path {
+    filter: drop-shadow(0 0 4px rgba(125, 214, 255, 0.5));
+    stroke-width: 3;
 }
 
 .chart-node circle {
@@ -326,18 +332,42 @@ dd {
 
 .chart-node text {
     fill: var(--paper);
-    font-family: var(--display);
-    font-size: 16px;
-    letter-spacing: .02em;
     text-anchor: middle;
 }
 
-.chart-node text:last-child {
+.chart-node .node-name {
+    font-family: var(--display);
+    font-size: 16px;
+    letter-spacing: .02em;
+}
+
+.chart-node .node-coordinate,
+.chart-node .node-state {
     fill: var(--signal);
     font-family: var(--specimen);
-    font-size: 12px;
-    letter-spacing: .18em;
+    font-size: 11px;
+    letter-spacing: .12em;
     text-transform: uppercase;
+}
+
+.chart-node .node-coordinate {
+    fill: var(--muted);
+    font-size: 9px;
+}
+
+.chart-node.leader circle:first-of-type {
+    filter: drop-shadow(0 0 7px rgba(125, 214, 255, 0.72));
+    stroke-width: 4;
+}
+
+.cluster-route-key {
+    border-top: 1px solid var(--soft-line);
+    color: var(--muted);
+    font-size: .62rem;
+    letter-spacing: .04em;
+    line-height: 1.5;
+    margin: 0;
+    padding: .8rem 0;
 }
 
 .cluster-readout {
@@ -895,7 +925,7 @@ dd {
     }
 
     .chapter-intro h1 {
-        font-size: clamp(4.5rem, 22vw, 7rem);
+        font-size: clamp(3.6rem, 18vw, 5.5rem);
         margin-top: 0;
     }
 
@@ -968,17 +998,6 @@ dd {
     .event-list code {
         grid-column: 2;
         justify-self: start;
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    html {
-        scroll-behavior: auto;
-    }
-
-    *, *::before, *::after {
-        animation: none !important;
-        transition: none !important;
     }
 
     .implementation-note > div {

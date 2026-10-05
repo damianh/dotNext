@@ -43,12 +43,12 @@ FORM: navigate the chart as a space of coordinates and causal paths, not as a st
     <div class="cluster-scene" aria-labelledby="cluster-title">
         <div class="cluster-header">
             <span>cluster chart</span>
-            <span>term 0 / all followers</span>
+            <span>@ClusterStatusLabel</span>
         </div>
 
         <svg viewBox="0 0 680 420" role="img" aria-labelledby="cluster-title cluster-desc">
             <title id="cluster-title">Raft cluster map</title>
-            <desc id="cluster-desc">Three peers form a triangle. The leader is still undecided; all nodes are followers and are connected by vote RPC paths.</desc>
+            <desc id="cluster-desc">@ClusterDescription</desc>
             <defs>
                 <linearGradient id="gridGlow" x1="0%" x2="100%" y1="0%" y2="100%">
                     <stop offset="0%" stop-color="#7ed5ff" stop-opacity="0.5" />
@@ -61,42 +61,49 @@ FORM: navigate the chart as a space of coordinates and causal paths, not as a st
                 <path d="M120 40 L120 380 M220 40 L220 380 M320 40 L320 380 M420 40 L420 380 M520 40 L520 380" />
             </g>
 
-            <g class="cluster-routes" aria-hidden="true">
+            <g class="@ClusterRouteClass" aria-hidden="true">
                 <path d="M184 164 L330 240" />
                 <path d="M184 164 L486 206" />
                 <path d="M330 240 L486 206" />
             </g>
 
-            <g class="chart-node chart-node--ada" aria-label="Node Ada at coordinates 1.8/2.1 term 0 follower">
+            <g class="@ChartNodeClass("Ada")" role="group" aria-label="@ChartNodeLabel("Ada", "1.8 / 2.1")">
                 <circle cx="184" cy="164" r="16" />
                 <circle class="node-core" cx="184" cy="164" r="8" />
-                <text x="184" y="128">Ada</text>
-                <text x="184" y="220">term 0</text>
+                <text class="node-name" x="184" y="120">Ada</text>
+                <text class="node-coordinate" x="184" y="139">x 1.8 / y 2.1</text>
+                <text class="node-state" x="184" y="220">@ChartNodeState("Ada")</text>
             </g>
 
-            <g class="chart-node chart-node--grace" aria-label="Node Grace at coordinates 4.8/2.7 term 0 follower">
+            <g class="@ChartNodeClass("Grace")" role="group" aria-label="@ChartNodeLabel("Grace", "4.8 / 2.7")">
                 <circle cx="330" cy="240" r="16" />
                 <circle class="node-core" cx="330" cy="240" r="8" />
-                <text x="330" y="204">Grace</text>
-                <text x="330" y="276">term 0</text>
+                <text class="node-name" x="330" y="196">Grace</text>
+                <text class="node-coordinate" x="330" y="215">x 4.8 / y 2.7</text>
+                <text class="node-state" x="330" y="286">@ChartNodeState("Grace")</text>
             </g>
 
-            <g class="chart-node chart-node--linus" aria-label="Node Linus at coordinates 6.8/2.2 term 0 follower">
+            <g class="@ChartNodeClass("Linus")" role="group" aria-label="@ChartNodeLabel("Linus", "6.8 / 2.2")">
                 <circle cx="486" cy="206" r="16" />
                 <circle class="node-core" cx="486" cy="206" r="8" />
-                <text x="486" y="170">Linus</text>
-                <text x="486" y="252">term 0</text>
+                <text class="node-name" x="486" y="162">Linus</text>
+                <text class="node-coordinate" x="486" y="181">x 6.8 / y 2.2</text>
+                <text class="node-state" x="486" y="262">@ChartNodeState("Linus")</text>
             </g>
         </svg>
+
+        <p class="cluster-route-key">
+            Route lattice: three bidirectional peer channels. Exact RPCs appear in the wire trace after the run.
+        </p>
 
         <dl class="cluster-readout">
             <div>
                 <dt>Election</dt>
-                <dd>waiting for timer</dd>
+                <dd>@(result is null ? "waiting for timer" : "term committed")</dd>
             </div>
             <div>
                 <dt>Leader</dt>
-                <dd>undecided</dd>
+                <dd>@(result?.Leader ?? "undecided")</dd>
             </div>
             <div>
                 <dt>Quorum</dt>
@@ -280,6 +287,20 @@ FORM: navigate the chart as a space of coordinates and causal paths, not as a st
     private bool running;
     private string? error;
 
+    private long ClusterTerm => result?.Nodes.Max(static node => node.Term) ?? 0L;
+
+    private string ClusterStatusLabel => result is null
+        ? "term 0 / all followers"
+        : $"term {ClusterTerm} / {result.Leader.ToLowerInvariant()} leads";
+
+    private string ClusterDescription => result is null
+        ? "Three peers form a triangle on three bidirectional RPC routes. The leader is undecided; all nodes are followers in term 0."
+        : $"Three peers form a triangle on three bidirectional RPC routes. {result.Leader} is the leader in term {ClusterTerm}; the other two nodes are followers.";
+
+    private string ClusterRouteClass => result is null
+        ? "cluster-routes"
+        : "cluster-routes cluster-routes--captured";
+
     private bool PredictionWasCorrect => result is not null && prediction == result.Leader;
 
     private string PredictionLabel => prediction == UncertainPrediction
@@ -288,6 +309,31 @@ FORM: navigate the chart as a space of coordinates and causal paths, not as a st
 
     private static string NodeRole(RaftNodeSnapshot? node)
         => node?.Role.ToLowerInvariant() ?? "unrevealed";
+
+    private RaftNodeSnapshot? FindNode(string name)
+        => result?.Nodes.First(node => node.Name == name);
+
+    private string ChartNodeClass(string name)
+    {
+        var role = FindNode(name)?.Role.ToLowerInvariant();
+        return role is null
+            ? $"chart-node chart-node--{name.ToLowerInvariant()}"
+            : $"chart-node chart-node--{name.ToLowerInvariant()} {role}";
+    }
+
+    private string ChartNodeState(string name)
+    {
+        var node = FindNode(name);
+        return node is null ? "follower / t0" : $"{node.Role.ToLowerInvariant()} / t{node.Term}";
+    }
+
+    private string ChartNodeLabel(string name, string coordinates)
+    {
+        var node = FindNode(name);
+        var role = node?.Role.ToLowerInvariant() ?? "follower";
+        var term = node?.Term ?? 0;
+        return $"Node {name} at coordinates {coordinates}, term {term}, {role}";
+    }
 
     private string NodeClass(string name, RaftNodeSnapshot? node)
     {

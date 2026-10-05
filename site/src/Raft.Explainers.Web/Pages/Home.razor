@@ -202,102 +202,100 @@ FORM: RaftScope-inspired event playback with logic-analyzer discipline, readable
     </aside>
 
     <div class="signal-column">
-        @if (result is not null)
-        {
-            <section class="event-inspector" aria-labelledby="inspector-title">
-                <div class="inspector-heading">
-                    <div>
-                        <span>Event inspector</span>
-                        <h2 id="inspector-title">@CurrentEventLabel</h2>
-                    </div>
-                    <strong>@PlaybackPosition</strong>
+        <section class="event-inspector @(result is null ? "is-idle" : null)" aria-labelledby="inspector-title">
+            <div class="inspector-heading">
+                <div>
+                    <span>Event inspector</span>
+                    <h2 id="inspector-title">@CurrentEventLabel</h2>
                 </div>
+                <strong>@PlaybackPosition</strong>
+            </div>
 
-                <div class="playback-controls" aria-label="Event playback controls">
-                    <button @onclick="PreviousEvent" disabled="@(currentEventIndex <= 0)" aria-label="Previous event">←</button>
-                    <button class="play-toggle" @onclick="TogglePlayback" disabled="@RevealComplete"
-                            aria-label="@(playing ? "Pause event playback" : "Play event playback")">
-                        @(playing ? "Pause" : "Play")
-                    </button>
-                    <button @onclick="NextEvent" disabled="@RevealComplete" aria-label="Next event">→</button>
+            <div class="playback-controls" aria-label="Event playback controls">
+                <button @onclick="PreviousEvent" disabled="@(result is null || currentEventIndex <= 0)" aria-label="Previous event">←</button>
+                <button class="play-toggle" @onclick="TogglePlayback" disabled="@(result is null || RevealComplete)"
+                        aria-label="@(playing ? "Pause event playback" : "Play event playback")">
+                    @(playing ? "Pause" : "Play")
+                </button>
+                <button @onclick="NextEvent" disabled="@(result is null || RevealComplete)" aria-label="Next event">→</button>
+            </div>
+
+            <label class="scrubber">
+                <span>Event position</span>
+                <input type="range"
+                       min="1"
+                       max="@(result?.Events.Count ?? 1)"
+                       value="@(currentEventIndex + 1)"
+                       disabled="@(result is null)"
+                       @oninput="ScrubToEvent"
+                       aria-valuetext="@PlaybackPosition" />
+            </label>
+
+            <dl class="event-readout">
+                <div>
+                    <dt>Route</dt>
+                    <dd>@CurrentRouteLabel</dd>
                 </div>
+                <div>
+                    <dt>Message</dt>
+                    <dd>@(CurrentEvent?.Message ?? "Awaiting event")</dd>
+                </div>
+                <div>
+                    <dt>Kind</dt>
+                    <dd>@CurrentMessageKind</dd>
+                </div>
+                <div>
+                    <dt>Cluster</dt>
+                    <dd>@CurrentClusterState</dd>
+                </div>
+            </dl>
 
-                <label class="scrubber">
-                    <span>Event position</span>
-                    <input type="range"
-                           min="1"
-                           max="@result.Events.Count"
-                           value="@(currentEventIndex + 1)"
-                           @oninput="ScrubToEvent"
-                           aria-valuetext="@PlaybackPosition" />
-                </label>
-
-                <dl class="event-readout">
-                    <div>
-                        <dt>Route</dt>
-                        <dd>@CurrentRouteLabel</dd>
-                    </div>
-                    <div>
-                        <dt>Message</dt>
-                        <dd>@(CurrentEvent?.Message ?? "Awaiting event")</dd>
-                    </div>
-                    <div>
-                        <dt>Kind</dt>
-                        <dd>@CurrentMessageKind</dd>
-                    </div>
-                    <div>
-                        <dt>Cluster</dt>
-                        <dd>@CurrentClusterState</dd>
-                    </div>
-                </dl>
-
-                <p class="playback-status" role="status" aria-live="polite">
-                    @PlaybackAnnouncement
-                </p>
-            </section>
-        }
+            <p class="playback-status" role="status" aria-live="polite">
+                @PlaybackAnnouncement
+            </p>
+        </section>
 
         <section class="trace" aria-labelledby="trace-title">
-        <div class="trace-heading">
-            <div>
-                <h2 id="trace-title">The wire, in order</h2>
-                <p>Every row below is emitted by the in-browser transport around the real state machine.</p>
+            <div class="trace-heading">
+                <div>
+                    <h2 id="trace-title">The wire, in order</h2>
+                    <p>Every row below is emitted by the in-browser transport around the real state machine.</p>
+                </div>
+                <span>@TraceStatus</span>
             </div>
-            <span>@TraceStatus</span>
-        </div>
 
-        @if (result is null)
-        {
-            <div class="trace-empty" aria-hidden="true">
-                @for (var index = 1; index <= 4; index++)
-                {
-                    <div>
-                        <span>@index.ToString("00")</span>
-                        <i></i>
-                        <i></i>
-                        <i></i>
-                    </div>
-                }
-            </div>
-        }
-        else
-        {
-            <ol class="event-list">
-                @foreach (var item in VisibleEvents)
-                {
-                    <li class="@(item.Sequence == CurrentEvent?.Sequence ? "current" : null)"
-                        aria-current="@(item.Sequence == CurrentEvent?.Sequence ? "step" : null)">
-                        <span class="sequence">@item.Sequence.ToString("00")</span>
-                        <span class="route">
-                            <strong>@item.Source</strong>
-                            <span aria-hidden="true">→</span>
-                            <strong>@item.Target</strong>
-                        </span>
-                        <code>@item.Message</code>
-                    </li>
-                }
-            </ol>
-        }
+            @if (result is null)
+            {
+                <div class="trace-empty" aria-hidden="true">
+                    @for (var index = 1; index <= 4; index++)
+                    {
+                        <div>
+                            <span>@index.ToString("00")</span>
+                            <i></i>
+                            <i></i>
+                            <i></i>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <ol class="event-list">
+                    @foreach (var item in VisibleEvents)
+                    {
+                        <li class="@(item.Sequence == CurrentEvent?.Sequence ? "current" : null)"
+                            aria-current="@(item.Sequence == CurrentEvent?.Sequence ? "step" : null)">
+                            <span class="sequence">@item.Sequence.ToString("00")</span>
+                            <span class="route">
+                                <strong>@item.Source</strong>
+                                <span aria-hidden="true">→</span>
+                                <strong>@item.Target</strong>
+                            </span>
+                            <code>@item.Message</code>
+                        </li>
+                    }
+                </ol>
+            }
         </section>
     </div>
 </section>

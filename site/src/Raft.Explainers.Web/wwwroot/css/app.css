@@ -816,6 +816,22 @@ dd {
     width: 100%;
 }
 
+.scrubber input:disabled {
+    accent-color: rgba(213, 230, 245, .3);
+    cursor: not-allowed;
+}
+
+.event-inspector.is-idle .inspector-heading h2,
+.event-inspector.is-idle .event-readout dd {
+    color: rgba(213, 230, 245, .5);
+}
+
+.event-inspector.is-idle .inspector-heading span,
+.event-inspector.is-idle .inspector-heading > strong,
+.event-inspector.is-idle .scrubber span {
+    color: rgba(213, 230, 245, .42);
+}
+
 .event-readout {
     border-color: var(--panel-line);
 }
@@ -884,6 +900,10 @@ dd {
     grid-area: signal;
     height: var(--workspace-height);
     min-width: 0;
+}
+
+.signal-column > .event-inspector {
+    flex: 0 0 auto;
 }
 
 .trace {

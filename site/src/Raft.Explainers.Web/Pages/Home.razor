@@ -3,37 +3,65 @@
 <PageTitle>Leader election | dotNext Raft</PageTitle>
 
 <!--
-THESIS: A leader election is a blind typographic lineup; predict before the implementation reveals.
-OWN-WORLD: Paper, black ink, signal blue, ruled specimen grids, variable weight and width, square controls.
-STORY: Read the timing fact, commit a prediction, run real Raft, then inspect the causal wire trace.
-FIRST VIEWPORT: The question and three equal node glyphs dominate; prediction controls sit directly beneath.
-FORM: Seventh grounded structure, staged as a suspect lineup; surface seed 7cb5fb5c.
+THESIS: A leader election is a protocol instrument, not a poster: predict the winner, then watch the real cluster reveal the causal sequence.
+OWN-WORLD: Dark instrument panel, graphite and slate surfaces, crisp cyan telemetry, muted annotation, precise rows and traces, measured controls.
+STORY: Read the cluster state, commit a prediction, run the real Raft election, and inspect the exact RPC sequence as the cursor lands on each event.
+FIRST VIEWPORT: The three-node cluster occupies the opening viewport with the event cursor and lane traces dominating the composition; the prediction controls sit just beneath as the operator's measurement panel.
+FORM: Seventh grounded structure, staged as a logic analyzer; surface seed 7cb5fb5c.
 -->
-<section class="chapter-intro" aria-labelledby="chapter-title">
+<section class="chapter-intro instrument-panel" aria-labelledby="chapter-title">
     <div class="chapter-index">
         <span>Chapter 1 of 25</span>
         <span>Election / fundamentals</span>
     </div>
-    <h1 id="chapter-title">Who becomes<br />leader?</h1>
-    <div class="chapter-brief">
+
+    <div class="instrument-summary">
+        <div class="instrument-label">Election window</div>
+        <h1 id="chapter-title">Who becomes<br />leader?</h1>
         <p>
             Ada's election timer expires first. Before the messages move, commit to what
             you think the cluster will do.
         </p>
-        <dl>
-            <div>
-                <dt>Nodes</dt>
-                <dd>3</dd>
-            </div>
-            <div>
-                <dt>Initial term</dt>
-                <dd>0</dd>
-            </div>
-            <div>
-                <dt>Network</dt>
-                <dd>Healthy</dd>
-            </div>
-        </dl>
+    </div>
+
+    <div class="cluster-viewport" aria-label="Raft cluster status and event stream">
+        <div class="cluster-header" aria-hidden="true">
+            <span>Cluster scope</span>
+            <span>@(result is null ? "awaiting signal" : $"term {result.Nodes.First().Term}")</span>
+        </div>
+
+        <div class="cluster-lanes" role="list" aria-label="Three-node Raft cluster with one lane per node">
+            @foreach (var name in NodeNames)
+            {
+                var snapshot = result?.Nodes.First(node => node.Name == name);
+                var laneEvents = LaneEvents(name).ToArray();
+                <div class="node-lane @NodeClass(name, snapshot)" role="listitem" aria-label="@name lane, role @NodeRole(snapshot), term @(snapshot?.Term.ToString() ?? "pending")">
+                    <div class="lane-header">
+                        <span class="lane-name">@name</span>
+                        <span class="lane-role">@NodeRole(snapshot)</span>
+                        <strong>@(snapshot?.Term.ToString() ?? "—")</strong>
+                    </div>
+                    <div class="lane-trace" aria-hidden="true">
+                        @for (var marker = 0; marker < 10; marker++)
+                        {
+                            <span class="trace-mark"></span>
+                        }
+                        @foreach (var item in laneEvents)
+                        {
+                            var offset = Math.Clamp(((double)item.Sequence / Math.Max(1, result?.Events.Count ?? 1)) * 100d, 6d, 94d);
+                            var pulseTone = item.Source == name ? "source" : "target";
+                            <span class="rpc-pulse @pulseTone" style="left:@offset%"></span>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+
+        <div class="cluster-readout" aria-live="polite">
+            <span class="readout-label">Event cursor</span>
+            <strong>@(CurrentEvent is null ? "Awaiting signal" : $"#{CurrentEvent.Sequence:00}")</strong>
+            <span class="readout-state">@(CurrentEvent is null ? "No real vote has fired yet." : $"{CurrentEvent.Source} → {CurrentEvent.Target} · {CurrentEvent.Message}")</span>
+        </div>
     </div>
 </section>
 
@@ -43,7 +71,7 @@ FORM: Seventh grounded structure, staged as a suspect lineup; surface seed 7cb5f
             <h2 id="prediction-title">Make your prediction</h2>
             <p>Choose one answer. The implementation stays hidden until you commit.</p>
         </div>
-        <span class="axis-readout">weight axis / role</span>
+        <span class="axis-readout">cluster / role</span>
     </div>
 
     <fieldset class="node-lineup" disabled="@(running || result is not null)">
@@ -211,6 +239,8 @@ FORM: Seventh grounded structure, staged as a suspect lineup; surface seed 7cb5f
     private bool running;
     private string? error;
 
+    private RaftEvent? CurrentEvent => result?.Events.LastOrDefault();
+
     private bool PredictionWasCorrect => result is not null && prediction == result.Leader;
 
     private string PredictionLabel => prediction == UncertainPrediction
@@ -219,6 +249,10 @@ FORM: Seventh grounded structure, staged as a suspect lineup; surface seed 7cb5f
 
     private static string NodeRole(RaftNodeSnapshot? node)
         => node?.Role.ToLowerInvariant() ?? "unrevealed";
+
+    private IEnumerable<RaftEvent> LaneEvents(string name)
+        => result?.Events.Where(item => item.Source == name || item.Target == name).Take(8)
+            ?? Enumerable.Empty<RaftEvent>();
 
     private string NodeClass(string name, RaftNodeSnapshot? node)
     {

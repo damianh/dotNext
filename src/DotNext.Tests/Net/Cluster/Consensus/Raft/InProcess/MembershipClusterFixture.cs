@@ -116,6 +116,27 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
     }
 
     /// <summary>
+    /// Replicates the leader's log until every voter holds its last entry.
+    /// </summary>
+    /// <remarks>
+    /// A replication round completes as soon as a majority acknowledges it, so a single
+    /// <see cref="RaftCluster{TMember}.ForceReplicationAsync"/> pump may leave a follower behind,
+    /// with its request still held. Use this before a step that depends on a particular follower
+    /// having the entries, such as electing it.
+    /// </remarks>
+    internal Task ReplicateToAllVotersAsync(MembershipNode leader)
+    {
+        var index = leader.Log.LastEntryIndex;
+        return PumpAsync(leader, WaitUntilAsync(() => Nodes.All(node => !Voters.Contains(node.EndPoint) || node.Log.LastEntryIndex >= index)));
+
+        static async Task WaitUntilAsync(Func<bool> condition)
+        {
+            while (!condition())
+                await Task.Delay(1, TestToken);
+        }
+    }
+
+    /// <summary>
     /// Replicates until the node has applied the specified index.
     /// </summary>
     internal Task ReplicateUntilAppliedAsync(MembershipNode leader, long index, Func<PendingMessage, MessageAction> filter = null)
@@ -203,7 +224,7 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
                     Network.TryDrop(message);
             }
         }
-        catch (OperationCanceledException e) when (e.CancellationToken == timeout.Token && !TestToken.IsCancellationRequested)
+        catch (OperationCanceledException e) when (timeout.IsCancellationRequested && !TestToken.IsCancellationRequested)
         {
             throw new TimeoutException($"{source.EndPoint} did not complete the pumped operation.", e);
         }

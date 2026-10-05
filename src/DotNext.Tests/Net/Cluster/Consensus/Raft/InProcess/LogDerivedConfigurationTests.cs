@@ -22,7 +22,7 @@ public sealed class LogDerivedConfigurationTests : RaftTest
         await cluster.StartAsync();
         var (n0, n1, n2, n4) = (cluster.Nodes[0], cluster.Nodes[1], cluster.Nodes[2], cluster.Nodes[4]);
         await cluster.ElectAsync(n0);
-        await cluster.PumpAsync(n0, n0.ForceReplicationAsync(TestToken).AsTask());
+        await cluster.ReplicateToAllVotersAsync(n0);
 
         // term 1: the removal of node 4 reaches node 1 only
         await n0.DetectAsync(n4.EndPoint);
@@ -259,7 +259,7 @@ public sealed class LogDerivedConfigurationTests : RaftTest
     {
         var (n0, n1, n2, n4) = (cluster.Nodes[0], cluster.Nodes[1], cluster.Nodes[2], cluster.Nodes[4]);
         await cluster.ElectAsync(n0);
-        await cluster.PumpAsync(n0, n0.ForceReplicationAsync(TestToken).AsTask());
+        await cluster.ReplicateToAllVotersAsync(n0);
         await n0.DetectAsync(n4.EndPoint);
         await cluster.ReplicateOnlyToAsync(n0, n1, 2L);
 

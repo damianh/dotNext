@@ -142,7 +142,10 @@ public sealed class ConfigurationAppendBoundaryTests : RaftTest
         await cluster.StartAsync();
         var (n0, n2, n4) = (cluster.Nodes[0], cluster.Nodes[2], cluster.Nodes[4]);
         await cluster.ElectAsync(n0);
-        await cluster.PumpAsync(n0, n0.ForceReplicationAsync(TestToken).AsTask());
+
+        // node 2 is elected in term 2 by {1,2,3}: it must hold the no-op that nodes 1 and 3 hold,
+        // otherwise they reject its pre-vote as less up to date
+        await cluster.ReplicateToAllVotersAsync(n0);
         var noOpIndex = n0.Log.LastEntryIndex;
         Equal(noOpIndex, n4.Log.LastEntryIndex);
 

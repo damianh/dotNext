@@ -115,6 +115,10 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj --no-restore -- --fi
 and one follower hold index 10, and a third member acknowledges snapshot 6 from
 the current term. Responsive quorum is not enough to commit 10. The leader
 selects the majority-th largest replicated index using the full membership.
+The test waits for the snapshot's log cleanup before it requests the next round
+(#127): the cleanup takes a read barrier on the leader's WAL, and the lock
+manager is FIFO, so a cleanup queued behind the held follower RPC (which keeps
+its read lock) parks every later replication read until that RPC is released.
 
 `MembershipCommitTests` covers 3/5/7 members, unavailable replies arriving before
 or after quorum, current- and previous-term snapshot acknowledgments, successful
@@ -174,7 +178,15 @@ Nothing progresses on its own:
 - `PumpAsync(source, operation, filter)` handles the source's RPCs until the
   operation completes. The filter returns `Deliver`, `Drop`, or `Hold`. For a
   leader it keeps one forced round in flight, so rejected appends are retried
-  without heartbeat deadlines.
+  without heartbeat deadlines. A replication round, and so the write barrier
+  of `ElectAsync`, completes once a majority acknowledges it: a pump over one
+  `ForceReplicationAsync` round does not guarantee that every follower has
+  the entries, because the request to a slow follower can still be queued.
+- `ReplicateToAllVotersAsync(leader)` pumps forced rounds until every voter
+  holds the leader's last entry. Use it before a step that depends on a
+  particular follower having the entries, such as electing that follower: a
+  follower that misses an entry its peers hold is refused their pre-votes as
+  less up to date, and `ElectAsync` waits for votes that never come (#127).
 - `PumpAllAsync(operation, filter, leader)` handles RPCs from every node
   without awaiting each delivery. A leader answering a follower's read
   barrier waits for its own replication round, so a sequential pump would

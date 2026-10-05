@@ -678,8 +678,8 @@ internal sealed class SyncProbe
         uint creationDisposition, uint flags, IntPtr template);
 
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]
-    private static extern IntPtr Open(byte[] path, int flags);
+    private static extern int Open(byte[] path, int flags);
 
-    private static IntPtr Open(string path, int flags)
+    private static int Open(string path, int flags)
         => Open(System.Text.Encoding.UTF8.GetBytes(path + '\0'), flags);
 }

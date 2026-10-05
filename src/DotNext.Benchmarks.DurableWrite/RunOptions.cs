@@ -87,8 +87,10 @@ internal sealed class RunOptions
                                         directory-flush probe to the run (#123). Off by default.
           --repeat <n>                  Run the matrix n times, round after round, and report the spread of each
                                         cell (default: 1)
-          --cells <text,...>            Run only the cells whose name contains one of these texts. An open-loop
-                                        cell needs a closed-loop cell with the same voters and entry size before it.
+          --cells <text,...>            Run only the cells whose name contains one of these texts as whole
+                                        dash-separated parts ("3v-128B" or "c1", which does not select c16). An
+                                        open-loop cell needs a closed-loop cell with the same voters and entry size
+                                        before it.
 
         Exit codes: 0 ok, 1 unexpected error, 2 usage, 3 safety oracle violation, 4 liveness failure,
         5 incomplete (--max-duration reached, or a cell skipped for lack of disk space).

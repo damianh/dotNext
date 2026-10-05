@@ -3,7 +3,8 @@ name: Durable-write load
 # The durable-write load tool (#118 stage 2): src/DotNext.Benchmarks.DurableWrite, see its README.md.
 # - smoke: on pull requests and pushes that touch the WAL, Raft or the tool. A short matrix, then each injected
 #   failure, which the oracles must catch (exit code 3). Correctness oracles only; no latency or memory thresholds.
-# - baseline: manual only. The full matrix; the JSON report is uploaded as an artifact.
+# - baseline: manual only. The full matrix; the JSON report is uploaded as an artifact. Optional inputs (#123):
+#   diagnostics (--diagnostics, plus an strace count of durability system calls on Linux), cells and repeat.
 on:
   pull_request:
     branches: [fork]
@@ -53,6 +54,21 @@ on:
         options:
           - shared
           - private
+      diagnostics:
+        description: Add the persist, lock and Raft breakdowns (--diagnostics) and, on Linux, an strace count of durability system calls
+        required: false
+        default: false
+        type: boolean
+      cells:
+        description: Only the cells whose name contains one of these comma-separated dash-separated parts (--cells); empty for all
+        required: false
+        default: ''
+        type: string
+      repeat:
+        description: Run the selected cells this many times and report the spread (--repeat, 1 to 20)
+        required: false
+        default: '1'
+        type: string
 
 permissions:
   contents: read
@@ -173,15 +189,70 @@ jobs:
         env:
           IN_PROFILE: ${{ inputs.profile }}
           IN_MEMORY: ${{ inputs.memory }}
+          IN_DIAGNOSTICS: ${{ inputs.diagnostics }}
+          IN_CELLS: ${{ inputs.cells }}
+          IN_REPEAT: ${{ inputs.repeat }}
         run: |
           set -o pipefail
           [[ "$IN_PROFILE" =~ ^(full|smoke)$ ]] || { echo "::error::profile must be full or smoke"; exit 1; }
           [[ "$IN_MEMORY" =~ ^(shared|private)$ ]] || { echo "::error::memory must be shared or private"; exit 1; }
+          [[ "$IN_CELLS" =~ ^[A-Za-z0-9,-]*$ ]] || { echo "::error::cells must be letters, digits, commas and dashes"; exit 1; }
+          [[ "$IN_REPEAT" =~ ^([1-9]|1[0-9]|20)$ ]] || { echo "::error::repeat must be 1 to 20"; exit 1; }
+          args=(--profile "$IN_PROFILE" --memory "$IN_MEMORY" --max-duration 45 --work-dir "$RUNNER_TEMP/durable-write")
+          [ "$IN_DIAGNOSTICS" = "true" ] && args+=(--diagnostics)
+          [ -n "$IN_CELLS" ] && args+=(--cells "$IN_CELLS")
+          [ "$IN_REPEAT" != "1" ] && args+=(--repeat "$IN_REPEAT")
           mkdir -p "$RESULTS_DIR"
           dotnet run --project "$PROJECT" --configuration Release --no-build -- \
-            --profile "$IN_PROFILE" --memory "$IN_MEMORY" --max-duration 45 \
-            --work-dir "$RUNNER_TEMP/durable-write" \
-            --out "$RESULTS_DIR/baseline.json" 2>&1 | tee "$RESULTS_DIR/baseline.log"
+            "${args[@]}" --out "$RESULTS_DIR/baseline.json" 2>&1 | tee "$RESULTS_DIR/baseline.log"
+
+      # Durability system calls per acknowledged write (#123), counted by strace on the tool's own process tree: no
+      # privileges needed beyond tracing a child. Each cell runs twice, for a short and a long measured window, and
+      # the difference of the counts over the difference of the acknowledged writes cancels the start-up, recovery
+      # audit and oracle checks. Counts are per process, so a 3-voter cell counts all three nodes.
+      - name: Durability system calls (strace)
+        if: ${{ inputs.diagnostics && runner.os == 'Linux' }}
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          command -v strace > /dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq strace > /dev/null; }
+          dll=src/DotNext.Benchmarks.DurableWrite/bin/Release/net10.0/DotNext.Benchmarks.DurableWrite.dll
+          calls=fsync,fdatasync,msync,sync_file_range,rename,renameat,renameat2,unlink,unlinkat
+          run() {
+            local tag="$1" duration="$2"; shift 2
+            strace -f -c -o "$RESULTS_DIR/strace-$tag.txt" -e trace="$calls" \
+              dotnet "$dll" --profile full --warmup 1 --duration "$duration" --work-dir "$RUNNER_TEMP/durable-write" \
+              --out "$RESULTS_DIR/strace-$tag.json" "$@" > "$RESULTS_DIR/strace-$tag.log" 2>&1
+          }
+          count() { awk -v s="$2" '$NF == s { print $4; found = 1 } END { if (!found) print 0 }' "$RESULTS_DIR/strace-$1.txt"; }
+          acks() { jq '[.cells[].acknowledgedTotal] | add' "$RESULTS_DIR/strace-$1.json"; }
+          {
+            echo "### Durability system calls per acknowledged write (strace, differential)"
+            echo ""
+            echo "Device: \`$(findmnt -n -o SOURCE,FSTYPE,OPTIONS --target "$RUNNER_TEMP")\`"
+            echo ""
+            echo '```'
+            lsblk -o NAME,TYPE,SIZE,ROTA,MODEL,FSTYPE,MOUNTPOINTS || true
+            echo '```'
+            echo ""
+            echo "| Cell | Acks (short, long) | fsync | fdatasync | rename* | unlink* |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for spec in "wal-append-128B-c1:--mode wal --sizes 128 --concurrency 1" \
+                      "raft-closed-3v-128B-c1:--mode raft --voters 3 --sizes 128 --concurrency 1"; do
+            cell="${spec%%:*}"; read -r -a extra <<< "${spec#*:}"
+            run "$cell-short" 5 --cells "$cell" "${extra[@]}"
+            run "$cell-long" 15 --cells "$cell" "${extra[@]}"
+            a1=$(acks "$cell-short"); a2=$(acks "$cell-long")
+            per() {
+              local total1=0 total2=0 s
+              for s in "$@"; do
+                total1=$((total1 + $(count "$cell-short" "$s"))); total2=$((total2 + $(count "$cell-long" "$s")))
+              done
+              awk -v d="$((total2 - total1))" -v a="$((a2 - a1))" 'BEGIN { if (a > 0) printf "%.2f", d / a; else print "n/a" }'
+            }
+            echo "| $cell | $a1, $a2 | $(per fsync) | $(per fdatasync) | $(per rename renameat renameat2) | $(per unlink unlinkat) |" >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Summarize
         if: ${{ always() && hashFiles('TestResults/durable-write/baseline.json') != '' }}
@@ -198,6 +269,27 @@ jobs:
             echo "| Cell | Completed/s | Ack p50 (us) | p99 | p99.9 | Stopped by |"
             echo "|---|---|---|---|---|---|"
             jq -r '.cells[] | "| \(.name) | \(.completedPerSecond) | \(.ackLatency.p50Us // "-") | \(.ackLatency.p99Us // "-") | \(.ackLatency.p999Us // "-") | \(.stoppedBy // "-") |"' "$RESULTS_DIR/baseline.json"
+            if jq -e 'any(.cells[]; .diagnostics != null)' "$RESULTS_DIR/baseline.json" > /dev/null; then
+              echo ""
+              echo "#### Diagnostics (leader or single WAL)"
+              echo ""
+              echo "| Cell | Append cycles/ack | Entries/append cycle | Flush cycles/ack | Entries/flush cycle | Persist ms/ack | Max round gap (ms) | Device flushes/ack | Transitions |"
+              echo "|---|---|---|---|---|---|---|---|---|"
+              jq -r '.cells[] | select(.diagnostics != null) | . as $c
+                | ([.nodes[] | select(.role == "leader" or .role == "single") | .node][0] // 0) as $l
+                | [$c.diagnostics.persistCycles[] | select(.node == $l)] as $pc
+                | ([$pc[] | select(.cause == "append")][0] // {}) as $a
+                | ([$pc[] | select(.cause == "flush")][0] // {}) as $f
+                | "| \($c.name) | \($a.cyclesPerAck // "-") | \($a.entriesPerCycle // "-") | \($f.cyclesPerAck // "-") | \($f.entriesPerCycle // "-") | \((($a.msPerAck // 0) + ($f.msPerAck // 0)) * 1000 | round / 1000) | \($c.diagnostics.raft.maxBroadcastGapMs // "-") | \($c.diagnostics.io.deviceFlushesPerAck // "-") | \([$c.diagnostics.raft.nodes[]? | .toLeader + .toCandidate + .toFollower] | add // "-") |"' "$RESULTS_DIR/baseline.json"
+            fi
+            if jq -e '.repeats != null' "$RESULTS_DIR/baseline.json" > /dev/null; then
+              echo ""
+              echo "#### Run-to-run spread"
+              echo ""
+              echo "| Cell | Rounds | Completed/s median (CV %, range %) | Ack p50 us median (CV %) | Ack p99 us median (CV %, range %) |"
+              echo "|---|---|---|---|---|"
+              jq -r '.repeats[] | "| \(.cell) | \(.rounds) | \(.completedPerSecond.median) (\(.completedPerSecond.cvPercent), \(.completedPerSecond.rangePercent)) | \(.ackP50Us.median) (\(.ackP50Us.cvPercent)) | \(.ackP99Us.median) (\(.ackP99Us.cvPercent), \(.ackP99Us.rangePercent)) |"' "$RESULTS_DIR/baseline.json"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report

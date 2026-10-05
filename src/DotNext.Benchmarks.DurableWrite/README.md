@@ -44,7 +44,10 @@ CI (`.github/workflows/durable-write-load.yml`):
 - **smoke**, on pull requests and pushes to `fork` that touch the WAL, Raft or the tool: the smoke profile, then the
   three injections, each of which must exit 3 with the expected oracle. 15-minute job timeout.
 - **baseline**, `workflow_dispatch` only, with inputs `os`, `profile` and `memory`: uploads the JSON report and the
-  console log as an artifact, and writes a summary table to the step summary. 60-minute job timeout.
+  console log as an artifact, and writes a summary table to the step summary. 60-minute job timeout. The optional
+  inputs `diagnostics`, `cells` and `repeat` pass `--diagnostics`, `--cells` and `--repeat` and add the breakdown
+  and spread tables to the summary; with `diagnostics` on Linux, a further step counts the durability system calls
+  per acknowledged write with `strace -c` (see [Diagnostics](#diagnostics---diagnostics---repeat---cells-123)).
 
 When either job fails, the node data kept under the runner's temp directory is uploaded as a separate artifact
 (5-day retention).
@@ -128,8 +131,9 @@ dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile
 dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile full --cells raft-closed-3v-128B --repeat 5 --out spread.json
 ```
 
-- `--cells <substring>[,<substring>...]` keeps only the cells whose name contains one of the substrings. An open-loop
-  cell still needs its closed-loop reference cell in the same run.
+- `--cells <text>[,<text>...]` keeps only the cells whose name contains one of the texts as whole dash-separated
+  parts: `3v-128B` selects every 3-voter 128-byte cell, and `wal-append-128B-c1` does not select
+  `wal-append-128B-c16-private`. An open-loop cell still needs its closed-loop reference cell in the same run.
 - `--repeat <n>` (1 to 20) runs the selected matrix n times, round by round, and names each round's cells with a
   suffix `-r1` to `-rn`. `repeats[]` in the JSON gives, for each cell, the min, median, max, mean, coefficient of
   variation and range (as a percentage of the median) of the throughput, the ack p50 and p99, and the leader

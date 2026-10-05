@@ -79,7 +79,7 @@ internal static class Profiles
 
         IReadOnlyList<CellSpec> cells = BuildMatrix(options);
         if (options.Cells is { } filter)
-            cells = cells.Where(c => filter.Any(f => c.Name.Contains(f, StringComparison.Ordinal))).ToList();
+            cells = cells.Where(c => filter.Any(f => MatchesSegments(c.Name, f))).ToList();
 
         if (options.Repeat <= 1)
             return cells;
@@ -93,6 +93,21 @@ internal static class Profiles
         }
 
         return rounds;
+    }
+
+    // The filter must cover whole dash-separated segments of the name, so that "c1" does not select "c16".
+    internal static bool MatchesSegments(string name, string filter)
+    {
+        for (var start = name.IndexOf(filter, StringComparison.Ordinal);
+             start >= 0;
+             start = name.IndexOf(filter, start + 1, StringComparison.Ordinal))
+        {
+            var end = start + filter.Length;
+            if ((start is 0 || name[start - 1] is '-') && (end == name.Length || name[end] is '-'))
+                return true;
+        }
+
+        return false;
     }
 
     private static List<CellSpec> BuildMatrix(RunOptions options)

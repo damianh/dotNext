@@ -225,17 +225,21 @@ static void PrintCell(CellReport cell)
 
     if (cell.Diagnostics is { } diagnostics)
     {
-        foreach (var cycle in diagnostics.PersistCycles.Where(static c => c.Node is 0))
+        // The leader (or the single WAL) carries the client path; the followers show the group commit of replication.
+        var roles = cell.Nodes.ToDictionary(static n => n.Node, static n => n.Role);
+        var shown = cell.Nodes.FirstOrDefault(static n => n.Role is "leader" or "single")?.Node ?? 0;
+        foreach (var cycle in diagnostics.PersistCycles)
         {
+            var role = roles.GetValueOrDefault(cycle.Node, "?");
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"    node 0 {cycle.Cause,-8} cycles {cycle.Cycles,7} ({cycle.CyclesPerAck:F2}/ack, {cycle.EntriesPerCycle?.ToString("F1", CultureInfo.InvariantCulture) ?? "-"} entries/cycle) {cycle.MsPerAck:F3} ms/ack: ")
+                $"    node {cycle.Node} {role,-15} {cycle.Cause,-6} cycles {cycle.Cycles,7} ({cycle.CyclesPerAck:F2}/ack, {cycle.EntriesPerCycle?.ToString("F1", CultureInfo.InvariantCulture) ?? "-"} entries/cycle) {cycle.MsPerAck:F3} ms/ack: ")
                 + string.Join(", ", cycle.Phases.Select(static p => string.Create(CultureInfo.InvariantCulture, $"{p.Phase} {Us(p.Duration.P50Us)}"))));
         }
 
-        foreach (var l in diagnostics.Locks.Where(static l => l.Node is 0 && l.Wait.Count > 0L))
+        foreach (var l in diagnostics.Locks.Where(l => l.Node == shown && l.Wait.Count > 0L))
         {
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"    node 0 lock {l.Lock,-12} {l.Cause,-8} n {l.Wait.Count,7} wait p50 {Us(l.Wait.P50Us),8} p99 {Us(l.Wait.P99Us),8} max {Us(l.Wait.MaxUs),8}")
+                $"    node {shown} lock {l.Lock,-12} {l.Cause,-8} n {l.Wait.Count,7} wait p50 {Us(l.Wait.P50Us),8} p99 {Us(l.Wait.P99Us),8} max {Us(l.Wait.MaxUs),8}")
                 + (l.Hold is { } hold ? string.Create(CultureInfo.InvariantCulture, $" hold p50 {Us(hold.P50Us),8} p99 {Us(hold.P99Us),8}") : string.Empty));
         }
 

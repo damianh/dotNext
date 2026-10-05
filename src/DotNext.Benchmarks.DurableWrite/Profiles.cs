@@ -156,12 +156,16 @@ internal static class Profiles
                 });
             }
 
-            foreach (var v in full ? [3, 5] : new[] { 3 })
+            // A slow follower needs a leader and another follower, so it runs on three voters or more. The voters, the
+            // smallest entry size and the highest client count follow the options; the snapshot interval and the relay do not.
+            var slowVoters = options.Voters is null ? (full ? [3, 5] : [3]) : voters.Where(static v => v >= 3).Distinct().Order().ToArray();
+            var slowSize = sizes.Min();
+            var slowClients = options.Concurrency?.Max() ?? (full ? 16 : 8);
+            foreach (var v in slowVoters)
             {
-                var clients = full ? 16 : 8;
-                cells.Add(new($"slow-follower-{v}v-{SizeName(Small)}-c{clients}", CellKind.SlowFollower)
+                cells.Add(new($"slow-follower-{v}v-{SizeName(slowSize)}-c{slowClients}", CellKind.SlowFollower)
                 {
-                    Voters = v, EntrySize = Small, Concurrency = clients, Warmup = TimeSpan.Zero,
+                    Voters = v, EntrySize = slowSize, Concurrency = slowClients, Warmup = TimeSpan.Zero,
                     Duration = options.Duration ?? (full ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(10)),
                     SnapshotInterval = full ? 500L : 200L, Memory = memory,
                 });

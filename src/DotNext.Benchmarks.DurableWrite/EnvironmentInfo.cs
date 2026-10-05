@@ -171,17 +171,8 @@ internal sealed class EnvironmentInfo
             => mountPoint is "/" || path.Equals(mountPoint, StringComparison.Ordinal) || path.StartsWith(mountPoint + "/", StringComparison.Ordinal);
     }
 
-    internal static long? GetFreeBytes(string directory)
-    {
-        try
-        {
-            return new DriveInfo(Path.GetPathRoot(Path.GetFullPath(directory))!).AvailableFreeSpace;
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            return null;
-        }
-    }
+    // The free space of the mount that holds the directory, which on Linux is not necessarily the root file system.
+    internal static long? GetFreeBytes(string directory) => GetFileSystem(directory).Free;
 }
 
 /// <summary>

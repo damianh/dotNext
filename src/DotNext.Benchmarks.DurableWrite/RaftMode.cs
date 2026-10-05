@@ -77,6 +77,10 @@ internal static class RaftMode
             run.CompleteLoad(probe);
             run.Report.LeaderChanges = nodes.Sum(static n => n.LeaderClaims);
 
+            // A slow follower must have fallen behind the compacted log and installed a snapshot while under load.
+            var slowNode = nodes.FirstOrDefault(static n => n.Relay is not null);
+            var slowRestores = slowNode?.StateMachine?.Restores;
+
             leader = FindLeader(nodes) ?? leader;
             await CatchUpAsync(run, nodes, leader).ConfigureAwait(false);
 
@@ -84,6 +88,19 @@ internal static class RaftMode
                 OnlineHistoryChecker.ApplyOrder, OnlineHistoryChecker.PrefixAgreement,
                 OnlineHistoryChecker.AcknowledgedWrites, OnlineHistoryChecker.ElectionSafety]);
             run.Checker.CheckFinal(nodes.Select(static n => n.StateMachine?.History).ToArray());
+
+            // What each log applied past the end of its history, read while the nodes still run.
+            var applied = new (IReadOnlyList<AppliedEntry> History, long Index, IReadOnlyList<AppliedEntry> Tail)?[nodes.Length];
+            foreach (var node in nodes)
+            {
+                if (node is { Wal: { } wal, StateMachine: { } stateMachine })
+                {
+                    var appliedIndex = wal.LastAppliedIndex;
+                    var history = stateMachine.History;
+                    applied[node.Id] = (history, appliedIndex,
+                        await NodeStorage.ReadAsync(wal, history.Count + 1L, appliedIndex, run.RunToken).ConfigureAwait(false));
+                }
+            }
 
             await StopAsync(nodes).ConfigureAwait(false);
 
@@ -96,7 +113,12 @@ internal static class RaftMode
             }
 
             run.CheckDurability(durableLogs);
-            run.CheckFlushCoverage(nodes.Where(static n => n.Durable).Select(static n => n.Id));
+            foreach (var node in nodes)
+            {
+                if (applied[node.Id] is { } state)
+                    run.Reconcile(node.Id, state.History, state.Index, state.Tail, node.Durable ? durableLogs[node.Id] : null);
+            }
+
             foreach (var node in nodes)
             {
                 var report = run.AddNode(node.Id, node.Role(leader), node.Durable, node.Durable ? node.Root : null, node.LastIndex,
@@ -105,6 +127,13 @@ internal static class RaftMode
             }
 
             run.CompleteWriteAmplification(leader.Id);
+
+            // Checked last, so a run that also broke a safety oracle reports the violation.
+            if (slowNode is not null && slowRestores is 0)
+            {
+                throw new LivenessFailureException(
+                    $"slow follower node {slowNode.Id} installed no snapshot during the load window; the cell did not exercise snapshot transfer");
+            }
         }
         finally
         {

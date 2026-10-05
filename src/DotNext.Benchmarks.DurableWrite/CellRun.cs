@@ -48,6 +48,7 @@ internal sealed class CellRun : IDisposable
             Concurrency = spec.Concurrency,
             BatchSize = spec.BatchSize,
             Memory = Profiles.MemoryName(spec.Memory) + (spec.NoBuffering ? "+nobuffering" : string.Empty),
+            NoBuffering = spec.NoBuffering,
             WarmupSeconds = spec.Warmup.TotalSeconds,
             DurationSeconds = spec.Duration.TotalSeconds,
             SnapshotInterval = spec.SnapshotInterval is long.MaxValue ? 0L : spec.SnapshotInterval,
@@ -286,22 +287,21 @@ internal sealed class CellRun : IDisposable
     }
 
     /// <summary>
-    /// Requires that every entry a durable node appended went through the flush path.
+    /// Reconciles a node's history with the entries its log applied, and with the log it recovered after the run.
     /// </summary>
-    internal void CheckFlushCoverage(IEnumerable<int> durableNodes)
+    /// <seealso cref="HistoryReconciliation"/>
+    internal void Reconcile(int node, IReadOnlyList<AppliedEntry> history, long appliedIndex, IReadOnlyList<AppliedEntry> walTail,
+        IReadOnlyList<AppliedEntry>? recovered)
     {
-        Report.Oracles.Checked.Add(OnlineHistoryChecker.FlushCoverage);
-        foreach (var node in durableNodes)
-        {
-            var counters = Meter[node];
-            var appended = counters.Read(ref counters.Appended);
-            var flushed = counters.Read(ref counters.Flushed);
-            if (flushed < appended)
-            {
-                Checker.Report(new SafetyViolationException(OnlineHistoryChecker.FlushCoverage,
-                    $"node {node} appended {appended} entries but flushed only {flushed}"));
-            }
-        }
+        if (!Report.Oracles.Checked.Contains(OnlineHistoryChecker.Reconciliation))
+            Report.Oracles.Checked.Add(OnlineHistoryChecker.Reconciliation);
+
+        Report.Oracles.ReconciledEntries += history.Count;
+        if (HistoryReconciliation.CheckApplied(node, history, appliedIndex, walTail) is { } applied)
+            Checker.Report(applied);
+
+        if (recovered is not null && HistoryReconciliation.CheckRecovered(node, history, recovered) is { } durable)
+            Checker.Report(durable);
     }
 
     /// <summary>

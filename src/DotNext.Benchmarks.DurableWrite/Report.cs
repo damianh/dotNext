@@ -3,7 +3,7 @@ namespace DotNext.Benchmarks.DurableWrite;
 // The JSON report. Property names are serialized in camelCase; the schema version changes when a field changes meaning.
 internal sealed class RunReport
 {
-    public int SchemaVersion => 1;
+    public int SchemaVersion => 2;
     public string Tool => "DotNext.Benchmarks.DurableWrite";
     public required DateTimeOffset StartedUtc { get; init; }
     public DateTimeOffset? FinishedUtc { get; set; }
@@ -17,6 +17,9 @@ internal sealed class RunReport
     public List<CellReport> Cells { get; } = [];
     public ViolationReport? Violation { get; set; }
     public string? LivenessFailure { get; set; }
+
+    // Why the matrix was not run in full (exit code 5): the run deadline, Ctrl+C, or a cell skipped for free disk.
+    public string? Incomplete { get; set; }
     public int ExitCode { get; set; }
 }
 
@@ -28,13 +31,14 @@ internal sealed class RunBounds
 }
 
 /// <summary>
-/// The write-ahead log settings that make an acknowledgment durable, as used by every cell.
+/// The write-ahead log settings that make an acknowledgment durable, as used by every cell. Unbuffered I/O differs
+/// between cells, so it is reported per cell as <see cref="CellReport.NoBuffering"/>.
 /// </summary>
 internal sealed class DurabilitySettings
 {
     public required string FlushInterval { get; init; }
     public required int ChunkSize { get; init; }
-    public required bool NoBuffering { get; init; }
+    public required string NoBuffering { get; init; }
     public required string HashAlgorithm { get; init; }
     public required string AppendPersistence { get; init; }
     public required string Acknowledgment { get; init; }
@@ -56,6 +60,7 @@ internal sealed class CellReport
     public required int Concurrency { get; init; }
     public required int BatchSize { get; init; }
     public required string Memory { get; init; }
+    public required bool NoBuffering { get; init; }
     public double? OfferedRatePerSecond { get; set; }
     public string? OfferedRateReference { get; set; }
     public required double WarmupSeconds { get; init; }
@@ -154,6 +159,10 @@ internal sealed class NodeReport
     public int Restores { get; set; }
     public long RecoveredEntries { get; set; }
     public long? RelayedBytes { get; set; }
+
+    // Entries the WAL counted as flushed (append persists, commit checkpoints and snapshots together) against
+    // entries appended. Informational: the counter does not tell the flush causes apart, so it is not an oracle.
+    public double FlushCoverage => Appended > 0L ? Math.Round((double)Flushed / Appended, 3) : 0D;
 }
 
 internal sealed class OracleReport
@@ -161,5 +170,6 @@ internal sealed class OracleReport
     public List<string> Checked { get; } = [];
     public long AcknowledgedChecked { get; set; }
     public long DurableEntriesAudited { get; set; }
+    public long ReconciledEntries { get; set; }
     public string? Violation { get; set; }
 }

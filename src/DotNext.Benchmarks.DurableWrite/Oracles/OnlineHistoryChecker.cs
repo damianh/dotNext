@@ -28,7 +28,7 @@ internal sealed class OnlineHistoryChecker
     internal const string AcknowledgedWrites = "acknowledged writes";
     internal const string ElectionSafety = "election safety";
     internal const string Durability = "durability";
-    internal const string FlushCoverage = "flush coverage";
+    internal const string Reconciliation = "history reconciliation";
 
     private readonly Lock sync = new();
     private readonly SimulationHistory history = new();

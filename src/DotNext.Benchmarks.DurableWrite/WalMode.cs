@@ -22,7 +22,8 @@ internal static class WalMode
         var stateMachine = NodeStorage.CreateStateMachine(root, Node, spec.SnapshotInterval, run.Checker, timeline: null);
         await stateMachine.RestoreAsync(run.RunToken).ConfigureAwait(false);
         var wal = new WriteAheadLog(NodeStorage.CreateOptions(root, spec.Memory, spec.NoBuffering, Node), stateMachine);
-        long lastIndex;
+        long lastIndex, appliedIndex;
+        IReadOnlyList<AppliedEntry> history, walTail;
         try
         {
             await wal.InitializeAsync(run.RunToken).ConfigureAwait(false);
@@ -46,6 +47,9 @@ internal static class WalMode
             }
 
             lastIndex = wal.LastEntryIndex;
+            appliedIndex = wal.LastAppliedIndex;
+            history = stateMachine.History;
+            walTail = await NodeStorage.ReadAsync(wal, history.Count + 1L, appliedIndex, run.RunToken).ConfigureAwait(false);
         }
         finally
         {
@@ -57,11 +61,11 @@ internal static class WalMode
 
         var checker = run.Checker;
         run.Report.Oracles.Checked.AddRange([OnlineHistoryChecker.ApplyOrder, OnlineHistoryChecker.AcknowledgedWrites, OnlineHistoryChecker.PrefixAgreement]);
-        checker.CheckFinal([stateMachine.History]);
-        run.CheckFlushCoverage([Node]);
+        checker.CheckFinal([history]);
 
         var durable = await NodeStorage.RecoverAsync(root, spec.Memory, spec.NoBuffering, Node, RecoveryTimeout, run.RunToken).ConfigureAwait(false);
         run.CheckDurability([durable]);
+        run.Reconcile(Node, history, appliedIndex, walTail, durable);
         run.AddNode(Node, "single", durable: true, root, lastIndex, stateMachine, durable.Count);
         run.CompleteWriteAmplification(Node);
     }

@@ -216,6 +216,69 @@ public sealed class DurableWriteOracleTests : Test
     }
 
     [Fact]
+    public static void ReconciliationAcceptsATailOfNoOps()
+    {
+        Null(HistoryReconciliation.CheckApplied(0, Log(A, B), 4L, [AppliedEntry.CreateSkipped(3L), AppliedEntry.CreateSkipped(4L)]));
+        Null(HistoryReconciliation.CheckApplied(0, Log(A, B), 2L, []));
+    }
+
+    [Fact]
+    public static void ReconciliationRejectsADroppedLastEntry()
+    {
+        // The state machine lost the last write it was given: no later entry pads the gap, so only the log shows it.
+        var failure = HistoryReconciliation.CheckApplied(0, Log(A), 2L, [Entry(2L, B)]);
+
+        Equal(OnlineHistoryChecker.Reconciliation, failure?.Oracle);
+    }
+
+    [Fact]
+    public static void ReconciliationRejectsAnUnreadableTail()
+    {
+        var failure = HistoryReconciliation.CheckApplied(0, Log(A), 3L, [AppliedEntry.CreateSkipped(2L)]);
+
+        Equal(OnlineHistoryChecker.Reconciliation, failure?.Oracle);
+    }
+
+    [Fact]
+    public static void ReconciliationAcceptsAMatchingRecoveredLog()
+    {
+        Null(HistoryReconciliation.CheckRecovered(0, Log(A, null, B), Log(A, null, B, C)));
+    }
+
+    [Fact]
+    public static void ReconciliationRejectsAShorterRecoveredLog()
+    {
+        var failure = HistoryReconciliation.CheckRecovered(0, Log(A, B), Log(A));
+
+        Equal(OnlineHistoryChecker.Reconciliation, failure?.Oracle);
+    }
+
+    [Fact]
+    public static void ReconciliationRejectsADifferentRecoveredWrite()
+    {
+        var failure = HistoryReconciliation.CheckRecovered(0, Log(A, B), Log(A, C));
+
+        Equal(OnlineHistoryChecker.Reconciliation, failure?.Oracle);
+    }
+
+    [Fact]
+    public static void ReconciliationRejectsADifferentRecoveredTerm()
+    {
+        var failure = HistoryReconciliation.CheckRecovered(0, [Entry(1L, A, term: 2L)], [Entry(1L, A, term: 3L)]);
+
+        Equal(OnlineHistoryChecker.Reconciliation, failure?.Oracle);
+    }
+
+    [Fact]
+    public static void ReconciliationRejectsAWriteRecoveredWhereNoneWasApplied()
+    {
+        // The state machine skipped index 2 although the log holds a write there: the write was dropped and padded.
+        var failure = HistoryReconciliation.CheckRecovered(0, Log(A, null, C), Log(A, B, C));
+
+        Equal(OnlineHistoryChecker.Reconciliation, failure?.Oracle);
+    }
+
+    [Fact]
     public static void WriteKeyRoundTrips()
     {
         Span<byte> payload = stackalloc byte[WriteKey.HeaderSize + 3];

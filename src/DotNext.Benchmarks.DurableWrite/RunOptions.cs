@@ -68,16 +68,17 @@ internal sealed class RunOptions
           --work-dir <dir>              Where node data is written (default: %TEMP%/dotnext-durable-write)
           --keep-data                   Do not delete node data after each cell
           --memory shared|private       WAL memory management strategy (default: shared)
-          --voters 1,3,5                Override the replicated cluster sizes
-          --sizes 128,16384             Override the entry sizes, in bytes
-          --concurrency 1,16,64         Override the closed-loop client counts
+          --voters 1,3,5                Override the replicated cluster sizes (slow-follower cells: those of 3 or more)
+          --sizes 128,16384             Override the entry sizes, in bytes (slow-follower cells: the smallest)
+          --concurrency 1,16,64         Override the closed-loop client counts (slow-follower cells: the highest)
           --duration <seconds>          Override the measured duration of each cell
           --warmup <seconds>            Override the warmup of each cell
           --max-entries <n>             Stop a cell after n acknowledged writes (default: 200000)
           --max-duration <minutes>      Abort the whole run after this time (default: 30)
           --max-payload-gib <n>         Stop a cell after n GiB of acknowledged payload (default: 2)
 
-        Exit codes: 0 ok, 1 unexpected error, 2 usage, 3 safety oracle violation, 4 liveness failure.
+        Exit codes: 0 ok, 1 unexpected error, 2 usage, 3 safety oracle violation, 4 liveness failure,
+        5 incomplete (--max-duration reached, or a cell skipped for lack of disk space).
         """;
 
     internal static RunOptions Parse(string[] args)

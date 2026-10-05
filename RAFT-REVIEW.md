@@ -1104,32 +1104,39 @@ cells per size). The acknowledgment is durable because `WriteAheadLog.PersistApp
 pages, both directories and the checkpoint before it publishes `LastEntryIndex`, under `persistenceLock`. A follower replies
 only after that, and `ReplicateAsync` returns after a majority replied and the leader applied. Three checks show the numbers
 are not buffered writes: every node is reopened after the cell and a majority must recover every acknowledged write at its
-index (durability oracle); `entries-flush-count >= entries-append-count` on every durable node (flush coverage); and an
-fsync probe on the work volume marks a cell `suspectBuffered` if its durable p50 is below half a 4 KiB `Flush(true)`.
+index (durability oracle); each node's recovered log must hold every entry its own state machine applied, and every index
+its log applied past the end of the reported history must be a no-op (history reconciliation, which also catches a silently
+lost last apply that no later callback exposes); and an
+fsync probe on the work volume marks a cell `suspectBuffered` if its durable p50 is below half a 4 KiB `Flush(true)`. The
+per-node flush/append ratio is reported for information only: the WAL meter counts the background flusher's flushes too,
+so it cannot prove that each append was flushed.
 
 **Oracles.** An online checker sees every apply and snapshot install on every node during the workload: apply order
 (contiguous, no duplicates, per-client order), committed-prefix agreement, acknowledged writes applied, and election
 safety through `SimulationHistory`. At the end, `SimulationHistory` checks the final prefixes and acknowledged writes again.
 The state machine snapshot carries the whole applied history, so the oracles hold through compaction and `InstallSnapshot`,
 which the #56 stage 1 simulation could not cover. The slow-follower cells (5 ms relay delay, a 5 s pause at 30% of the run,
-a snapshot every 200 or 500 entries) make the follower install 4 to 9 snapshots while the load continues.
+a snapshot every 200 or 500 entries) make the follower install 4 to 9 snapshots while the load continues; a slow-follower
+cell in which the follower installs no snapshot is a liveness failure (exit 4), since it did not exercise compaction.
 
 **Checker validation.** `--inject` runs a 3-voter cell with a test-only failure, and CI requires exit code 3 with the
 expected oracle. Dropping the apply of index 100 on a follower is caught by apply order (`node 1 skipped index 100, which
 node 0 applied as 'm0-c4-s13'`). Applying index 100 after index 101 is caught by committed-prefix agreement. Followers that
 acknowledge without writing (`ConsensusOnlyState`, the "skip the flush before the ack" case) are caught by the durability oracle
 (`'m0-c7-s1' was acknowledged by node 0 at index 5, but only 1 of 3 voters recovered it from storage; a majority is 2`).
-`DurableWriteOracleTests` (18 tests) checks each oracle against synthetic good and bad histories.
+`DurableWriteOracleTests` (26 tests) checks each oracle against synthetic good and bad histories.
 
 **Bounds.** Fixed cells and durations; every cell also stops at 200,000 acknowledged writes or 2 GiB of payload; the run
-stops at 30 minutes. Cells are skipped below 2 GiB free and stopped below 1 GiB. Data is deleted after each passing cell.
+stops at 30 minutes. Cells are skipped below 2 GiB free on the work directory's volume and stopped below 1 GiB; a run cut
+short by either bound exits 5 (incomplete) rather than 0. Data is deleted after each passing cell, and CI uploads it as an
+artifact when a job fails.
 Loopback only, no privileges, no cache dropping. No latency, throughput or memory thresholds.
 
 **Baseline** (2026-10-05, revision 3dd6faf5; i9-14900K x32, 128 GiB, Windows 10.0.26300, NTFS on a local fixed disk,
 .NET 10.0.12 workstation concurrent GC, shared memory). Raw report:
 `src/DotNext.Benchmarks.DurableWrite/baselines/windows-i9-14900K-2026-10-05.json`; full table and a second run for
 spread in the tool's README. The fsync probe measured a flushed 4 KiB write at p50 497 µs and p99 987 µs, against 5 µs
-buffered. Every oracle passed in all 37 cells; no cell was `suspectBuffered`; CPU stayed at or below 0.47 cores, so the
+buffered. Every oracle passed in all 37 cells (the report predates the history reconciliation); no cell was `suspectBuffered`; CPU stayed at or below 0.47 cores, so the
 cells are I/O-bound.
 
 | Cell | acked/s | ack p50 | ack p99 | ack p99.9 |

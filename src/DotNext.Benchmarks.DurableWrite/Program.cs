@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 using DotNext.Benchmarks.DurableWrite;
 using DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
-const int ExitOk = 0, ExitError = 1, ExitUsage = 2, ExitViolation = 3, ExitLiveness = 4;
+const int ExitOk = 0, ExitError = 1, ExitUsage = 2, ExitViolation = 3, ExitLiveness = 4, ExitIncomplete = 5;
 const long MinFreeBytesPerCell = 2L << 30;
 
 RunOptions options;
@@ -38,7 +38,7 @@ var report = new RunReport
         MaxPayloadBytesPerCell = options.MaxPayloadBytes,
         MaxDurationMinutes = options.MaxDuration.TotalMinutes,
     },
-    Durability = NodeStorage.Describe(noBuffering: false),
+    Durability = NodeStorage.Describe(),
     Environment = EnvironmentInfo.Collect(runDirectory),
 };
 
@@ -67,8 +67,13 @@ try
 
     foreach (var spec in cells)
     {
+        // The matrix was cut short (--max-duration or Ctrl+C): the run did not check what it was asked to.
         if (runTimeout.IsCancellationRequested)
+        {
+            report.Incomplete = $"max duration reached before {spec.Name}; {cells.Count - report.Cells.Count} of {cells.Count} cells not run";
+            exitCode = ExitIncomplete;
             break;
+        }
 
         var cellRoot = Path.Combine(runDirectory, spec.Name);
         using var run = new CellRun(spec, options, cellRoot, runTimeout.Token);
@@ -77,6 +82,7 @@ try
         if (EnvironmentInfo.GetFreeBytes(runDirectory) is { } free && free < MinFreeBytesPerCell)
         {
             run.Report.StoppedBy = "skipped: free disk";
+            report.Incomplete ??= $"{spec.Name} skipped: {free / (1024 * 1024)} MiB free";
             Console.WriteLine($"{spec.Name}: skipped, {free / (1024 * 1024)} MiB free");
             continue;
         }
@@ -120,6 +126,13 @@ try
             }
         }
 
+        // A cell cut short by the run deadline skipped some of its final checks.
+        if (run.Report.StoppedBy is "max-duration")
+        {
+            report.Incomplete ??= $"max duration reached during {spec.Name}; its final checks did not all run";
+            exitCode = exitCode is ExitOk ? ExitIncomplete : exitCode;
+        }
+
         PrintCell(run.Report);
 
         // Keep the data of a failed cell for diagnosis.
@@ -136,6 +149,9 @@ catch (Exception e)
     exitCode = exitCode is ExitOk ? ExitError : exitCode;
 }
 
+if (exitCode is ExitOk && report.Incomplete is not null)
+    exitCode = ExitIncomplete;
+
 report.FinishedUtc = DateTimeOffset.UtcNow;
 report.ExitCode = exitCode;
 Console.WriteLine();
@@ -144,6 +160,7 @@ Console.WriteLine(exitCode switch
     ExitOk => "OK: every oracle passed",
     ExitViolation => $"SAFETY VIOLATION in {report.Violation?.Cell}: {report.Violation?.Message}",
     ExitLiveness => $"LIVENESS FAILURE: {report.LivenessFailure}",
+    ExitIncomplete => $"INCOMPLETE: {report.Incomplete}",
     _ => "ERROR",
 });
 

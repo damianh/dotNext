@@ -139,6 +139,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # The node data of a failed cell is kept for diagnosis: the logs, snapshots and state-machine files.
+      - name: Upload node data
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: durable-write-smoke-data-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/durable-write/
+          if-no-files-found: ignore
+          retention-days: 5
+
   baseline:
     name: Baseline (manual)
     if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -198,3 +208,12 @@ jobs:
           path: TestResults/durable-write/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload node data
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: durable-write-baseline-data-${{ inputs.os }}-${{ inputs.profile }}-${{ inputs.memory }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/durable-write/
+          if-no-files-found: ignore
+          retention-days: 5

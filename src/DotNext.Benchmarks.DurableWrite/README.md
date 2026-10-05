@@ -28,11 +28,15 @@ dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --inject 
 ```
 
 Run `--help` for every option. Useful ones: `--mode wal|raft`, `--voters 3`, `--sizes 128,16384`,
-`--concurrency 1,16`, `--duration <s>`, `--memory shared|private`, `--work-dir <dir>`, `--keep-data`.
+`--concurrency 1,16`, `--duration <s>`, `--memory shared|private`, `--work-dir <dir>`, `--keep-data`,
+`--max-duration <minutes>`. `--voters`, `--sizes` and `--concurrency` also shape the slow-follower cells: they run on
+the given cluster sizes of three or more, with the smallest entry size and the highest client count. `--duration`
+also sets the slow-follower window; it must be long enough for the follower to fall behind a snapshot (see below).
 
 Exit codes: `0` every oracle passed, `1` unexpected error, `2` usage, `3` safety oracle violation, `4` liveness
-failure (no leader, or a node did not catch up within the bound). On a non-zero exit the node data is kept for
-diagnosis.
+failure (no leader, a node did not catch up within the bound, or the slow follower installed no snapshot), `5`
+incomplete (`--max-duration` was reached before every cell ran its final checks, or a cell was skipped for lack of
+disk space; the report then has `incomplete` set). On a non-zero exit the node data is kept for diagnosis.
 
 CI (`.github/workflows/durable-write-load.yml`):
 
@@ -40,6 +44,9 @@ CI (`.github/workflows/durable-write-load.yml`):
   three injections, each of which must exit 3 with the expected oracle. 15-minute job timeout.
 - **baseline**, `workflow_dispatch` only, with inputs `os`, `profile` and `memory`: uploads the JSON report and the
   console log as an artifact, and writes a summary table to the step summary. 60-minute job timeout.
+
+When either job fails, the node data kept under the runner's temp directory is uploaded as a separate artifact
+(5-day retention).
 
 ## What is measured
 
@@ -51,7 +58,7 @@ CI (`.github/workflows/durable-write-load.yml`):
 | `wal-batch` | One writer appends batches of B entries at an explicit index (`AppendAsync(ILogEntryProducer, startIndex)`, the follower's group-commit path), then commits and waits for the apply. |
 | `raft-closed` | V voters over loopback TCP, C closed-loop clients calling `RaftCluster.ReplicateAsync` on the leader. |
 | `raft-open` | Writes offered at a fixed rate, a fraction of the throughput of the busiest closed-loop cell measured in the same run. The latency is measured from the intended send time, so queueing shows up in it (no coordinated omission). In-flight writes are capped at 4,096; an offer above the cap counts as `overloaded`. |
-| `slow-follower` | V voters, frequent snapshots, and one follower behind a TCP relay that delays every chunk by 5 ms and pauses for 5 s at 30% of the run. The follower falls behind the snapshot index and must catch up through `InstallSnapshot` while the load continues. |
+| `slow-follower` | V voters, frequent snapshots, and one follower behind a TCP relay that delays every chunk by 5 ms and pauses for 5 s at 30% of the run. The follower falls behind the snapshot index and must catch up through `InstallSnapshot` while the load continues. If it installs no snapshot, the cell did not test what it is for, and the run exits 4. |
 
 | Profile | Matrix | Duration per cell |
 |---|---|---|
@@ -59,8 +66,9 @@ CI (`.github/workflows/durable-write-load.yml`):
 | `full` | wal: {128 B, 16 KiB} x ({C=1, 16, 64} + {B=16, 256} + C=16 on the other memory strategy + C=16 private with `NoBuffering`); raft: {1, 3, 5} voters x {128 B, 16 KiB} x {C=1, 16, 64}; 3-voter open loop at {50, 90, 120}%; slow follower with 3 and 5 voters at C=16. Snapshot every 5,000 entries (slow follower: 500). 37 cells. | 2 s + 10 s (wal), 5 s + 20 s (raft), 30 s (slow follower) |
 
 **Bounds.** Every cell also stops at `--max-entries` (default 200,000 acknowledged writes) or `--max-payload-gib`
-(default 2 GiB); the whole run stops at `--max-duration` (default 30 minutes). A cell is skipped when the work
-volume has less than 2 GiB free, and stopped when free space drops below 1 GiB. Node data goes under `--work-dir` (default `%TEMP%/dotnext-durable-write`) and is
+(default 2 GiB); the whole run stops at `--max-duration` (default 30 minutes) and exits 5. A cell is skipped (exit 5)
+when the volume that holds the work directory (the longest matching mount point) has less than 2 GiB free, and
+stopped when free space drops below 1 GiB. Node data goes under `--work-dir` (default `%TEMP%/dotnext-durable-write`) and is
 deleted after each cell. Only loopback ports chosen by the OS are used. The tool drops no caches and needs no
 privileges.
 
@@ -90,11 +98,18 @@ only to Debug test builds, and it bypasses serialization and sockets.
 - `writeAmplification`: payload bytes vs bytes appended by the leader and by the cluster (`entries-append-bytes`),
   and vs the length of every file under the node directories at the end (`clusterFileRatio`; this includes
   preallocated chunk space, snapshots and checkpoints, so it is high for short cells with small entries);
-- per node: appended, flushed, committed and applied counts, snapshots taken and installed, entries recovered from
-  disk after the run, and bytes through the relay.
+- per node: appended, flushed, committed and applied counts, `flushCoverage` (flushes per append, information
+  only: the WAL meter counts the background flusher's flushes too, so it cannot prove that an append was flushed),
+  snapshots taken and installed, entries recovered from disk after the run, and bytes through the relay;
+- `noBuffering`: whether the cell's write-ahead logs used unbuffered I/O.
 
 The run carries `environment` (revision, OS, CPU model and count, runtime, GC mode, filesystem and device type of the
-work directory, free space), `durability` (the WAL settings below), `bounds` and `fsyncProbe`.
+work directory, free space), `durability` (the WAL settings below), `bounds`, `fsyncProbe` and `incomplete` (why the
+run stopped early, or `null`).
+
+The JSON `schemaVersion` is 2. Version 1, used by the committed baseline report below, differs in that: it has no
+`incomplete`, `cells[].noBuffering`, `nodes[].flushCoverage` or `oracles.reconciledEntries`; `durability.noBuffering`
+was a boolean (now a description, since it varies per cell); and it listed flush coverage among the checked oracles.
 
 ## Durability
 
@@ -104,7 +119,7 @@ Every node uses a `WriteAheadLog` with:
 |---|---|---|
 | `FlushInterval` | `TimeSpan.Zero` (the default) | a commit checkpoint on every commit |
 | `MemoryManagement` | `SharedMemory` (the default), `--memory private` to switch | |
-| `NoBuffering` | `false`; one `full` cell per size uses `PrivateMemory` + `NoBuffering` | |
+| `NoBuffering` | `false`; one `full` cell per size uses `PrivateMemory` + `NoBuffering` | reported per cell |
 | `ChunkSize` | 4 MiB | the default (one system page) is too small for 16 KiB entries |
 | `HashAlgorithm` | default (none) | |
 
@@ -123,9 +138,10 @@ How the tool shows that it is not measuring buffered writes:
 1. **Durability oracle (recovery audit).** After the workload, each node is stopped and disposed. A fresh
    `WriteAheadLog` and state machine are opened on its directory, and the recovered history is read back from the
    snapshot, the replayed committed entries and the uncommitted tail. Every acknowledged write must be recovered at
-   its index, with its payload, on a majority of voters.
-2. **Flush coverage oracle.** A `MeterListener` on `DotNext.IO.WriteAheadLog`, separated per node by
-   `Options.MeasurementTags`, requires `entries-flush-count >= entries-append-count` on every durable node.
+   its index, with its payload, on a majority of voters. The `non-durable-followers` injection shows that this
+   catches acknowledgments that were never written (see [Oracle teeth](#oracle-teeth)).
+2. **History reconciliation.** Each node's recovered log must also hold every entry its own state machine applied,
+   with the same write and term at the same index (see [Oracles](#oracles)).
 3. **Device calibration (information only).** Before the cells, `fsyncProbe` times a 4 KiB write with
    `FileStream.Flush(true)` and a buffered write on the work volume. When the two are distinguishable, a cell whose
    durable latency p50 (the append latency in wal cells, the ack latency in raft cells) is below half the fsync p50 is
@@ -147,7 +163,11 @@ The history is checked **while the workload runs**. Each node's `HistoryStateMac
 | acknowledged writes | on every acknowledgment, and at the end through `SimulationHistory` | an acknowledged write that no node has applied, or that is missing from or replaced in the final prefixes |
 | election safety | on every leader change, through `SimulationHistory` | two leaders in one term |
 | durability | after the cell | an acknowledged write that a majority does not recover from disk |
-| flush coverage | after the cell | a durable node that appended entries without flushing them |
+| history reconciliation | after the cell, per node | a write the node's log applied past the end of its reported history (a silently lost last apply, which no later callback exposes); an applied index that cannot be read back; a recovered log that is shorter than the history or holds a different write or term at an applied index, or a write where the state machine applied none |
+
+`oracles.reconciledEntries` counts the applied history entries compared by the reconciliation, summed over nodes. The
+flush/append ratio per node (`flushCoverage`) is not an oracle: the WAL meter does not separate the append path's
+flushes from the background flusher's.
 
 `SimulationHistory` is the oracle class of the seeded simulation (#56 stage 1), source-linked from DotNext.Tests.
 The state machine snapshot holds the full applied history, so a node restored from a snapshot still has a gapless
@@ -183,7 +203,8 @@ Raw report: [`baselines/windows-i9-14900K-2026-10-05.json`](baselines/windows-i9
 - Intel Core i9-14900K (32 logical processors), 128 GiB RAM, Windows 10.0.26300 x64, NTFS on a local fixed disk.
 - .NET 10.0.12, workstation concurrent GC.
 - `fsyncProbe`: a flushed 4 KiB write takes p50 497 µs and p99 987 µs; a buffered one p50 5 µs (distinguishable).
-- Every oracle passed in every cell, and no cell was `suspectBuffered`. The highest CPU use in any cell was 0.47
+- Every oracle passed in every cell, and no cell was `suspectBuffered`. (The report predates schema version 2: it ran
+  the flush coverage check, since demoted to information, and not yet the history reconciliation.) The highest CPU use in any cell was 0.47
   cores, the longest GC pause total 10 ms: every cell is I/O-bound.
 
 `done/s` counts acknowledged entries (in `wal-batch` cells, entries, not batches; the latency is per batch).

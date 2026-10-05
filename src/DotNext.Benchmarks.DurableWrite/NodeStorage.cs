@@ -20,11 +20,11 @@ internal static class NodeStorage
     // The library default.
     internal static IntegrityHashAlgorithm HashAlgorithm => default;
 
-    internal static DurabilitySettings Describe(bool noBuffering) => new()
+    internal static DurabilitySettings Describe() => new()
     {
         FlushInterval = FlushInterval == TimeSpan.Zero ? "0 (commit checkpoint on every commit)" : FlushInterval.ToString(),
         ChunkSize = ChunkSize,
-        NoBuffering = noBuffering,
+        NoBuffering = "per cell (cells[].noBuffering); off unless the cell name ends in -nobuffering",
         HashAlgorithm = HashAlgorithm.ToString(),
         AppendPersistence =
             "every append flushes its data and metadata pages to the device, flushes both directories and writes the " +
@@ -109,16 +109,40 @@ internal static class NodeStorage
                     result.Add(AppliedEntry.CreateSkipped(index));
 
                 var start = result.Count + 1L;
-                if (start <= log.LastEntryIndex)
-                {
-                    using var reader = await log.ReadAsync(start, log.LastEntryIndex, token).ConfigureAwait(false);
-                    foreach (var entry in reader)
-                        result.Add(new(entry.Index, entry.Term, HistoryStateMachine.ReadKey(in entry)));
-                }
-
+                result.AddRange(await ReadAsync(log, start, log.LastEntryIndex, token).ConfigureAwait(false));
                 return result;
             }
         }
+    }
+
+    /// <summary>
+    /// Reads the entries in the given range of a log, with the write each one carries.
+    /// </summary>
+    /// <remarks>
+    /// If the range starts inside the compacted prefix, the log returns its snapshot first. The snapshot is written by the
+    /// state machine from its own history, so the indexes it covers are returned without a key.
+    /// </remarks>
+    internal static async Task<IReadOnlyList<AppliedEntry>> ReadAsync(WriteAheadLog log, long start, long end, CancellationToken token)
+    {
+        if (start > end)
+            return [];
+
+        var result = new List<AppliedEntry>();
+        using var reader = await log.ReadAsync(start, end, token).ConfigureAwait(false);
+        foreach (var entry in reader)
+        {
+            if (entry.IsSnapshot)
+            {
+                for (var index = start; index <= entry.Index; index++)
+                    result.Add(AppliedEntry.CreateSkipped(index));
+            }
+            else
+            {
+                result.Add(new(entry.Index, entry.Term, HistoryStateMachine.ReadKey(in entry)));
+            }
+        }
+
+        return result;
     }
 
     internal static void Delete(string root)

@@ -179,8 +179,12 @@ dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile
     --mode wal --cells wal-append-128B-c1 --profile full --concurrency 1
   ```
 
-  The diagnostics listener adds a few microseconds per persist cycle; the smoke matrix ran within run-to-run noise
-  with and without it.
+  The diagnostics listener only records a few timestamps per persist cycle (1.6 to 5 ms long); on Linux CI the
+  closed-loop throughput with and without `--diagnostics` differed by less than 4%, within the run-to-run spread.
+
+  The findings of the #123 investigation (the cost of one persist cycle, the absence of group commit, the lock queue
+  behind elections at overload, and the run-to-run spread) are in
+  [RAFT-REVIEW.md](../../RAFT-REVIEW.md#durable-write-latency-investigation-123).
 
 ## Durability
 

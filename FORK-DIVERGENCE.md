@@ -195,6 +195,7 @@ unchanged. The leader is not stepped down for this; it steps down only on quorum
 ## API differences
 | API | Upstream | Fork |
 |---|---|---|
+| `WriteAheadLog` diagnostics: meter `DotNext.IO.WriteAheadLog` histograms `persist-phase-duration`, `lock-wait-duration`, `lock-hold-duration`, and EventSource `DotNext-IO-WriteAheadLog` (keyword `0x1`) | absent | **added**, opt-in: nothing is measured unless a listener subscribes; no behaviour change. See [Durable-write latency investigation](RAFT-REVIEW.md#durable-write-latency-investigation-123) (#123) |
 | `WriteAheadLog.Options.FlushOnCommit` | present (6.8.0+) | **removed** |
 | `DotNext.IO.Log.ILogCompactionSupport` | removed in 6.8.0 (breaking change in a minor release) | removed too (follows upstream) |
 | `RaftCluster<TMember>.UseLogConfiguration` (protected) | absent | **added**: enables the log-derived active configuration (#49) |

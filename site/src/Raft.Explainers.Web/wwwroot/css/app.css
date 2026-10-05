@@ -929,7 +929,7 @@ dd {
 }
 
 .trace-heading h2 {
-    font-size: clamp(1.65rem, 2.2vw, 2.35rem);
+    font-size: 1.35rem;
 }
 
 .trace-heading > span {
@@ -943,6 +943,7 @@ dd {
     border: 1px solid var(--line);
     margin: 0;
     min-height: 0;
+    overflow-x: hidden;
     overflow-y: auto;
 }
 
@@ -952,9 +953,15 @@ dd {
     border-bottom: 1px solid var(--soft-line);
     display: grid;
     gap: 1.25rem;
-    grid-template-columns: 2.25rem minmax(12rem, 1fr) minmax(12rem, 1fr);
+    grid-template-columns: 2.25rem minmax(0, 1fr) minmax(0, 1fr);
     min-height: 3.5rem;
     padding: .6rem 1rem;
+}
+
+.trace-empty > div {
+    gap: .75rem;
+    min-height: 2.5rem;
+    padding: .35rem .75rem;
 }
 
 .trace-empty > div:last-child,
@@ -1005,6 +1012,8 @@ dd {
 
 .event-list code {
     justify-self: end;
+    overflow-wrap: anywhere;
+    text-align: right;
 }
 
 .implementation-note {

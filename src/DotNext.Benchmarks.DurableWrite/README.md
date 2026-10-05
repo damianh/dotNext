@@ -34,7 +34,8 @@ the given cluster sizes of three or more, with the smallest entry size and the h
 also sets the slow-follower window; it must be long enough for the follower to fall behind a snapshot (see below).
 
 Exit codes: `0` every oracle passed, `1` unexpected error, `2` usage, `3` safety oracle violation, `4` liveness
-failure (no leader, a node did not catch up within the bound, or the slow follower installed no snapshot), `5`
+failure (no leader within 30 s at startup or after the workload, a node did not catch up within the bound, or the slow
+follower installed no snapshot), `5`
 incomplete (`--max-duration` was reached before every cell ran its final checks, or a cell was skipped for lack of
 disk space; the report then has `incomplete` set). On a non-zero exit the node data is kept for diagnosis.
 

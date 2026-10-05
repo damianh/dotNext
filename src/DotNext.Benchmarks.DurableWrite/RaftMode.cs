@@ -35,7 +35,7 @@ internal static class RaftMode
         {
             await CreateNodesAsync(run, nodes).ConfigureAwait(false);
             await Task.WhenAll(nodes.Select(n => n.Cluster.StartAsync(run.RunToken))).ConfigureAwait(false);
-            var leader = await WaitForLeaderAsync(run, nodes).ConfigureAwait(false);
+            var leader = await WaitForLeaderAsync(run, nodes, "at startup").ConfigureAwait(false);
 
             if (spec.Injection is FailureInjection.DropApplied or FailureInjection.ReorderApplied)
                 nodes.First(n => n != leader && n.StateMachine is not null).StateMachine!.Arm(spec.Injection);
@@ -81,7 +81,18 @@ internal static class RaftMode
             var slowNode = nodes.FirstOrDefault(static n => n.Relay is not null);
             var slowRestores = slowNode?.StateMachine?.Restores;
 
-            leader = FindLeader(nodes) ?? leader;
+            // The catch-up target must come from a current leader: a cluster that lost leadership for good fails liveness.
+            // The final safety check runs first, so a violation is still reported over the liveness failure.
+            try
+            {
+                leader = await WaitForLeaderAsync(run, nodes, "after the workload").ConfigureAwait(false);
+            }
+            catch (LivenessFailureException)
+            {
+                run.Checker.CheckFinal(nodes.Select(static n => n.StateMachine?.History).ToArray());
+                throw;
+            }
+
             await CatchUpAsync(run, nodes, leader).ConfigureAwait(false);
 
             run.Report.Oracles.Checked.AddRange([
@@ -242,7 +253,7 @@ internal static class RaftMode
         return null;
     }
 
-    private static async Task<Node> WaitForLeaderAsync(CellRun run, Node[] nodes)
+    private static async Task<Node> WaitForLeaderAsync(CellRun run, Node[] nodes, string phase)
     {
         var deadline = Stopwatch.GetTimestamp() + (long)(ElectionTimeout.TotalSeconds * Stopwatch.Frequency);
         while (true)
@@ -251,7 +262,7 @@ internal static class RaftMode
                 return leader;
 
             if (Stopwatch.GetTimestamp() > deadline)
-                throw new LivenessFailureException($"no leader was elected within {ElectionTimeout.TotalSeconds:F0} s");
+                throw new LivenessFailureException($"no leader was elected within {ElectionTimeout.TotalSeconds:F0} s {phase}");
 
             await Task.Delay(10, run.RunToken).ConfigureAwait(false);
         }

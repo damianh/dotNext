@@ -1,0 +1,196 @@
+name: Durable-write load
+
+# The durable-write load tool (#118 stage 2): src/DotNext.Benchmarks.DurableWrite, see its README.md.
+# - smoke: on pull requests and pushes that touch the WAL, Raft or the tool. A short matrix, then each injected
+#   failure, which the oracles must catch (exit code 3). Correctness oracles only; no latency or memory thresholds.
+# - baseline: manual only. The full matrix; the JSON report is uploaded as an artifact.
+on:
+  pull_request:
+    branches: [fork]
+    paths:
+      - .github/workflows/durable-write-load.yml
+      - src/DotNext.Benchmarks.DurableWrite/**
+      - src/DotNext.Tests/Net/Cluster/Consensus/Raft/InProcess/SimulationHistory.cs
+      - src/cluster/DotNext.Net.Cluster/**
+      - src/DotNext.IO/**
+      - src/DotNext.Threading/**
+      - src/DotNext/**
+      - src/DotNext.Unsafe/**
+  push:
+    branches: [fork]
+    paths:
+      - .github/workflows/durable-write-load.yml
+      - src/DotNext.Benchmarks.DurableWrite/**
+      - src/DotNext.Tests/Net/Cluster/Consensus/Raft/InProcess/SimulationHistory.cs
+      - src/cluster/DotNext.Net.Cluster/**
+      - src/DotNext.IO/**
+      - src/DotNext.Threading/**
+      - src/DotNext/**
+      - src/DotNext.Unsafe/**
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner
+        required: true
+        default: ubuntu-24.04
+        type: choice
+        options:
+          - ubuntu-24.04
+          - windows-latest
+      profile:
+        description: Workload matrix
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - smoke
+      memory:
+        description: WAL memory management strategy
+        required: true
+        default: shared
+        type: choice
+        options:
+          - shared
+          - private
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_NOLOGO: 'true'
+  PROJECT: src/DotNext.Benchmarks.DurableWrite/DotNext.Benchmarks.DurableWrite.csproj
+  RESULTS_DIR: TestResults/durable-write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  smoke:
+    name: Smoke and oracle teeth
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build "$PROJECT" --configuration Release
+
+      - name: Smoke run
+        timeout-minutes: 8
+        run: |
+          set -o pipefail
+          mkdir -p "$RESULTS_DIR"
+          dotnet run --project "$PROJECT" --configuration Release --no-build -- \
+            --profile smoke --max-duration 6 --work-dir "$RUNNER_TEMP/durable-write" \
+            --out "$RESULTS_DIR/smoke.json" 2>&1 | tee "$RESULTS_DIR/smoke.log"
+
+      # Each injected failure must be reported by the named oracle, with exit code 3.
+      - name: Injected failures are caught
+        timeout-minutes: 4
+        run: |
+          check() {
+            local inject="$1" expected="$2" code=0
+            dotnet run --project "$PROJECT" --configuration Release --no-build -- \
+              --inject "$inject" --work-dir "$RUNNER_TEMP/durable-write" \
+              --out "$RESULTS_DIR/inject-$inject.json" > "$RESULTS_DIR/inject-$inject.log" 2>&1 || code=$?
+            tail -n 4 "$RESULTS_DIR/inject-$inject.log"
+            local oracle
+            oracle=$(jq -r '.violation.oracle // "none"' "$RESULTS_DIR/inject-$inject.json" 2>/dev/null || echo "no report")
+            if [ "$code" -ne 3 ] || ! grep -qxE "$expected" <<< "$oracle"; then
+              echo "::error title=Oracle missed an injected failure::--inject $inject exited with $code and oracle '$oracle'; expected exit 3 and oracle matching '$expected'"
+              return 1
+            fi
+            echo "| \`$inject\` | $oracle | $(jq -r '.violation.message' "$RESULTS_DIR/inject-$inject.json") |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          {
+            echo "### Injected failures"
+            echo ""
+            echo "| Injection | Oracle | Report |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          failed=0
+          check drop-applied 'apply order|committed-prefix agreement' || failed=1
+          check reorder-applied 'apply order|committed-prefix agreement' || failed=1
+          check non-durable-followers 'durability' || failed=1
+          exit $failed
+
+      - name: Upload reports
+        if: ${{ always() && hashFiles('TestResults/durable-write/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: durable-write-smoke-${{ github.run_attempt }}
+          path: TestResults/durable-write/
+          if-no-files-found: error
+          retention-days: 14
+
+  baseline:
+    name: Baseline (${{ inputs.os }}, ${{ inputs.profile }}, ${{ inputs.memory }})
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build "$PROJECT" --configuration Release
+
+      - name: Baseline run
+        timeout-minutes: 50
+        env:
+          IN_PROFILE: ${{ inputs.profile }}
+          IN_MEMORY: ${{ inputs.memory }}
+        run: |
+          set -o pipefail
+          [[ "$IN_PROFILE" =~ ^(full|smoke)$ ]] || { echo "::error::profile must be full or smoke"; exit 1; }
+          [[ "$IN_MEMORY" =~ ^(shared|private)$ ]] || { echo "::error::memory must be shared or private"; exit 1; }
+          mkdir -p "$RESULTS_DIR"
+          dotnet run --project "$PROJECT" --configuration Release --no-build -- \
+            --profile "$IN_PROFILE" --memory "$IN_MEMORY" --max-duration 45 \
+            --work-dir "$RUNNER_TEMP/durable-write" \
+            --out "$RESULTS_DIR/baseline.json" 2>&1 | tee "$RESULTS_DIR/baseline.log"
+
+      - name: Summarize
+        if: ${{ always() && hashFiles('TestResults/durable-write/baseline.json') != '' }}
+        run: |
+          {
+            echo "### Durable-write baseline (${{ inputs.os }}, ${{ inputs.profile }}, ${{ inputs.memory }})"
+            echo ""
+            jq -r '"Revision `\(.environment.revision)`, \(.environment.os), \(.environment.cpuModel) x\(.environment.processorCount), \(.environment.fileSystem); exit code \(.exitCode)"' "$RESULTS_DIR/baseline.json"
+            echo ""
+            echo "| Cell | Completed/s | Ack p50 (us) | p99 | p99.9 | Stopped by |"
+            echo "|---|---|---|---|---|---|"
+            jq -r '.cells[] | "| \(.name) | \(.completedPerSecond) | \(.ackLatency.p50Us // "-") | \(.ackLatency.p99Us // "-") | \(.ackLatency.p999Us // "-") | \(.stoppedBy // "-") |"' "$RESULTS_DIR/baseline.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: ${{ always() && hashFiles('TestResults/durable-write/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: durable-write-baseline-${{ inputs.os }}-${{ inputs.profile }}-${{ inputs.memory }}-${{ github.run_attempt }}
+          path: TestResults/durable-write/
+          if-no-files-found: error
+          retention-days: 30

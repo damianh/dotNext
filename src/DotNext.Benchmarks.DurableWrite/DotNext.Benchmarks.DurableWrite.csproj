@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <Authors>.NET Foundation and Contributors</Authors>
+        <Product>.NEXT Family of Libraries</Product>
+        <Copyright>Copyright © .NET Foundation and Contributors</Copyright>
+        <RootNamespace>DotNext.Benchmarks.DurableWrite</RootNamespace>
+        <NoWarn>$(NoWarn);DOTNEXT001</NoWarn>
+        <ServerGarbageCollection>false</ServerGarbageCollection>
+        <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\cluster\DotNext.Net.Cluster\DotNext.Net.Cluster.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Using Include="DotNext.Net.Cluster.Consensus.Raft.InProcess" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <!-- The seeded simulation's safety oracles are reused as-is; they are BCL-only. -->
+      <Compile Include="..\DotNext.Tests\Net\Cluster\Consensus\Raft\InProcess\SimulationHistory.cs" Link="Oracles\SimulationHistory.cs" />
+    </ItemGroup>
+
+</Project>

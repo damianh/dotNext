@@ -1,65 +1,159 @@
 ﻿@page "/"
 
-<PageTitle>Raft, step by step</PageTitle>
+<PageTitle>Leader election | dotNext Raft</PageTitle>
 
-<section class="hero">
-    <p class="eyebrow">DOTNEXT RAFT EXPLAINERS · FEASIBILITY SPIKE</p>
-    <h1>Watch a leader emerge.</h1>
-    <p class="lede">
-        Three real <code>RaftCluster&lt;TMember&gt;</code> instances run inside your browser.
-        Ada starts an election; the messages below come from dotNext's production state machine.
-    </p>
-    <button class="run-button" @onclick="RunElectionAsync" disabled="@running">
-        @(running ? "Electing…" : result is null ? "Run the election" : "Run it again")
-    </button>
+<!--
+THESIS: A leader election is a blind typographic lineup; predict before the implementation reveals.
+OWN-WORLD: Paper, black ink, signal blue, ruled specimen grids, variable weight and width, square controls.
+STORY: Read the timing fact, commit a prediction, run real Raft, then inspect the causal wire trace.
+FIRST VIEWPORT: The question and three equal node glyphs dominate; prediction controls sit directly beneath.
+FORM: Seventh grounded structure, staged as a suspect lineup; surface seed 7cb5fb5c.
+-->
+<section class="chapter-intro" aria-labelledby="chapter-title">
+    <div class="chapter-index">
+        <span>Chapter 1 of 25</span>
+        <span>Election / fundamentals</span>
+    </div>
+    <h1 id="chapter-title">Who becomes<br />leader?</h1>
+    <div class="chapter-brief">
+        <p>
+            Ada's election timer expires first. Before the messages move, commit to what
+            you think the cluster will do.
+        </p>
+        <dl>
+            <div>
+                <dt>Nodes</dt>
+                <dd>3</dd>
+            </div>
+            <div>
+                <dt>Initial term</dt>
+                <dd>0</dd>
+            </div>
+            <div>
+                <dt>Network</dt>
+                <dd>Healthy</dd>
+            </div>
+        </dl>
+    </div>
 </section>
 
-<section class="cluster" aria-live="polite" aria-label="Raft cluster state">
-    @if (result is null)
-    {
-        @foreach (var name in new[] { "Ada", "Grace", "Linus" })
-        {
-            <article class="node waiting">
-                <span class="term">TERM —</span>
-                <div class="node-mark">@name[0]</div>
-                <h2>@name</h2>
-                <p>Follower</p>
-            </article>
-        }
-    }
-    else
-    {
-        @foreach (var node in result.Nodes)
-        {
-            <article class="node @(node.Role == "Leader" ? "leader" : "")">
-                <span class="term">TERM @node.Term</span>
-                <div class="node-mark">@node.Name[0]</div>
-                <h2>@node.Name</h2>
-                <p>@node.Role</p>
-            </article>
-        }
-    }
-</section>
-
-<section class="trace">
-    <div class="section-heading">
+<section class="experiment" aria-labelledby="prediction-title">
+    <div class="experiment-heading">
         <div>
-            <p class="eyebrow">WIRE TRACE</p>
-            <h2>What just happened</h2>
+            <h2 id="prediction-title">Make your prediction</h2>
+            <p>Choose one answer. The implementation stays hidden until you commit.</p>
         </div>
-        @if (result is not null)
+        <span class="axis-readout">weight axis / role</span>
+    </div>
+
+    <fieldset class="node-lineup" disabled="@(running || result is not null)">
+        <legend class="visually-hidden">Which node becomes leader?</legend>
+        @foreach (var name in NodeNames)
         {
-            <span class="result-pill">@result.Leader is leader</span>
+            var snapshot = result?.Nodes.First(node => node.Name == name);
+            <label class="node-specimen @NodeClass(name, snapshot)">
+                <input type="radio"
+                       name="prediction"
+                       value="@name"
+                       checked="@(prediction == name)"
+                       @onchange="() => prediction = name" />
+                <span class="node-meta">
+                    <span>node / @name.ToLowerInvariant()</span>
+                    <span>@NodeRole(snapshot)</span>
+                </span>
+                <span class="node-glyph" aria-hidden="true">@name[0]</span>
+                <span class="node-name">@name</span>
+                <span class="node-axis">
+                    <span>term</span>
+                    <span class="axis-line"><i></i></span>
+                    <strong>@(snapshot?.Term.ToString() ?? "—")</strong>
+                </span>
+            </label>
+        }
+    </fieldset>
+
+    <div class="prediction-bar">
+        <label class="uncertain-choice">
+            <input type="radio"
+                   name="prediction"
+                   value="@UncertainPrediction"
+                   checked="@(prediction == UncertainPrediction)"
+                   disabled="@(running || result is not null)"
+                   @onchange="() => prediction = UncertainPrediction" />
+            <span>I cannot know from this information</span>
+        </label>
+
+        @if (result is null)
+        {
+            <button class="primary-action"
+                    @onclick="RunElectionAsync"
+                    disabled="@(running || prediction is null)">
+                <span>@(running ? "Running real Raft" : "Test my prediction")</span>
+                <span aria-hidden="true">→</span>
+            </button>
+        }
+        else
+        {
+            <button class="secondary-action" @onclick="Reset">
+                <span>Try another prediction</span>
+                <span aria-hidden="true">↺</span>
+            </button>
         }
     </div>
 
-    @if (error is not null)
+    @if (running)
     {
-        <p class="error">@error</p>
+        <div class="running-state" role="status">
+            <span></span>
+            <p>Election in progress. Pre-votes, votes, and heartbeats are moving through the simulated network.</p>
+        </div>
     }
-    else if (result is null)
+    else if (error is not null)
     {
-        <p class="empty">Run the election to see pre-votes, votes, and replication.</p>
+        <div class="error-state" role="alert">
+            <strong>The election could not finish.</strong>
+            <span>@error</span>
+            <button @onclick="Reset">Reset the experiment</button>
+        </div>
+    }
+    else if (result is not null)
+    {
+        <div class="verdict" aria-live="polite">
+            <div class="verdict-mark">@(PredictionWasCorrect ? "✓" : "×")</div>
+            <div>
+                <p class="verdict-label">@(PredictionWasCorrect ? "Prediction confirmed" : "Prediction challenged")</p>
+                <h2>@result.Leader becomes leader.</h2>
+                <p>
+                    You chose <strong>@PredictionLabel</strong>. Ada's timer fired first,
+                    then a majority granted the votes needed for term 1.
+                </p>
+            </div>
+        </div>
+    }
+</section>
+
+<section class="trace" aria-labelledby="trace-title">
+    <div class="trace-heading">
+        <div>
+            <h2 id="trace-title">The wire, in order</h2>
+            <p>Every row below is emitted by the in-browser transport around the real state machine.</p>
+        </div>
+        <span>@(result is null ? "Awaiting experiment" : $"{result.Events.Count} messages captured")</span>
+    </div>
+
+    @if (result is null)
+    {
+        <div class="trace-empty" aria-hidden="true">
+            @for (var index = 1; index <= 4; index++)
+            {
+                <div>
+                    <span>@index.ToString("00")</span>
+                    <i></i>
+                    <i></i>
+                    <i></i>
+                </div>
+            }
+        </div>
     }
     else
     {
@@ -68,9 +162,11 @@
             {
                 <li>
                     <span class="sequence">@item.Sequence.ToString("00")</span>
-                    <strong>@item.Source</strong>
-                    <span class="arrow">→</span>
-                    <strong>@item.Target</strong>
+                    <span class="route">
+                        <strong>@item.Source</strong>
+                        <span aria-hidden="true">→</span>
+                        <strong>@item.Target</strong>
+                    </span>
                     <code>@item.Message</code>
                 </li>
             }
@@ -78,10 +174,64 @@
     }
 </section>
 
+<details class="implementation-note">
+    <summary>
+        <span>Open the dotNext implementation note</span>
+        <span aria-hidden="true">+</span>
+    </summary>
+    <div>
+        <p>
+            This page runs three real <code>RaftCluster&lt;TMember&gt;</code> instances in WebAssembly.
+            The simulated transport implements <code>IRaftClusterMember</code> using only public API;
+            it does not approximate the election algorithm.
+        </p>
+        <dl>
+            <div>
+                <dt>Election start</dt>
+                <dd><code>StartFollowing()</code></dd>
+            </div>
+            <div>
+                <dt>Vote RPC</dt>
+                <dd><code>VoteAsync(...)</code></dd>
+            </div>
+            <div>
+                <dt>Replication</dt>
+                <dd><code>AppendEntriesAsync(...)</code></dd>
+            </div>
+        </dl>
+    </div>
+</details>
+
 @code {
+    private const string UncertainPrediction = "unknown";
+    private static readonly string[] NodeNames = ["Ada", "Grace", "Linus"];
+
     private ElectionResult? result;
+    private string? prediction;
     private bool running;
     private string? error;
+
+    private bool PredictionWasCorrect => result is not null && prediction == result.Leader;
+
+    private string PredictionLabel => prediction == UncertainPrediction
+        ? "not enough information"
+        : prediction ?? "no answer";
+
+    private static string NodeRole(RaftNodeSnapshot? node)
+        => node?.Role.ToLowerInvariant() ?? "unrevealed";
+
+    private string NodeClass(string name, RaftNodeSnapshot? node)
+    {
+        List<string> classes = [];
+
+        if (prediction == name)
+            classes.Add("selected");
+
+        if (node is not null)
+            classes.Add(node.Role.ToLowerInvariant());
+
+        return string.Join(' ', classes);
+    }
 
     private async Task RunElectionAsync()
     {
@@ -100,5 +250,12 @@
         {
             running = false;
         }
+    }
+
+    private void Reset()
+    {
+        result = null;
+        prediction = null;
+        error = null;
     }
 }

@@ -32,18 +32,22 @@ public static class ElectionDemo
         using var stateA = new ConsensusOnlyState();
         using var stateB = new ConsensusOnlyState();
         using var stateC = new ConsensusOnlyState();
-        await using var nodeA = new SimulatedNode(network, membership[0], membership, stateA, 250);
-        await using var nodeB = new SimulatedNode(network, membership[1], membership, stateB, 1_500);
-        await using var nodeC = new SimulatedNode(network, membership[2], membership, stateC, 2_500);
+        // The timeout is intentionally generous: on a cold browser run it also
+        // bounds the first JIT-heavy candidate round.
+        await using var nodeA = new SimulatedNode(network, membership[0], membership, stateA, 1_500);
+        // The browser may spend several seconds JIT-compiling the first election path.
+        // Keep the followers' timers far enough away that the lesson remains deterministic.
+        await using var nodeB = new SimulatedNode(network, membership[1], membership, stateB, 30_000);
+        await using var nodeC = new SimulatedNode(network, membership[2], membership, stateC, 60_000);
 
         await nodeA.StartAsync(token);
         await nodeB.StartAsync(token);
         await nodeC.StartAsync(token);
 
         nodeA.BeginElection();
-        var elected = await nodeA.WaitForLeaderAsync(TimeSpan.FromSeconds(5), token);
-        await nodeA.ForceReplicationAsync(token);
-        await nodeA.WaitForLeadershipAsync(token);
+        var elected = await nodeA.WaitForLeaderAsync(TimeSpan.FromSeconds(10), token);
+        await ForceReplicationWhenReadyAsync(nodeA, token);
+        await nodeA.WaitForLeadershipAsync(token).WaitAsync(TimeSpan.FromSeconds(10), token);
 
         SimulatedNode[] nodes = [nodeA, nodeB, nodeC];
         var snapshots = nodes
@@ -55,6 +59,40 @@ public static class ElectionDemo
             .ToArray();
 
         return new(((DnsEndPoint)elected.EndPoint).Host, snapshots, network.Events);
+    }
+
+    private static async Task ForceReplicationWhenReadyAsync(
+        SimulatedNode node,
+        CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+
+        while (true)
+        {
+            try
+            {
+                await node.ForceReplicationAsync(timeout.Token);
+                return;
+            }
+            catch (NotLeaderException) when (
+                !timeout.IsCancellationRequested
+                && (node.Leader is null || node.Leader.Id == node.Id))
+            {
+                // The in-memory transport can complete the vote RPCs synchronously,
+                // before the election continuation installs the leader state.
+                await Task.Yield();
+            }
+            catch (NotLeaderException exception)
+            {
+                var observedLeader = node.Leader?.EndPoint is DnsEndPoint leader
+                    ? leader.Host
+                    : "none";
+                throw new InvalidOperationException(
+                    $"Ada observed '{observedLeader}' as leader in term {node.AuditTrail.Term}.",
+                    exception);
+            }
+        }
     }
 }
 
@@ -70,6 +108,9 @@ internal sealed class SimulatedNetwork
 
     internal void Unregister(SimulatedNode node) => nodes.TryRemove(node.EndPoint, out _);
 
+    internal void Record(string source, string target, string message)
+        => events.Enqueue(new(Interlocked.Increment(ref sequence), source, target, message));
+
     internal async Task<TResult> SendAsync<TResult>(
         SimulatedMember member,
         string message,
@@ -80,11 +121,7 @@ internal sealed class SimulatedNetwork
         if (!nodes.TryGetValue(member.EndPoint, out var target))
             throw new MemberUnavailableException(member);
 
-        events.Enqueue(new(
-            Interlocked.Increment(ref sequence),
-            member.Source.Name,
-            target.Name,
-            message));
+        Record(member.Source.Name, target.Name, message);
 
         return await handler(target, token);
     }
@@ -244,12 +281,13 @@ internal sealed class SimulatedMember(
 
     ref IRaftClusterMember.ReplicationState IRaftClusterMember.State => ref state;
 
-    public Task<Result<bool>> VoteAsync(
+    public async Task<Result<bool>> VoteAsync(
         long term,
         long lastLogIndex,
         long lastLogTerm,
         CancellationToken token)
-        => IsRemote
+    {
+        var result = IsRemote
             ? network.SendAsync(
                 this,
                 "RequestVote",
@@ -263,12 +301,21 @@ internal sealed class SimulatedMember(
                 token)
             : Task.FromResult(new Result<bool> { Term = term, Value = true });
 
-    public Task<Result<PreVoteResult>> PreVoteAsync(
+        var response = await result;
+        network.Record(
+            ((DnsEndPoint)EndPoint).Host,
+            source.Name,
+            $"{(response.Value ? "VoteGranted" : "VoteRejected")}({(IsRemote ? "remote" : "local")})");
+        return response;
+    }
+
+    public async Task<Result<PreVoteResult>> PreVoteAsync(
         long term,
         long lastLogIndex,
         long lastLogTerm,
         CancellationToken token)
-        => IsRemote
+    {
+        var result = IsRemote
             ? network.SendAsync(
                 this,
                 "PreVote",
@@ -286,6 +333,14 @@ internal sealed class SimulatedMember(
                 Value = PreVoteResult.Accepted,
             });
 
+        var response = await result;
+        network.Record(
+            ((DnsEndPoint)EndPoint).Host,
+            source.Name,
+            $"PreVote{response.Value}");
+        return response;
+    }
+
     public Task<Result<ReplicationStatus>> AppendEntriesAsync<TEntry, TList>(
         long term,
         TList entries,
@@ -295,18 +350,28 @@ internal sealed class SimulatedMember(
         CancellationToken token)
         where TEntry : IRaftLogEntry
         where TList : IReadOnlyList<TEntry>
-        => network.SendAsync(
-            this,
-            entries.Count > 0 ? "AppendEntries" : "Heartbeat",
-            (target, requestToken) => target.ReceiveEntriesAsync<TEntry, TList>(
-                source,
-                term,
-                entries,
-                prevLogIndex,
-                prevLogTerm,
-                commitIndex,
-                requestToken),
-            token);
+        => IsRemote
+            ? network.SendAsync(
+                this,
+                entries.Count > 0 ? "AppendEntries" : "Heartbeat",
+                (target, requestToken) => target.ReceiveEntriesAsync<TEntry, TList>(
+                    source,
+                    term,
+                    entries,
+                    prevLogIndex,
+                    prevLogTerm,
+                    commitIndex,
+                    requestToken),
+                token)
+            : Task.FromResult(new Result<ReplicationStatus>
+            {
+                Term = term,
+                Value = new()
+                {
+                    LastIndex = prevLogIndex + entries.Count,
+                    Result = HeartbeatResult.ReplicatedWithLeaderTerm,
+                },
+            });
 
     public Task<Result<HeartbeatResult>> InstallSnapshotAsync(
         long term,
@@ -315,32 +380,40 @@ internal sealed class SimulatedMember(
         IDataTransferObject configuration,
         long configurationVersion,
         CancellationToken token)
-        => network.SendAsync(
-            this,
-            "InstallSnapshot",
-            async (target, requestToken) =>
+        => IsRemote
+            ? network.SendAsync(
+                this,
+                "InstallSnapshot",
+                async (target, requestToken) =>
+                {
+                    await target.ReceiveConfigurationAsync(
+                        term,
+                        configuration,
+                        configurationVersion,
+                        requestToken);
+                    return await target.ReceiveSnapshotAsync(
+                        source.Id,
+                        term,
+                        snapshot,
+                        snapshotIndex,
+                        source.AuditTrail.Version,
+                        requestToken);
+                },
+                token)
+            : Task.FromResult(new Result<HeartbeatResult>
             {
-                await target.ReceiveConfigurationAsync(
-                    term,
-                    configuration,
-                    configurationVersion,
-                    requestToken);
-                return await target.ReceiveSnapshotAsync(
-                    source.Id,
-                    term,
-                    snapshot,
-                    snapshotIndex,
-                    source.AuditTrail.Version,
-                    requestToken);
-            },
-            token);
+                Term = term,
+                Value = HeartbeatResult.ReplicatedWithLeaderTerm,
+            });
 
     public Task<long?> SynchronizeAsync(long commitIndex, CancellationToken token)
-        => network.SendAsync(
-            this,
-            "ReadIndex",
-            (target, requestToken) => target.ReceiveReadIndexAsync(commitIndex, requestToken),
-            token);
+        => IsRemote
+            ? network.SendAsync(
+                this,
+                "ReadIndex",
+                (target, requestToken) => target.ReceiveReadIndexAsync(commitIndex, requestToken),
+                token)
+            : Task.FromResult<long?>(null);
 
     public ValueTask<IReadOnlyDictionary<string, string>> GetMetadataAsync(
         bool refresh = false,

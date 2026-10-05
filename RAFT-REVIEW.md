@@ -1256,7 +1256,9 @@ acknowledged write on one node, and 32 across a 3-voter cluster at c1. On Window
 less than the 1 ms the probe suggests, because the directory is often clean. Two cycles of 5.2 ms are the 10.3 ms p50 of
 `wal-append-128B-c1`. A batch of 16 pays the same two cycles, which is why it also takes about 10 ms.
 
-Caveat on Linux: `/proc/diskstats` counted 0.12 device flushes per acknowledged write against 16 `fsync` calls. The
+Caveat on Linux: `/proc/diskstats` counted 0 device flush requests against 16 `fsync` calls per acknowledged write (run
+37322321254, partition `sda1`: 15.1 device write requests per ack on `wal-append-128B-c1`, 30.4 on
+`raft-closed-3v-128B-c1`). The
 runner's disk (`sda`) reports `write through` in `/sys/block/sda/queue/write_cache` (logged by the strace step,
 run 37316770014, which also reproduced 16.01 `fsync` and 4.02 `msync` per ack): it declares no volatile write cache, so
 the kernel sends no flush command and `fsync` costs only the journal write. Linux CI absolute times are therefore not

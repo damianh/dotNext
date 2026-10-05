@@ -53,4 +53,9 @@
   <ItemGroup>
     <CodeCoverageExclude Include="**/*.g.cs" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The online oracles of the durable-write load tool, tested by DurableWriteOracleTests. -->
+    <Compile Include="..\DotNext.Benchmarks.DurableWrite\Oracles\*.cs" Link="Net\Cluster\Consensus\Raft\InProcess\DurableWrite\%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

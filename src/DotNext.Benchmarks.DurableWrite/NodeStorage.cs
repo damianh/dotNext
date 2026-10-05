@@ -1,0 +1,195 @@
+using System.Diagnostics;
+using DotNext.Benchmarks.DurableWrite.Oracles;
+using DotNext.Net.Cluster.Consensus.Raft.StateMachine;
+using static DotNext.Net.Cluster.Consensus.Raft.StateMachine.WriteAheadLog;
+
+namespace DotNext.Benchmarks.DurableWrite;
+
+/// <summary>
+/// The storage of one node: a <see cref="WriteAheadLog"/> in <c>wal</c> and the snapshots of its
+/// <see cref="HistoryStateMachine"/> in <c>sm</c>.
+/// </summary>
+internal static class NodeStorage
+{
+    // One system page, the default, is too small for 16 KiB entries.
+    internal const int ChunkSize = 4 * 1024 * 1024;
+
+    // The library default: a commit checkpoint on every commit. Appends are persisted before they complete either way.
+    internal static readonly TimeSpan FlushInterval = TimeSpan.Zero;
+
+    // The library default.
+    internal static IntegrityHashAlgorithm HashAlgorithm => default;
+
+    internal static DurabilitySettings Describe() => new()
+    {
+        FlushInterval = FlushInterval == TimeSpan.Zero ? "0 (commit checkpoint on every commit)" : FlushInterval.ToString(),
+        ChunkSize = ChunkSize,
+        NoBuffering = "per cell (cells[].noBuffering); off unless the cell name ends in -nobuffering",
+        HashAlgorithm = HashAlgorithm.ToString(),
+        AppendPersistence =
+            "every append flushes its data and metadata pages to the device, flushes both directories and writes the " +
+            "recovery checkpoint before LastEntryIndex is published (WriteAheadLog.PersistAppendAsync)",
+        Acknowledgment =
+            "RaftCluster.ReplicateAsync returns after the entry is appended durably on the leader, replicated to a " +
+            "majority (a follower replies only after its own durable append), committed and applied on the leader",
+    };
+
+    internal static string StateMachineDirectory(string root) => Path.Combine(root, "sm");
+
+    internal static string LogDirectory(string root) => Path.Combine(root, "wal");
+
+    /// <param name="node">The <c>node</c> measurement tag, or <see langword="null"/> so the meter listener ignores this log.</param>
+    internal static Options CreateOptions(string root, MemoryManagementStrategy memory, bool noBuffering, int? node)
+    {
+        var tags = new TagList();
+        if (node is { } id)
+            tags.Add(WalMeterListener.NodeTag, id);
+
+        return new()
+        {
+            Location = LogDirectory(root),
+            FlushInterval = FlushInterval,
+            ChunkSize = ChunkSize,
+            MemoryManagement = memory,
+            NoBuffering = noBuffering,
+            HashAlgorithm = HashAlgorithm,
+            MeasurementTags = tags,
+        };
+    }
+
+    internal static HistoryStateMachine CreateStateMachine(string root, int node, long snapshotInterval,
+        OnlineHistoryChecker? checker, ApplyTimeline? timeline)
+    {
+        var directory = new DirectoryInfo(StateMachineDirectory(root));
+        directory.Create();
+        return new(directory, node, snapshotInterval, checker, timeline);
+    }
+
+    /// <summary>
+    /// Reads what the node recovers from its storage alone: the snapshot, the committed entries replayed into a new
+    /// state machine, and the uncommitted tail of the log.
+    /// </summary>
+    /// <remarks>
+    /// The node must be stopped and its log disposed. The log is reopened without the node tag, so its counters do not
+    /// count towards the cell. This runs in the same OS instance, so it proves the entries reached the file system,
+    /// not that they survive a power loss; the latter is a residual blind spot of the tool.
+    /// </remarks>
+    /// <returns>The durable log, from index 1 without gaps; an entry without payload has no key.</returns>
+    internal static async Task<IReadOnlyList<AppliedEntry>> RecoverAsync(string root, MemoryManagementStrategy memory, bool noBuffering,
+        int node, TimeSpan timeout, CancellationToken token)
+    {
+        if (!Directory.Exists(LogDirectory(root)))
+            return [];
+
+        var stateMachine = CreateStateMachine(root, node, long.MaxValue, checker: null, timeline: null);
+        await using (stateMachine.ConfigureAwait(false))
+        {
+            await stateMachine.RestoreAsync(token).ConfigureAwait(false);
+            var log = new WriteAheadLog(CreateOptions(root, memory, noBuffering, node: null), stateMachine);
+            await using (log.ConfigureAwait(false))
+            {
+                await log.InitializeAsync(token).ConfigureAwait(false);
+
+                using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeoutSource.CancelAfter(timeout);
+                try
+                {
+                    await log.WaitForApplyAsync(log.LastCommittedEntryIndex, timeoutSource.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    throw new LivenessFailureException(
+                        $"node {node} did not replay its {log.LastCommittedEntryIndex} committed entries within {timeout.TotalSeconds:F0} s");
+                }
+
+                var result = new List<AppliedEntry>(stateMachine.History);
+
+                // The state machine sees no entry without payload, so the indexes after the last entry it saw are padded.
+                for (var index = result.Count + 1L; index <= log.LastAppliedIndex; index++)
+                    result.Add(AppliedEntry.CreateSkipped(index));
+
+                var start = result.Count + 1L;
+                result.AddRange(await ReadAsync(log, start, log.LastEntryIndex, token).ConfigureAwait(false));
+                return result;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads the entries in the given range of a log, with the write each one carries.
+    /// </summary>
+    /// <remarks>
+    /// If the range starts inside the compacted prefix, the log returns its snapshot first. The snapshot is written by the
+    /// state machine from its own history, so the indexes it covers are returned without a key.
+    /// </remarks>
+    internal static async Task<IReadOnlyList<AppliedEntry>> ReadAsync(WriteAheadLog log, long start, long end, CancellationToken token)
+    {
+        if (start > end)
+            return [];
+
+        var result = new List<AppliedEntry>();
+        using var reader = await log.ReadAsync(start, end, token).ConfigureAwait(false);
+        foreach (var entry in reader)
+        {
+            if (entry.IsSnapshot)
+            {
+                for (var index = start; index <= entry.Index; index++)
+                    result.Add(AppliedEntry.CreateSkipped(index));
+            }
+            else
+            {
+                result.Add(new(entry.Index, entry.Term, HistoryStateMachine.ReadKey(in entry)));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Returns a node's history with the real term of every skipped entry that is still in its log.
+    /// </summary>
+    /// <remarks>
+    /// The log does not pass an entry without payload, such as the no-op of a new leader, to the state machine, so the
+    /// history records it as skipped, without a term. Its term is read back from the log here, so the final check can
+    /// compare it across nodes. An entry in the compacted prefix stays skipped: the snapshot keeps no terms.
+    /// </remarks>
+    internal static async Task<IReadOnlyList<AppliedEntry>> WithLogTermsAsync(WriteAheadLog log, IReadOnlyList<AppliedEntry> history,
+        CancellationToken token)
+    {
+        var first = 0;
+        while (first < history.Count && !history[first].IsSkipped)
+            first++;
+
+        if (first == history.Count)
+            return history;
+
+        var result = history.ToArray();
+        foreach (var entry in await ReadAsync(log, first + 1L, result.Length, token).ConfigureAwait(false))
+        {
+            // An entry with a write that the history skipped is a lost write, which the online check reports.
+            if (entry is { IsSkipped: false, Key: null } && result[entry.Index - 1L].IsSkipped)
+                result[entry.Index - 1L] = entry;
+        }
+
+        return result;
+    }
+
+    internal static void Delete(string root)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, recursive: true);
+
+                return;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException && attempt < 10)
+            {
+                // A memory-mapped file can stay open for a moment after the log is disposed on Windows.
+                Thread.Sleep(200);
+            }
+        }
+    }
+}

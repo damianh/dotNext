@@ -1084,6 +1084,89 @@ the schedules are short, and the fixed CI seeds find little alone; the campaign 
 Interleavings that need many elections (#49, #70) depend on the campaign reaching them.
 Crash points are between steps only, never inside a write.
 
+## Durable-write load baselines, #118 stage 2
+
+Part of #118. [`src/DotNext.Benchmarks.DurableWrite`](src/DotNext.Benchmarks.DurableWrite/README.md) is a Release
+workload CLI. It drives a `WriteAheadLog` on its own, and `RaftCluster` with 1, 3 and 5 voters over real loopback TCP in
+one process. It records baselines as JSON and fails only on correctness oracles. No production code changed.
+
+**Commands.** `--profile smoke` takes about 2 minutes (9 cells) and runs in CI on every change to the WAL, Raft or the tool,
+followed by the three `--inject` modes. `--profile full` takes about 15 minutes (37 cells) and runs locally or through
+`workflow_dispatch` (`.github/workflows/durable-write-load.yml`), which uploads the JSON as an artifact.
+
+**Tool shape.** A new project, not `DotNext.Benchmarks.WAL` (which keeps its FASTER comparison) and not BenchmarkDotNet,
+whose many-iteration, mean-of-means model hides queueing, tail latency and the oracles. Replicated cells use the
+public TCP transport rather than `InProcessNetwork`: the in-process harness needs internals that are visible only to
+Debug test builds, and it skips serialization and sockets. The cost is that all nodes share one process, CPU and device.
+
+**Durability.** `FlushInterval = 0`, `ChunkSize = 4 MiB`, shared memory (private, and private with `NoBuffering`, in two
+cells per size). The acknowledgment is durable because `WriteAheadLog.PersistAppendAsync` flushes the data and metadata
+pages, both directories and the checkpoint before it publishes `LastEntryIndex`, under `persistenceLock`. A follower replies
+only after that, and `ReplicateAsync` returns after a majority replied and the leader applied. Three checks show the numbers
+are not buffered writes: every node is reopened after the cell and a majority must recover every acknowledged write at its
+index (durability oracle); each node's recovered log must hold every entry its own state machine applied, and every index
+its log applied past the end of the reported history must be a no-op (history reconciliation, which also catches a silently
+lost last apply that no later callback exposes); and an
+fsync probe on the work volume marks a cell `suspectBuffered` if its durable p50 is below half a 4 KiB `Flush(true)`. The
+per-node flush/append ratio is reported for information only: the WAL meter counts the background flusher's flushes too,
+so it cannot prove that each append was flushed.
+
+**Oracles.** An online checker sees every apply and snapshot install on every node during the workload: apply order
+(contiguous, no duplicates, per-client order), committed-prefix agreement, acknowledged writes applied, and election
+safety through `SimulationHistory`. At the end, `SimulationHistory` checks the final prefixes and acknowledged writes again.
+The state machine snapshot carries the whole applied history, so the oracles hold through compaction and `InstallSnapshot`,
+which the #56 stage 1 simulation could not cover. The slow-follower cells (5 ms relay delay, a 5 s pause at 30% of the run,
+a snapshot every 200 or 500 entries) make the follower install 4 to 9 snapshots while the load continues; a slow-follower
+cell in which the follower installs no snapshot is a liveness failure (exit 4), since it did not exercise compaction.
+
+**Checker validation.** `--inject` runs a 3-voter cell with a test-only failure, and CI requires exit code 3 with the
+expected oracle. Dropping the apply of index 100 on a follower is caught by apply order (`node 1 skipped index 100, which
+node 0 applied as 'm0-c4-s13'`). Applying index 100 after index 101 is caught by committed-prefix agreement. Followers that
+acknowledge without writing (`ConsensusOnlyState`, the "skip the flush before the ack" case) are caught by the durability oracle
+(`'m0-c7-s1' was acknowledged by node 0 at index 5, but only 1 of 3 voters recovered it from storage; a majority is 2`).
+`DurableWriteOracleTests` (28 tests) checks each oracle against synthetic good and bad histories.
+
+**Bounds.** Fixed cells and durations; every cell also stops at 200,000 acknowledged writes or 2 GiB of payload; the run
+stops at 30 minutes. Cells are skipped below 2 GiB free on the work directory's volume and stopped below 1 GiB; a run cut
+short by either bound exits 5 (incomplete) rather than 0. Data is deleted after each passing cell, and CI uploads it as an
+artifact when a job fails.
+Loopback only, no privileges, no cache dropping. No latency, throughput or memory thresholds.
+
+**Baseline** (2026-10-05, revision 3dd6faf5; i9-14900K x32, 128 GiB, Windows 10.0.26300, NTFS on a local fixed disk,
+.NET 10.0.12 workstation concurrent GC, shared memory). Raw report:
+`src/DotNext.Benchmarks.DurableWrite/baselines/windows-i9-14900K-2026-10-05.json`; full table and a second run for
+spread in the tool's README. The fsync probe measured a flushed 4 KiB write at p50 497 µs and p99 987 µs, against 5 µs
+buffered. Every oracle passed in all 37 cells (the report predates the history reconciliation); no cell was `suspectBuffered`; CPU stayed at or below 0.47 cores, so the
+cells are I/O-bound.
+
+| Cell | acked/s | ack p50 | ack p99 | ack p99.9 |
+|---|---:|---:|---:|---:|
+| `wal-append-128B` c1 / c16 / c64 | 70 / 137 / 189 | 10 / 93 / 306 ms | 82 / 280 / 610 ms | 91 / 299 / 1128 ms |
+| `wal-batch-128B` b16 / b256 (entries/s) | 1,660 / 16,441 | 9.3 / 12 ms per batch | 14 / 84 ms | 17 / 91 ms |
+| `raft-closed-1v-128B` c1 / c16 / c64 | 100 / 95 / 47 | 9.5 / 81 / 1253 ms | 19 / 588 / 2507 ms | 49 / 633 / 3589 ms |
+| `raft-closed-3v-128B` c1 / c16 / c64 | 51 / 167 / 189 | 18 / 92 / 340 ms | 74 / 169 / 625 ms | 94 / 191 / 698 ms |
+| `raft-closed-3v-16KiB` c1 / c16 / c64 | 58 / 168 / 202 | 17 / 90 / 312 ms | 23 / 160 / 594 ms | 29 / 206 / 651 ms |
+| `raft-closed-5v-128B` c1 / c16 / c64 | 49 / 149 / 184 | 20 / 103 / 344 ms | 26 / 177 / 602 ms | 28 / 199 / 690 ms |
+| `raft-open-3v-128B` 50% / 90% / 120% of 189/s | 95 / 170 / 140 | 37 / 70 / 5243 ms | 66 / 162 / 9634 ms | 73 / 185 / 9744 ms |
+| `slow-follower` 3v / 5v, c16 | 180 / 141 | 85 / 102 ms | 146 / 178 ms | 161 / 2081 ms |
+
+The slow follower installed 9 (3 voters) and 8 (5 voters) snapshots through compaction, and every node recovered every
+entry. Per node, 128 B entries cost 1.25 appended bytes per payload byte and 16 KiB entries 1.002. These are baselines,
+not thresholds. Observations for follow-up, none of them a correctness failure:
+
+- unbatched WAL appends barely scale with concurrency, because each `AppendAsync` flushes under one lock, while batched
+  appends reach 4,000 to 16,000 entries/s;
+- a single-node cluster gets slower with more clients (100/s at c1, 47/s at c64);
+- at 120% offered load the leader held up to 1,510 uncommitted entries, went through 3 terms, and 2,133 writes ended with an
+  unknown outcome; the oracles still held;
+- run-to-run spread is large for some cells (`raft-closed-3v-16KiB-c1`: 6/s in one full run, 58/s in the next).
+
+**Residual blind spots.** Power loss and page-cache loss (the recovery audit reopens the files in the same OS instance);
+process kill and crash mid-append; cross-process isolation (CPU and GC are per process, not per node); the HTTP and UDP
+transports and real networks; membership changes and I/O faults under load; leader-side batching of client proposals,
+which the public API does not expose. A baseline is one machine, filesystem and device; compare runs on the same host
+only. Stage 3 of #118 covers real-process fault and burn-in campaigns.
+
 ## Protocol input budgets (#22)
 
 **Question.** Can a peer that sends a malformed, inconsistent or stalled request make a node allocate memory
@@ -1221,7 +1304,9 @@ Validation included existing targeted tests, in-memory probes of compiled
 production methods, and real WAL restart probes. These do not constitute a
 complete distributed fault-injection campaign. The security assessment did
 not include live exploit reproduction against a network listener or
-deployment-policy verification.
+deployment-policy verification. The durable-write load baselines (#118 stage 2)
+check the history and durability oracles under load on one machine; they do not
+cover power loss, process kill or real networks.
 
 The cache-configuration probe used `System.Runtime.Caching` 10.0.0.5, while the
 built test output contains 10.0.0.11. Its results challenge the blanket claim of

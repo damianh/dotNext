@@ -140,7 +140,7 @@ jobs:
           retention-days: 14
 
   baseline:
-    name: Baseline (${{ inputs.os }}, ${{ inputs.profile }}, ${{ inputs.memory }})
+    name: Baseline (manual)
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ inputs.os }}
     timeout-minutes: 60
@@ -175,9 +175,13 @@ jobs:
 
       - name: Summarize
         if: ${{ always() && hashFiles('TestResults/durable-write/baseline.json') != '' }}
+        env:
+          IN_OS: ${{ inputs.os }}
+          IN_PROFILE: ${{ inputs.profile }}
+          IN_MEMORY: ${{ inputs.memory }}
         run: |
           {
-            echo "### Durable-write baseline (${{ inputs.os }}, ${{ inputs.profile }}, ${{ inputs.memory }})"
+            echo "### Durable-write baseline ($IN_OS, $IN_PROFILE, $IN_MEMORY)"
             echo ""
             jq -r '"Revision `\(.environment.revision)`, \(.environment.os), \(.environment.cpuModel) x\(.environment.processorCount), \(.environment.fileSystem); exit code \(.exitCode)"' "$RESULTS_DIR/baseline.json"
             echo ""

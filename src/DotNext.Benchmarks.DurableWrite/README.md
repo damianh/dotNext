@@ -108,9 +108,75 @@ The run carries `environment` (revision, OS, CPU model and count, runtime, GC mo
 work directory, free space), `durability` (the WAL settings below), `bounds`, `fsyncProbe` and `incomplete` (why the
 run stopped early, or `null`).
 
-The JSON `schemaVersion` is 2. Version 1, used by the committed baseline report below, differs in that: it has no
-`incomplete`, `cells[].noBuffering`, `nodes[].flushCoverage` or `oracles.reconciledEntries`; `durability.noBuffering`
-was a boolean (now a description, since it varies per cell); and it listed flush coverage among the checked oracles.
+The JSON `schemaVersion` is 3. Version 3 (#123) only adds optional fields: `syncProbe`, `repeats`,
+`cells[].repeat` and `cells[].diagnostics`. They are `null` unless `--diagnostics` or `--repeat` is given, so a
+default run carries the same data as version 2. Version 1, used by the committed baseline report below, differs in
+that: it has no `incomplete`, `cells[].noBuffering`, `nodes[].flushCoverage` or `oracles.reconciledEntries`;
+`durability.noBuffering` was a boolean (now a description, since it varies per cell); and it listed flush coverage
+among the checked oracles.
+
+### Diagnostics (`--diagnostics`, `--repeat`, `--cells`, #123)
+
+These options are for investigating where the time goes. They change no cell's workload, settings or oracles. Every
+oracle still runs, and the exit codes are the same.
+
+```powershell
+# persist cycle, lock and Raft breakdowns for the 3-voter closed-loop cells of the full matrix
+dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile full --mode raft --voters 3 --diagnostics --out diag.json
+
+# the same cells five times on one host, to measure run-to-run spread
+dotnet run -c Release --project src\DotNext.Benchmarks.DurableWrite -- --profile full --cells raft-closed-3v-128B --repeat 5 --out spread.json
+```
+
+- `--cells <substring>[,<substring>...]` keeps only the cells whose name contains one of the substrings. An open-loop
+  cell still needs its closed-loop reference cell in the same run.
+- `--repeat <n>` (1 to 20) runs the selected matrix n times, round by round, and names each round's cells with a
+  suffix `-r1` to `-rn`. `repeats[]` in the JSON gives, for each cell, the min, median, max, mean, coefficient of
+  variation and range (as a percentage of the median) of the throughput, the ack p50 and p99, and the leader
+  changes. The console prints a `spread` line per cell.
+- `--diagnostics` subscribes to the opt-in WAL instruments and the Raft meters, and adds `cells[].diagnostics`:
+  - `persistCycles[]`: per node and cause (`append` is the persist inside `AppendAsync`; `flush` is the background
+    flusher after a commit or apply). Each has the cycles, cycles per acknowledged write, entries per cycle (the
+    group-commit factor), total ms and ms per ack, plus a duration summary per phase: `pages` (write and flush of the
+    dirty pages), `data-directory` and `metadata-directory` (`FlushDirectory`), and the three checkpoint steps
+    `checkpoint-intent`, `checkpoint-slot`, `checkpoint-commit`.
+  - `locks[]`: per node, lock and cause, the wait (from the acquire call to the grant) and the hold (from the grant to
+    the release). The hold is reported for the `persistence` lock only; the WAL read and write locks record the wait.
+  - `raft`: per node, `broadcast-time`, the gap between broadcast rounds, the gap between heartbeats received, and the
+    state transitions; `response-time` per message type and remote node; the late-response count; and the maximum
+    broadcast and heartbeat gaps of the cell against the election timeout.
+  - `events[]` (at most 500, `eventsDropped` counts the rest): leader claims with the term, and state transitions,
+    each with the time since the measured window started.
+  - `seconds[]`: one row per second of the measured window, with acks, the maximum uncommitted backlog, the longest
+    broadcast and heartbeat gap, the longest commit-lock and persistence-lock wait, and the transitions. This is
+    where a stall lines up against a term change.
+  - `nodes[]`: the appended, committed and flushed counter deltas in the measured window.
+  - `io`: process I/O counters for the measured window (Windows `GetProcessIoCounters`: the `otherOps` count includes
+    flushes, but also other control operations, so it is an upper bound on the flushes; Linux `/proc/self/io` and, for
+    the device under the work directory, the write and flush counts from `/proc/diskstats`, which are system-wide).
+  - At run level, `syncProbe` measures on the same device a directory flush, a publish (write, flush, rename,
+    directory flush: what a checkpoint intent costs) and a delete with a directory flush (a checkpoint commit).
+
+  The instruments are on the `DotNext.IO.WriteAheadLog` meter (`persist-phase-duration`, `lock-wait-duration`,
+  `lock-hold-duration`) and in the `DotNext-IO-WriteAheadLog` EventSource (keyword `0x1`). Both cost nothing unless a
+  listener subscribes, and the tool subscribes only with `--diagnostics`. An external process can read the same
+  events without the tool's help:
+
+  ```bash
+  dotnet-trace collect -p <pid> --providers DotNext-IO-WriteAheadLog:0x1:4
+  dotnet-counters monitor -p <pid> --counters DotNext.IO.WriteAheadLog
+  ```
+
+  On Linux, the durability system calls per write can be counted without privileges by tracing the tool itself:
+
+  ```bash
+  strace -f -c -e trace=fsync,fdatasync,msync,sync_file_range,rename,renameat,renameat2,unlinkat \
+    dotnet src/DotNext.Benchmarks.DurableWrite/bin/Release/net10.0/DotNext.Benchmarks.DurableWrite.dll \
+    --mode wal --cells wal-append-128B-c1 --profile full --concurrency 1
+  ```
+
+  The diagnostics listener adds a few microseconds per persist cycle; the smoke matrix ran within run-to-run noise
+  with and without it.
 
 ## Durability
 

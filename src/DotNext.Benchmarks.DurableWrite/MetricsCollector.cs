@@ -24,7 +24,8 @@ internal sealed class WalMeterListener : IDisposable
     {
         listener.InstrumentPublished = static (instrument, listener) =>
         {
-            if (instrument.Meter.Name is MeterName)
+            // The persist phase and lock histograms are opt-in: only DiagnosticsCollector listens to them.
+            if (instrument.Meter.Name is MeterName && !DiagnosticsCollector.IsDiagnosticInstrument(instrument))
                 listener.EnableMeasurementEvents(instrument);
         };
 

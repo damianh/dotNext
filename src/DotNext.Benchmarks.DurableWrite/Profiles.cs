@@ -55,6 +55,12 @@ internal sealed record CellSpec(string Name, CellKind Kind)
 
     internal FailureInjection Injection { get; init; }
 
+    // With --repeat: the round, from 1.
+    internal int? Repeat { get; init; }
+
+    // The name without the round suffix.
+    internal string BaseName { get; init; } = Name;
+
     internal bool IsReplicated => Kind is not (CellKind.WalAppend or CellKind.WalBatch);
 }
 
@@ -71,6 +77,26 @@ internal static class Profiles
         if (options.Injection is not FailureInjection.None)
             return [Inject(options)];
 
+        IReadOnlyList<CellSpec> cells = BuildMatrix(options);
+        if (options.Cells is { } filter)
+            cells = cells.Where(c => filter.Any(f => c.Name.Contains(f, StringComparison.Ordinal))).ToList();
+
+        if (options.Repeat <= 1)
+            return cells;
+
+        // Round after round, so that a drift of the host spreads over every cell instead of biasing one.
+        var rounds = new List<CellSpec>(cells.Count * options.Repeat);
+        for (var round = 1; round <= options.Repeat; round++)
+        {
+            foreach (var cell in cells)
+                rounds.Add(cell with { Name = $"{cell.Name}-r{round}", BaseName = cell.Name, Repeat = round });
+        }
+
+        return rounds;
+    }
+
+    private static List<CellSpec> BuildMatrix(RunOptions options)
+    {
         var full = options.Profile is Profile.Full;
         var sizes = options.EntrySizes ?? [Small, Large];
         var voters = options.Voters ?? (full ? [1, 3, 5] : [1, 3]);

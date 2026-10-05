@@ -53,6 +53,13 @@ internal sealed class RunOptions
 
     internal TimeSpan? Warmup { get; private set; }
 
+    // #123: the opt-in breakdowns, the rounds per cell for the spread, and a cell name filter.
+    internal bool Diagnostics { get; private set; }
+
+    internal int Repeat { get; private set; } = 1;
+
+    internal string[]? Cells { get; private set; }
+
     internal const string Usage =
         """
         Durable-write load baselines for the .NEXT Raft write-ahead log (#118 stage 2).
@@ -76,6 +83,12 @@ internal sealed class RunOptions
           --max-entries <n>             Stop a cell after n acknowledged writes (default: 200000)
           --max-duration <minutes>      Abort the whole run after this time (default: 30)
           --max-payload-gib <n>         Stop a cell after n GiB of acknowledged payload (default: 2)
+          --diagnostics                 Add persist cycle, lock, Raft round and I/O breakdowns to each cell, and a
+                                        directory-flush probe to the run (#123). Off by default.
+          --repeat <n>                  Run the matrix n times, round after round, and report the spread of each
+                                        cell (default: 1)
+          --cells <text,...>            Run only the cells whose name contains one of these texts. An open-loop
+                                        cell needs a closed-loop cell with the same voters and entry size before it.
 
         Exit codes: 0 ok, 1 unexpected error, 2 usage, 3 safety oracle violation, 4 liveness failure,
         5 incomplete (--max-duration reached, or a cell skipped for lack of disk space).
@@ -156,6 +169,17 @@ internal sealed class RunOptions
                     break;
                 case "--max-payload-gib":
                     result.MaxPayloadBytes = Number(1, 64) * 1024L * 1024 * 1024;
+                    break;
+                case "--diagnostics":
+                    result.Diagnostics = true;
+                    break;
+                case "--repeat":
+                    result.Repeat = (int)Number(1, 20);
+                    break;
+                case "--cells":
+                    result.Cells = Next().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) is { Length: > 0 } cells
+                        ? cells
+                        : throw new UsageException($"Option '{name}' needs at least one name");
                     break;
                 case "-h" or "--help" or "-?":
                     throw new UsageException(null);

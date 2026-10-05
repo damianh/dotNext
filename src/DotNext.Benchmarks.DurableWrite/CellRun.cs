@@ -37,6 +37,7 @@ internal sealed class CellRun : IDisposable
         RunToken = runToken;
         stopSource = CancellationTokenSource.CreateLinkedTokenSource(runToken);
         payload = new(spec.EntrySize);
+        Diagnostics = options.Diagnostics ? new(spec, root) : null;
         Checker = new(spec.Voters);
         Timeline = new(ReplicaApplyLag);
         Report = new()
@@ -53,6 +54,7 @@ internal sealed class CellRun : IDisposable
             DurationSeconds = spec.Duration.TotalSeconds,
             SnapshotInterval = spec.SnapshotInterval is long.MaxValue ? 0L : spec.SnapshotInterval,
             Injection = spec.Injection is FailureInjection.None ? null : Profiles.InjectionName(spec.Injection),
+            Repeat = spec.Repeat,
         };
     }
 
@@ -73,6 +75,9 @@ internal sealed class CellRun : IDisposable
     internal Payload Payload => payload;
 
     internal WalMeterListener Meter { get; } = new();
+
+    // With --diagnostics only.
+    internal DiagnosticsCollector? Diagnostics { get; }
 
     internal OnlineHistoryChecker Checker { get; }
 
@@ -149,6 +154,7 @@ internal sealed class CellRun : IDisposable
         {
             Interlocked.Add(ref completed, count);
             AckLatency.RecordTicks(end - start);
+            Diagnostics?.OnAcknowledged(count);
         }
 
         if (total >= Options.MaxEntries)
@@ -204,6 +210,7 @@ internal sealed class CellRun : IDisposable
                     backlog.MaxUncommitted = long.Max(backlog.MaxUncommitted, sample.Uncommitted);
                     backlog.MaxUnapplied = long.Max(backlog.MaxUnapplied, sample.Unapplied);
                     backlog.MaxFollowerLag = long.Max(backlog.MaxFollowerLag, sample.FollowerLag);
+                    Diagnostics?.OnBacklog(sample);
                 }
 
                 await timer.WaitForNextTickAsync(StopToken).ConfigureAwait(false);
@@ -225,6 +232,7 @@ internal sealed class CellRun : IDisposable
     private void BeginMeasuring(Action? onMeasuring)
     {
         processStart = ProcessSample.Take();
+        Diagnostics?.Begin(Meter);
         measureStart = Stopwatch.GetTimestamp();
         Meter.Measuring = true;
         Timeline.Measuring = true;
@@ -241,6 +249,7 @@ internal sealed class CellRun : IDisposable
         Meter.Measuring = false;
         Timeline.Measuring = false;
         measureEnd = Stopwatch.GetTimestamp();
+        Diagnostics?.End(Meter);
         processEnd = ProcessSample.Take();
     }
 
@@ -278,6 +287,7 @@ internal sealed class CellRun : IDisposable
         backlog.MaxInFlight = Interlocked.Read(ref maxInFlight);
         report.Backlog = backlog;
         report.Process = ProcessSample.Delta(processStart, processEnd);
+        report.Diagnostics = Diagnostics?.Complete(report.Completed, seconds);
 
         // A durable acknowledgment includes at least one synchronous flush. If it is much cheaper than a flush measured
         // on this device, the numbers may describe buffered writes.
@@ -383,6 +393,7 @@ internal sealed class CellRun : IDisposable
     public void Dispose()
     {
         Meter.Dispose();
+        Diagnostics?.Dispose();
         stopSource.Dispose();
     }
 }

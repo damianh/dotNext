@@ -43,7 +43,7 @@ partial class WriteAheadLog
                 // index and the flushing boundary at once, and a pass built from a mixture of both states can
                 // ask for squashed indices or persist a checkpoint that goes backwards.
                 lockManager.SetCallerInformation("Flush Pages");
-                await lockManager.AcquireReadLockAsync(FlushCause, token).ConfigureAwait(false);
+                await lockManager.AcquireFlushLockAsync(token).ConfigureAwait(false);
                 long newSnapshot;
                 try
                 {
@@ -87,7 +87,7 @@ partial class WriteAheadLog
                 }
                 finally
                 {
-                    lockManager.ReleaseReadLock();
+                    lockManager.ReleaseFlushLock();
                 }
 
                 if (flusherOldSnapshot < newSnapshot)

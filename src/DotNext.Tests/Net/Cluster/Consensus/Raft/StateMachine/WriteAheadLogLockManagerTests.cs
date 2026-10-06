@@ -222,6 +222,80 @@ public sealed class WriteAheadLogLockManagerTests : Test
         }
     }
 
+    // #126: a flush pass takes the persistence lock, so it waits for the queued appends and runs once after them
+    // instead of between each pair of their persist cycles.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task FlushKeepsQueueOrderBehindPendingAppends()
+    {
+        var lockManager = new WriteAheadLog.LockManager();
+        ValueTask append1 = default, append2 = default, flush = default, read = default, commit = default, append3 = default;
+        try
+        {
+            await lockManager.AcquireAppendLockAsync(TestToken);
+            append1 = lockManager.AcquireAppendLockAsync(TestToken);
+            append2 = lockManager.AcquireAppendLockAsync(TestToken);
+            flush = lockManager.AcquireFlushLockAsync(TestToken);
+            False(flush.IsCompleted);
+
+            // readers and committers pass the queued flush, and a later append queues behind it
+            read = lockManager.AcquireReadLockAsync(TestToken);
+            True(read.IsCompletedSuccessfully);
+            commit = lockManager.AcquireCommitLockAsync(TestToken);
+            True(commit.IsCompletedSuccessfully);
+            append3 = lockManager.AcquireAppendLockAsync(TestToken);
+            lockManager.ReleaseReadLock();
+            lockManager.ReleaseCommitLock();
+
+            lockManager.ReleaseAppendLock();
+            True(append1.IsCompletedSuccessfully);
+            False(flush.IsCompleted);
+
+            // the flush is compatible with the append that holds the lock, and is granted with the last queued append
+            lockManager.ReleaseAppendLock();
+            True(append2.IsCompletedSuccessfully);
+            True(flush.IsCompletedSuccessfully);
+            False(append3.IsCompleted);
+
+            lockManager.ReleaseFlushLock();
+            lockManager.ReleaseAppendLock();
+            True(append3.IsCompletedSuccessfully);
+            lockManager.ReleaseAppendLock();
+        }
+        finally
+        {
+            await CleanupAsync(lockManager, append1, append2, flush, read, commit, append3);
+        }
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task UpgradeWaitsForFlush()
+    {
+        var lockManager = new WriteAheadLog.LockManager();
+        ValueTask upgrade = default, flush = default;
+        try
+        {
+            await lockManager.AcquireAppendLockAsync(TestToken);
+            await lockManager.AcquireFlushLockAsync(TestToken);
+
+            upgrade = lockManager.UpgradeToOverwriteLockAsync(TestToken);
+            False(upgrade.IsCompleted);
+
+            lockManager.ReleaseFlushLock();
+            True(upgrade.IsCompletedSuccessfully);
+
+            // a flush that arrives during the overwrite waits for it
+            flush = lockManager.AcquireFlushLockAsync(TestToken);
+            False(flush.IsCompleted);
+            lockManager.ReleaseAppendLock();
+            True(flush.IsCompletedSuccessfully);
+            lockManager.ReleaseFlushLock();
+        }
+        finally
+        {
+            await CleanupAsync(lockManager, upgrade, flush);
+        }
+    }
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task QueuedReadersAndCommittersPassBlockedAppendAfterOverwrite()
     {

@@ -66,6 +66,15 @@ public sealed class CommitIndexTests : RaftTest
         }
 
         await stateA.WaitForApplyAsync(7L, TestToken);
+
+        // The leader sends entries and snapshots while holding a WAL read lock,
+        // so such an RPC held by this test pins that lock. Publishing snapshot 6
+        // starts a background cleanup whose read barrier waits for those readers,
+        // and the FIFO lock queue parks every later replication read behind the
+        // barrier. If the barrier were queued while a round is being collected,
+        // the remaining followers' RPCs would never appear and the round would
+        // hang. Let the cleanup finish while no RPC is held.
+        await machine.GarbageReclaimed.WaitAsync(TestToken);
         Equal(7L, stateA.LastCommittedEntryIndex);
         Equal(0L, stateC.LastEntryIndex);
         var snapshot = machine.As<ISnapshotManager>().Snapshot;
@@ -136,8 +145,23 @@ public sealed class CommitIndexTests : RaftTest
 
     // SimpleStateMachine creates a real snapshot with the applied entry's
     // term/index; applying entry 7 publishes the completed snapshot at 6.
-    private sealed class SnapshotAtSix(DirectoryInfo location) : SimpleStateMachine(location)
+    private sealed class SnapshotAtSix(DirectoryInfo location) : SimpleStateMachine(location), ISnapshotManager
     {
+        private readonly TaskCompletionSource reclaimed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Completes when the WAL has removed the entries squashed into snapshot 6.
+        public Task GarbageReclaimed => reclaimed.Task;
+
+        // Snapshot 6 is the only snapshot, so the base implementation has no
+        // older snapshot file to delete; only the notification is added.
+        ValueTask ISnapshotManager.ReclaimGarbageAsync(long watermark, CancellationToken token)
+        {
+            if (watermark >= 6L)
+                reclaimed.TrySetResult();
+
+            return ValueTask.CompletedTask;
+        }
+
         protected override ValueTask<bool> ApplyAsync(LogEntry entry, CancellationToken token)
             => ValueTask.FromResult(entry.Index is 6L);
 

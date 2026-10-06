@@ -19,7 +19,7 @@ public sealed class ProposalTermGuardTests : RaftTest
         {
             leader = cluster.Nodes[index];
             await cluster.ElectAsync(leader);
-            await cluster.PumpAsync(leader, leader.ForceReplicationAsync(TestToken).AsTask());
+            await cluster.ReplicateToAllVotersAsync(leader);
         }
 
         return leader;

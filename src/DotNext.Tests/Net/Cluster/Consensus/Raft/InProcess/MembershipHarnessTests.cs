@@ -15,10 +15,30 @@ public sealed class MembershipHarnessTests : RaftTest
         Equal(1L, leader.Log.LastAppliedIndex);
         False(leader.LeadershipToken.IsCancellationRequested);
 
-        await cluster.PumpAsync(leader, leader.ForceReplicationAsync(TestToken).AsTask());
+        await cluster.ReplicateToAllVotersAsync(leader);
         foreach (var node in cluster.Nodes[1..VoterCount])
             Equal(1L, node.Log.LastEntryIndex);
         Equal(0L, cluster.Joiner.Log.LastEntryIndex);
+    }
+
+    // #127: a round completes once a majority acknowledges it, so a follower whose request is still held lags behind
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ReplicationToAllVotersReachesLaggingFollower()
+    {
+        await using var cluster = new MembershipClusterFixture();
+        await cluster.StartAsync();
+        var (leader, lagging) = (cluster.Nodes[0], cluster.Nodes[2]);
+        var target = lagging.Id;
+        Func<PendingMessage, MessageAction> filter = message => message.TargetId == target && message.MessageType is RaftMessageType.AppendEntries
+            ? MessageAction.Hold
+            : MessageAction.Deliver;
+        await cluster.ElectAsync(leader, filter: filter);
+        await cluster.PumpAsync(leader, leader.ForceReplicationAsync(TestToken).AsTask(), filter);
+        True(lagging.Log.LastEntryIndex < leader.Log.LastEntryIndex);
+
+        await cluster.ReplicateToAllVotersAsync(leader);
+        foreach (var node in cluster.Nodes[1..VoterCount])
+            Equal(leader.Log.LastEntryIndex, node.Log.LastEntryIndex);
     }
 
     [Fact(Timeout = TestTimeouts.Default)]

@@ -21,6 +21,7 @@ partial class WriteAheadLog
     // The committer runs inline on the first caller's thread up to its first await, as a direct append did.
     private readonly AsyncAutoResetEventSlim appendTrigger = new(runContinuationsAsynchronously: false);
     private readonly List<AppendRequest> stagedRequests = []; // accessed by the committer only
+    private readonly List<(AppendRequest Request, Exception Error)> rejectedRequests = []; // accessed by the committer only
     private readonly Task committerTask;
 
     private ValueTask<long> AppendBufferedAsync(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm, CancellationToken token)
@@ -78,6 +79,7 @@ partial class WriteAheadLog
     {
         Exception? failure = null;
         var staged = stagedRequests;
+        var rejected = rejectedRequests;
         lockManager.SetCallerInformation(GroupCommitCallerInfo);
         await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
         try
@@ -86,7 +88,7 @@ partial class WriteAheadLog
             var mutationStarted = false;
             try
             {
-                StageAppendRequests(staged);
+                StageAppendRequests(staged, rejected);
                 if (staged.Count > 0)
                 {
                     mutationStarted = true;
@@ -115,8 +117,13 @@ partial class WriteAheadLog
             lockManager.ReleaseAppendLock();
         }
 
+        // Requests are settled, and their buffers released, outside the locks: a custom allocator owner
+        // may block or re-enter the WAL on disposal.
         try
         {
+            foreach (var (request, error) in rejected)
+                request.Fail(error);
+
             foreach (var request in staged)
             {
                 if (failure is null)
@@ -127,13 +134,14 @@ partial class WriteAheadLog
         }
         finally
         {
+            rejected.Clear();
             staged.Clear();
         }
     }
 
     // Call under the append and persistence locks. Drains the requests queued when the batch starts.
-    // A request that fails its own checks faults alone, before the batch modifies the log.
-    private void StageAppendRequests(List<AppendRequest> staged)
+    // A request that fails its own checks is rejected alone, before the batch modifies the log.
+    private void StageAppendRequests(List<AppendRequest> staged, List<(AppendRequest, Exception)> rejected)
     {
         for (var count = appendRequests.Count; count > 0 && appendRequests.TryDequeue(out var request); count--)
         {
@@ -147,7 +155,7 @@ partial class WriteAheadLog
             }
             catch (Exception e)
             {
-                request.Fail(e);
+                rejected.Add((request, e));
                 continue;
             }
 

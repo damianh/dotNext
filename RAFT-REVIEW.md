@@ -1440,7 +1440,10 @@ voters held the removal). The direct path resumes the caller inline, as before #
 the same as before #125, and it is narrow: a timer heartbeat between publication and activation.
 
 A cleanup failure is isolated as well. Each request is settled even if the allocator's owner throws when its
-buffer is released, so a release failure cannot strand the rest of the batch (review of #132).
+buffer is released, so a release failure cannot strand the rest of the batch (review of #132). Buffers are
+released only after the committer has released the append and persistence locks, as on the single-entry path
+before #125. That includes the buffers of requests rejected by their own checks, such as a stale-term proposal.
+An owner that blocks on, or re-enters, the WAL from `Dispose` therefore cannot deadlock the committer.
 
 **Contract, per caller.**
 

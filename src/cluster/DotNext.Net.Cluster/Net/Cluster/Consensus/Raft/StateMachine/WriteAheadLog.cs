@@ -34,6 +34,11 @@ using Threading.Tasks;
 /// advancing the producer between entries surfaces routine request cancellation (for example, follower replication
 /// reading from the network with that request token). Cancellation therefore does not guarantee that no entry was
 /// appended, but routine caller or leadership cancellation after mutation does not permanently fault the WAL.
+/// Concurrent single-entry appends whose payload is available as memory, or can be formatted into a buffer
+/// (for example <see cref="BinaryLogEntry"/>), are committed as a group: the entries queued when a persist cycle starts
+/// are written together and published by that one cycle, and each append completes only after the cycle that covers
+/// its entry. If that cycle fails, every append it covers fails and the WAL is faulted. Such an append observes its
+/// cancellation token only while it is queued; once its batch starts, it completes with the batch.
 /// A non-cancellation failure while an entry payload is being written, cancellation thrown from the payload while
 /// the request itself was not canceled, an error from the state machine while applying a snapshot, or a real
 /// storage/integrity failure may leave partially modified state, so it faults the WAL and requires reopening it
@@ -243,6 +248,9 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             appliedIndex = snapshotIndex;
             appenderTask = ApplyAsync(lifetimeTokenSource.Token);
         }
+
+        // group commit of buffered appends
+        committerTask = CommitAppendsAsync(lifetimeToken);
     }
 
     /// <inheritdoc/>
@@ -360,50 +368,6 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         return currentIndex;
     }
     
-    private async ValueTask<long> AppendBufferedAsync<TEntry>(TEntry entry, bool requireCurrentTerm, CancellationToken token)
-        where TEntry : struct, IBufferedLogEntry
-    {
-        lockManager.SetCallerInformation("Append Single Buffered Entry");
-        try
-        {
-            await lockManager.AcquireAppendLockAsync(token).ConfigureAwait(false);
-            try
-            {
-                await AcquirePersistenceLockAsync(AppendCause, token).ConfigureAwait(false);
-                var mutationStarted = false;
-                try
-                {
-                    ThrowOnInternalError();
-                    ThrowIfNotCurrentTerm(entry.Term, requireCurrentTerm);
-                    token.ThrowIfCancellationRequested();
-                    mutationStarted = true;
-                    await PrepareAppendAsync(LastEntryIndex + 1L).ConfigureAwait(false);
-                    var index = AppendBuffered(entry);
-                    await PersistAppendAsync(index).ConfigureAwait(false);
-                    return index;
-                }
-                catch (Exception e) when (mutationStarted)
-                {
-                    OnBackgroundTaskFailure(e);
-                    throw;
-                }
-                finally
-                {
-                    ReleasePersistenceLock();
-                }
-            }
-            finally
-            {
-                lockManager.ReleaseAppendLock();
-            }
-        }
-        finally
-        {
-            if (typeof(TEntry) == typeof(BufferedLogEntry))
-                Unsafe.As<TEntry, BufferedLogEntry>(ref entry).Dispose();
-        }
-    }
-
     private long AppendBuffered<TEntry>(TEntry entry)
         where TEntry : struct, IBufferedLogEntry
     {
@@ -445,7 +409,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         }
         else if (typeof(TEntry) == typeof(BinaryLogEntry))
         {
-            task = AppendBufferedAsync(Unsafe.As<TEntry, BinaryLogEntry>(ref entry), requireCurrentTerm, token);
+            task = AppendBufferedAsync(Unsafe.As<TEntry, BinaryLogEntry>(ref entry), default, requireCurrentTerm, token);
         }
         else if (entry.IsSnapshot)
         {
@@ -462,20 +426,22 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
                 Context = entry is IInputLogEntry { Context: { } ctx } ? ctx : null,
             };
 
-            task = AppendBufferedAsync(entryCopy, requireCurrentTerm, token);
+            task = AppendBufferedAsync(entryCopy, default, requireCurrentTerm, token);
         }
         else if (entry is ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>)
         {
             // make a copy out of the lock
-            var entryCopy = new BufferedLogEntry(((ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>)entry).Invoke(bufferAllocator))
+            var buffer = ((ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>)entry).Invoke(bufferAllocator);
+            var entryCopy = new BinaryLogEntry
             {
                 IsConfiguration = entry.IsConfiguration,
                 Term = entry.Term,
+                Content = buffer.Memory,
                 CommandId = entry.CommandId,
                 Context = entry is IInputLogEntry { Context: { } ctx } ? ctx : null,
             };
 
-            task = AppendBufferedAsync(entryCopy, requireCurrentTerm, token);
+            task = AppendBufferedAsync(entryCopy, buffer, requireCurrentTerm, token);
         }
         else
         {
@@ -1070,6 +1036,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         
         flushTrigger?.Set();
         applyTrigger.Set();
+        appendTrigger.Set();
     }
 
     /// <inheritdoc/>
@@ -1082,6 +1049,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             await foregroundFlushLock.DisposeAsync().ConfigureAwait(false);
 
         await appenderTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        await committerTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
         if (cleanupTask.TryGetTarget(out var task))
             await task.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);

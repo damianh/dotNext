@@ -178,7 +178,7 @@ public sealed class WriteAheadLogGroupCommitTests : Test
         Equal(3L, await tail);
         Equal(3L, wal.LastEntryIndex);
         await AssertContentAsync(wal, 1L, "entry 1", "entry 4", "entry 5");
-        await AssertTermsAsync(wal, 1L, 4L, 5L);
+        await AssertTermsAsync(wal, startIndex: 1L, 1L, 4L, 5L);
     }
 
     [Fact(Timeout = TestTimeouts.Default)]

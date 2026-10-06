@@ -18,7 +18,8 @@ partial class WriteAheadLog
     internal const string GroupCommitCallerInfo = "Append Buffered Entries";
 
     private readonly ConcurrentQueue<AppendRequest> appendRequests = new();
-    private readonly AsyncAutoResetEventSlim appendTrigger = new();
+    // The committer runs inline on the first caller's thread up to its first await, as a direct append did.
+    private readonly AsyncAutoResetEventSlim appendTrigger = new(runContinuationsAsynchronously: false);
     private readonly List<AppendRequest> stagedRequests = []; // accessed by the committer only
     private readonly Task committerTask;
 

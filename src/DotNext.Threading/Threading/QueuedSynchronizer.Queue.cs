@@ -16,6 +16,9 @@ partial class QueuedSynchronizer
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     private protected bool IsEmptyQueue => waitQueue.Length is 0L;
 
+    [DebuggerBrowsable(DebuggerBrowsableState.Never)]
+    private protected LinkedValueTaskCompletionSource<bool>? FirstSuspendedCaller => waitQueue.First;
+
     private protected virtual void DrainWaitQueue(ref WaitQueueScope queue)
     {
     }

@@ -21,7 +21,7 @@ partial class WriteAheadLog
         /// Allows reading of the log entries.
         /// </summary>
         /// <remarks>
-        /// Cannot be acquired concurrently with <see cref="Overwrite"/>, <see cref="ReadBarrier"/>.
+        /// Cannot be acquired concurrently with <see cref="Overwrite"/>, and cannot pass a suspended <see cref="ReadBarrier"/>.
         /// </remarks>
         Read = 0,
 
@@ -29,7 +29,9 @@ partial class WriteAheadLog
         /// Allows the infrastructure to remove the entries applied to the snapshot.
         /// </summary>
         /// <remarks>
-        /// Cannot be acquired concurrently with <see cref="Read"/>, <see cref="ReadBarrier"/>, <see cref="Overwrite"/>.
+        /// Waits for the readers that hold the lock, and cannot be acquired concurrently with
+        /// <see cref="ReadBarrier"/>, <see cref="Overwrite"/>.
+        /// The readers that arrive after the barrier is acquired are not blocked, because they observe the new snapshot.
         /// </remarks>
         ReadBarrier,
 
@@ -77,6 +79,19 @@ partial class WriteAheadLog
             LockType.Commit => !overwriteLockState && !commitLockState,
             LockType.Overwrite => appendLockState && !overwriteLockState && !commitLockState && readersCount is 0UL,
             _ => false
+        };
+
+        // A caller passes a suspended caller only if holding its lock cannot make CanAcquire false for the suspended one,
+        // so the suspended caller is never delayed: a persist cycle no longer blocks reads and commits (#126).
+        // Callers of the same type stay in order, and nothing passes the upgrade to Overwrite.
+        protected override bool CanOvertake(LockType type, LockType suspended) => (type, suspended) switch
+        {
+            (_, LockType.Overwrite) or (LockType.Overwrite, _) => false,
+            (LockType.Read or LockType.ReadBarrier, LockType.ReadBarrier) => false,
+            (LockType.Read or LockType.ReadBarrier, LockType.Read or LockType.Append or LockType.Commit) => true,
+            (LockType.Append, LockType.Read or LockType.ReadBarrier or LockType.Commit) => true,
+            (LockType.Commit, LockType.Read or LockType.ReadBarrier or LockType.Append) => true,
+            _ => false,
         };
 
         protected override void AcquireCore(LockType type)

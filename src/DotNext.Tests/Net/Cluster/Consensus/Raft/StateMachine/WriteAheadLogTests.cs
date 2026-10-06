@@ -473,6 +473,51 @@ public sealed class WriteAheadLogTests : Test
         Contains(address, config.Members);
     }
 
+    // #126: the leader's replication reads and the commit of replicated entries do not wait for the persist cycles of
+    // the appends queued behind the one in progress.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ReadAndCommitDoNotWaitForQueuedAppends()
+    {
+        await using var wal = new WriteAheadLog(new() { Location = GetTempPath() }, IStateMachine.CreateNoOp());
+        await wal.AppendAsync(new TestLogEntry("first") { Term = 1L }, TestToken);
+        await wal.AppendAsync(new TestLogEntry("second") { Term = 1L }, TestToken);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestToken);
+        var gatedEntry = new GatedLogEntry(3) { Term = 1L };
+        var gatedAppend = wal.AppendAsync(gatedEntry, cts.Token).AsTask();
+        var queuedAppends = new Task<long>[3];
+
+        try
+        {
+            await gatedEntry.WriteStarted.WaitAsync(TestToken);
+            for (var i = 0; i < queuedAppends.Length; i++)
+                queuedAppends[i] = wal.AppendAsync(new TestLogEntry($"queued {i}") { Term = 1L }, cts.Token).AsTask();
+
+            using (var entries = await wal.ReadAsync(1L, 2L, TestToken))
+            {
+                Equal(2, entries.Count);
+                Equal("second", await entries[1].ToStringAsync(Encoding.UTF8, token: TestToken));
+            }
+
+            Equal(2L, await wal.CommitAsync(2L, TestToken));
+            Equal(2L, wal.LastCommittedEntryIndex);
+
+            False(gatedAppend.IsCompleted);
+            DoesNotContain(queuedAppends, static task => task.IsCompleted);
+            Equal(2L, wal.LastEntryIndex);
+
+            gatedEntry.Release();
+            await Task.WhenAll(queuedAppends.Append(gatedAppend)).WaitAsync(TestToken);
+            Equal(6L, wal.LastEntryIndex);
+            Equal([4L, 5L, 6L], queuedAppends.Select(static task => task.Result));
+        }
+        finally
+        {
+            gatedEntry.Release();
+            await cts.CancelAsync();
+        }
+    }
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task ConcurrentOverwriteDoesNotDeadlockBehindAppend()
     {

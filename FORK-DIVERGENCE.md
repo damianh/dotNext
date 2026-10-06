@@ -26,8 +26,8 @@ upstream sync is merged.
   durable. Visible differences: such an append observes its cancellation token only while it is queued (once its batch
   starts it completes with the batch), and if the shared cycle fails every append in the batch fails with the same
   exception and the WAL is faulted. Streamed entries, snapshots, `ILogEntryProducer` batches, overwrites and
-  configuration entries keep their own cycle. A formatted entry's buffer from a custom `Options.Allocator` is released
-  on the thread pool after the append completes, not on the appending thread.
+  configuration entries keep their own cycle. The buffer of an entry that formats itself (from `Options.Allocator` or
+  supplied by the entry) is released on the thread pool, possibly after the append completes.
   See [WAL group commit (#125)](RAFT-REVIEW.md#wal-group-commit-125).
 
 ### Replication

@@ -1443,9 +1443,11 @@ A cleanup failure is isolated as well. Each request is settled even if the alloc
 buffer is released, so a release failure cannot strand the rest of the batch (review of #132). Buffers are
 released only after the committer has released the append and persistence locks, as on the single-entry path
 before #125. That includes the buffers of requests rejected by their own checks, such as a stale-term proposal.
-A buffer from a custom `Options.Allocator` is released on the thread pool rather than on the committer, so an owner
-that blocks on, or re-enters, the WAL from `Dispose` (even with a grouped append it waits for) cannot deadlock the
-committer. Pool buffers from the default allocator are still released inline.
+A formatted entry's buffer, whether it comes from a custom `Options.Allocator` or from an owner the entry supplies
+itself, is released on the thread pool rather than on the committer. The WAL cannot tell a pool owner from user code,
+so an owner that blocks on, or re-enters, the WAL from `Dispose` (even with a grouped append it waits for) cannot
+deadlock the committer. The release is one work item per formatted entry, with no extra allocation (the request is
+the work item). A request canceled while queued releases its buffer inline, on the canceling thread.
 
 **Contract, per caller.**
 

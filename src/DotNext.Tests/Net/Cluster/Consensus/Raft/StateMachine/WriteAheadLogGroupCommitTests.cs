@@ -324,21 +324,26 @@ public sealed class WriteAheadLogGroupCommitTests : Test
         Equal(0, cycles.Count);
     }
 
-    // A custom owner may re-enter the WAL from Dispose, here with a grouped append that it waits for.
+    // An owner may re-enter the WAL from Dispose, here with a grouped append that it waits for.
     // Its release runs neither under the WAL locks nor on the committer, which must stay free to drain that append.
+    // The owner comes from Options.Allocator, or from the entry itself while Options.Allocator is not set.
     [Theory(Timeout = TestTimeouts.Default)]
-    [InlineData(true)]
-    [InlineData(false)]
-    public static async Task ReentrantBufferReleaseDoesNotBlockTheCommitter(bool rejected)
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public static async Task ReentrantBufferReleaseDoesNotBlockTheCommitter(bool rejected, bool suppliedByEntry)
     {
         using var cycles = new AppendCycles();
         WriteAheadLog wal = null;
         Task<long> probe = null;
         var armed = false;
         var released = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var options = CreateOptions(cycles.Tags, length => Volatile.Read(in armed)
-            ? new(_ => new CallbackOwner(length, OnRelease), length)
-            : new(new byte[length]));
+        var options = CreateOptions(cycles.Tags, suppliedByEntry
+            ? null
+            : length => Volatile.Read(in armed)
+                ? new(_ => new CallbackOwner(length, OnRelease), length)
+                : new(new byte[length]));
 
         await using (wal = new WriteAheadLog(options, IStateMachine.CreateNoOp()))
         {
@@ -349,9 +354,10 @@ public sealed class WriteAheadLogGroupCommitTests : Test
             await gate.Entered.WaitAsync(DefaultTimeout, TestToken);
 
             Volatile.Write(ref armed, true);
-            var owned = guarded.AppendInCurrentTermAsync(
-                new BinaryLogEntry<Blittable<long>> { Content = new() { Value = 2L }, Term = rejected ? 1L : 2L },
-                TestToken).AsTask();
+            var term = rejected ? 1L : 2L;
+            var owned = suppliedByEntry
+                ? guarded.AppendInCurrentTermAsync(new SelfOwnedEntry(term, OnRelease), TestToken).AsTask()
+                : guarded.AppendInCurrentTermAsync(new BinaryLogEntry<Blittable<long>> { Content = new() { Value = 2L }, Term = term }, TestToken).AsTask();
             Volatile.Write(ref armed, false);
             var next = guarded.AppendInCurrentTermAsync(Entry(3, 2L), TestToken).AsTask();
             gate.Release();
@@ -381,6 +387,22 @@ public sealed class WriteAheadLogGroupCommitTests : Test
         public Memory<byte> Memory { get; } = new byte[length];
 
         public void Dispose() => onDispose();
+    }
+
+    // Formats itself into an owner it creates, ignoring the WAL allocator.
+    private sealed class SelfOwnedEntry(long term, Action onDispose) : IRaftLogEntry, ISupplier<Buffers.MemoryAllocator<byte>, Buffers.MemoryOwner<byte>>
+    {
+        public long Term => term;
+
+        bool IDataTransferObject.IsReusable => true;
+
+        long? IDataTransferObject.Length => sizeof(long);
+
+        ValueTask IDataTransferObject.WriteToAsync<TWriter>(TWriter writer, CancellationToken token)
+            => writer.WriteAsync(new byte[sizeof(long)], token: token);
+
+        Buffers.MemoryOwner<byte> ISupplier<Buffers.MemoryAllocator<byte>, Buffers.MemoryOwner<byte>>.Invoke(Buffers.MemoryAllocator<byte> allocator)
+            => new(() => new CallbackOwner(sizeof(long), onDispose));
     }
 
     [Fact(Timeout = TestTimeouts.Default)]

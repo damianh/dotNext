@@ -24,13 +24,9 @@ partial class WriteAheadLog
     private readonly List<(AppendRequest Request, Exception Error)> rejectedRequests = []; // accessed by the committer only
     private readonly Task committerTask;
 
-    // A custom allocator owner may block on, or re-enter, the WAL when disposed. Its release must not run on the
-    // committer, which would then be unable to drain an append issued from Dispose. The pool owner is released inline.
-    private readonly bool releaseBuffersAsynchronously;
-
     private ValueTask<long> AppendBufferedAsync(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm, CancellationToken token)
     {
-        var request = new AppendRequest(entry, buffer, requireCurrentTerm, releaseBuffersAsynchronously);
+        var request = new AppendRequest(entry, buffer, requireCurrentTerm);
 
         // An already-canceled token completes the request here, through its guarded release path.
         request.RegisterCancellation(token);
@@ -175,25 +171,28 @@ partial class WriteAheadLog
         }
     }
 
-    private sealed class AppendRequest : TaskCompletionSource<long>
+    // The buffer of a request is supplied by the entry that formats itself (ISupplier<MemoryAllocator<byte>, MemoryOwner<byte>>),
+    // so its owner is user code that may block on, or re-enter, the WAL when disposed. A request settled by the committer
+    // therefore releases its buffer on the thread pool: released on the committer, an owner waiting for an append
+    // issued from Dispose would stall every later batch. A request canceled while queued releases it inline,
+    // on the canceling thread, which is not the committer.
+    private sealed class AppendRequest : TaskCompletionSource<long>, IThreadPoolWorkItem
     {
         private const int QueuedState = 0, StagedState = 1, CanceledState = 2;
 
         internal readonly BinaryLogEntry Entry;
         internal readonly bool RequireCurrentTerm;
-        private readonly bool releaseAsynchronously;
         private MemoryOwner<byte> buffer; // owns the payload of Entry, if not empty
         private CancellationTokenRegistration registration;
         private int state;
         internal long Index;
 
-        internal AppendRequest(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm, bool releaseAsynchronously)
+        internal AppendRequest(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm)
             : base(TaskCreationOptions.RunContinuationsAsynchronously)
         {
             Entry = entry;
             this.buffer = buffer;
             RequireCurrentTerm = requireCurrentTerm;
-            this.releaseAsynchronously = releaseAsynchronously;
         }
 
         // Call before the request is queued.
@@ -215,7 +214,7 @@ partial class WriteAheadLog
             {
                 try
                 {
-                    ReleaseResources(disposeRegistration: false);
+                    ReleaseResources(settledByCommitter: false);
                 }
                 finally
                 {
@@ -227,11 +226,12 @@ partial class WriteAheadLog
         // Grants the caller exclusive ownership of the request; it must then be completed or failed.
         internal bool TryStage() => Interlocked.CompareExchange(ref state, StagedState, QueuedState) is QueuedState;
 
+        // Call only after a successful TryStage.
         internal void Complete()
         {
             try
             {
-                ReleaseResources(disposeRegistration: true);
+                ReleaseResources(settledByCommitter: true);
             }
             finally
             {
@@ -239,11 +239,12 @@ partial class WriteAheadLog
             }
         }
 
+        // Call only after a successful TryStage.
         internal void Fail(Exception e)
         {
             try
             {
-                ReleaseResources(disposeRegistration: true);
+                ReleaseResources(settledByCommitter: true);
             }
             finally
             {
@@ -253,34 +254,30 @@ partial class WriteAheadLog
 
         // The request is settled whatever happens here, and a failure to release one request's buffer
         // must not prevent the other requests of the batch, whose entries are already durable, from completing.
-        private void ReleaseResources(bool disposeRegistration)
+        private void ReleaseResources(bool settledByCommitter)
         {
+            if (!settledByCommitter)
+            {
+                ReleaseBuffer();
+                return;
+            }
+
             try
             {
-                if (disposeRegistration)
-                    registration.Unregister();
+                registration.Unregister();
             }
             catch
             {
                 // It does not change the outcome of the append.
             }
 
-            if (buffer.IsEmpty)
-            {
-                // nothing to release
-            }
-            else if (releaseAsynchronously)
-            {
-                ThreadPool.UnsafeQueueUserWorkItem(static buffer => Release(ref buffer), buffer, preferLocal: false);
-                buffer = default;
-            }
-            else
-            {
-                Release(ref buffer);
-            }
+            if (!buffer.IsEmpty)
+                ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
         }
 
-        private static void Release(ref MemoryOwner<byte> buffer)
+        void IThreadPoolWorkItem.Execute() => ReleaseBuffer();
+
+        private void ReleaseBuffer()
         {
             try
             {
@@ -288,7 +285,7 @@ partial class WriteAheadLog
             }
             catch
             {
-                // Options.Allocator may return an owner whose disposal throws. It does not change the outcome of the append.
+                // The owner is user code and its disposal may throw. It does not change the outcome of the append.
             }
         }
     }

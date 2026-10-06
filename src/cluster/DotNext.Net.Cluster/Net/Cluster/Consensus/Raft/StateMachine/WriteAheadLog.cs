@@ -111,6 +111,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
             DiagnosticTags = configuration.MeasurementTags,
         };
         bufferAllocator = configuration.Allocator ?? ArrayPool<byte>.Shared.ToAllocator();
+        releaseBuffersAsynchronously = configuration.Allocator is not null;
         this.stateMachine = stateMachine;
         stateLock = new()
         {

@@ -310,16 +310,18 @@ public sealed class WriteAheadLogGroupCommitTests : Test
         public void Dispose() => throw new InvalidOperationException("release failure");
     }
 
-    // A rejected request releases its buffer after the committer has released the WAL locks,
-    // so an owner that re-enters the WAL from Dispose cannot block the committer.
-    [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task RejectedRequestReleasesItsBufferOutsideTheLocks()
+    // A custom owner may re-enter the WAL from Dispose, here with a grouped append that it waits for.
+    // Its release runs neither under the WAL locks nor on the committer, which must stay free to drain that append.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public static async Task ReentrantBufferReleaseDoesNotBlockTheCommitter(bool rejected)
     {
         using var cycles = new AppendCycles();
         WriteAheadLog wal = null;
         Task<long> probe = null;
         var armed = false;
-        var probeCompleted = false;
+        var released = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var options = CreateOptions(cycles.Tags, length => Volatile.Read(in armed)
             ? new(_ => new CallbackOwner(length, OnRelease), length)
             : new(new byte[length]));
@@ -333,26 +335,30 @@ public sealed class WriteAheadLogGroupCommitTests : Test
             await gate.Entered.WaitAsync(DefaultTimeout, TestToken);
 
             Volatile.Write(ref armed, true);
-            var stale = guarded.AppendInCurrentTermAsync(new BinaryLogEntry<Blittable<long>> { Content = new() { Value = 2L }, Term = 1L }, TestToken).AsTask();
+            var owned = guarded.AppendInCurrentTermAsync(
+                new BinaryLogEntry<Blittable<long>> { Content = new() { Value = 2L }, Term = rejected ? 1L : 2L },
+                TestToken).AsTask();
             Volatile.Write(ref armed, false);
             var next = guarded.AppendInCurrentTermAsync(Entry(3, 2L), TestToken).AsTask();
             gate.Release();
 
             Equal(1L, await first);
-            await ThrowsAsync<NotLeaderException>(() => stale.WaitAsync(DefaultTimeout, TestToken));
-            Equal(2L, await next.WaitAsync(DefaultTimeout, TestToken));
-            NotNull(probe);
-            True(Volatile.Read(in probeCompleted));
-            Equal(3L, await probe);
+            if (rejected)
+                await ThrowsAsync<NotLeaderException>(() => owned.WaitAsync(DefaultTimeout, TestToken));
+            else
+                Equal(2L, await owned.WaitAsync(DefaultTimeout, TestToken));
+
+            var lastIndex = rejected ? 2L : 3L;
+            Equal(lastIndex, await next.WaitAsync(DefaultTimeout, TestToken));
+            True(await released.Task.WaitAsync(DefaultTimeout, TestToken));
+            Equal(lastIndex + 1L, await probe);
         }
 
         void OnRelease()
         {
-            // An unbuffered append needs the append and persistence locks.
-            probe = Task.Run(async () => await wal.AppendAsync(
-                new BinaryLogEntry { Term = 2L, Content = Encoding.UTF8.GetBytes("probe"), IsConfiguration = true },
-                TestToken), TestToken);
-            Volatile.Write(ref probeCompleted, probe.Wait(TimeSpan.FromSeconds(5)));
+            var task = wal.AppendAsync(Entry(4, 2L), TestToken).AsTask();
+            Volatile.Write(ref probe, task);
+            released.TrySetResult(task.Wait(TimeSpan.FromSeconds(5)));
         }
     }
 

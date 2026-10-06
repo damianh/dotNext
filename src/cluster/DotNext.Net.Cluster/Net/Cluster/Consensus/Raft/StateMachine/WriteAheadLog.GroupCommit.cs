@@ -24,6 +24,10 @@ partial class WriteAheadLog
     private readonly List<(AppendRequest Request, Exception Error)> rejectedRequests = []; // accessed by the committer only
     private readonly Task committerTask;
 
+    // A custom allocator owner may block on, or re-enter, the WAL when disposed. Its release must not run on the
+    // committer, which would then be unable to drain an append issued from Dispose. The pool owner is released inline.
+    private readonly bool releaseBuffersAsynchronously;
+
     private ValueTask<long> AppendBufferedAsync(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm, CancellationToken token)
     {
         if (token.IsCancellationRequested)
@@ -32,7 +36,7 @@ partial class WriteAheadLog
             return ValueTask.FromCanceled<long>(token);
         }
 
-        var request = new AppendRequest(entry, buffer, requireCurrentTerm);
+        var request = new AppendRequest(entry, buffer, requireCurrentTerm, releaseBuffersAsynchronously);
         request.RegisterCancellation(token);
         appendRequests.Enqueue(request);
         appendTrigger.Set();
@@ -178,17 +182,19 @@ partial class WriteAheadLog
 
         internal readonly BinaryLogEntry Entry;
         internal readonly bool RequireCurrentTerm;
+        private readonly bool releaseAsynchronously;
         private MemoryOwner<byte> buffer; // owns the payload of Entry, if not empty
         private CancellationTokenRegistration registration;
         private int state;
         internal long Index;
 
-        internal AppendRequest(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm)
+        internal AppendRequest(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm, bool releaseAsynchronously)
             : base(TaskCreationOptions.RunContinuationsAsynchronously)
         {
             Entry = entry;
             this.buffer = buffer;
             RequireCurrentTerm = requireCurrentTerm;
+            this.releaseAsynchronously = releaseAsynchronously;
         }
 
         // Call before the request is queued.
@@ -254,7 +260,31 @@ partial class WriteAheadLog
             {
                 if (disposeRegistration)
                     registration.Unregister();
+            }
+            catch
+            {
+                // It does not change the outcome of the append.
+            }
 
+            if (buffer.IsEmpty)
+            {
+                // nothing to release
+            }
+            else if (releaseAsynchronously)
+            {
+                ThreadPool.UnsafeQueueUserWorkItem(static buffer => Release(ref buffer), buffer, preferLocal: false);
+                buffer = default;
+            }
+            else
+            {
+                Release(ref buffer);
+            }
+        }
+
+        private static void Release(ref MemoryOwner<byte> buffer)
+        {
+            try
+            {
                 buffer.Dispose();
             }
             catch

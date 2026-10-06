@@ -30,7 +30,8 @@ public abstract class QueuedSynchronizer<TContext> : QueuedSynchronizer
         TContext IWaitNodeFeature<TContext>.Feature => Context!;
     }
 
-    // The distinct contexts of the suspended callers that a drain of the queue has passed.
+    // The distinct contexts of the suspended callers that a drain of the queue has passed. Equal contexts are kept once,
+    // as the contract of CanOvertake requires equal contexts to be equivalent.
     // When it is full, the drain stops, as if overtaking were not allowed.
     [StructLayout(LayoutKind.Auto)]
     private struct SuspendedContexts
@@ -182,6 +183,9 @@ public abstract class QueuedSynchronizer<TContext> : QueuedSynchronizer
     /// To guarantee that every suspended caller eventually acquires this synchronizer, return <see langword="true"/> only if
     /// the acquisition with <paramref name="context"/> cannot cause <see cref="CanAcquire(TContext)"/> to return
     /// <see langword="false"/> for <paramref name="suspended"/>.
+    /// When the queue is drained, the contexts of the suspended callers that were passed are compared with
+    /// <see cref="EqualityComparer{T}.Default"/>, and equal contexts are checked once. The result must therefore be the
+    /// same for all suspended callers whose contexts are equal.
     /// The method is called while the internal state is locked, and must not modify the state.
     /// An override must not call the base implementation, which returns <see langword="false"/> and turns off
     /// overtaking for this object.

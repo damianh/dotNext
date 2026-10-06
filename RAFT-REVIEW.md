@@ -1478,8 +1478,12 @@ Callers of one kind keep their relative order: appends append in arrival order, 
   ReadBarrier or Overwrite, and nobody passes those.
 - The upgrade cannot deadlock. It waits for the readers that hold the lock, every new reader queues behind it, and the
   holders finish without needing the append lock.
-- The drain remembers up to 8 passed callers. After that, it falls back to the strict order, so a long run of blocked
-  waiters costs at most a FIFO wait.
+- The drain remembers up to 8 distinct contexts of the callers it has passed: equal contexts are kept once, so a run
+  of blocked appends takes one entry. If a ninth distinct context is blocked, the drain falls back to the strict
+  order, and the waiters behind it wait no longer than they would in FIFO. The WAL has six lock types, so the
+  WAL never reaches this limit and a drain can pass any number of blocked callers. The rule above, not this limit,
+  is what keeps appends from starving. `CanOvertake` must therefore give equal contexts the same answer, which an
+  override over an enum does by construction.
 - A cancelled suspended caller drains the queue, so the waiters it was blocking are granted.
 
 **Tests** (each is deterministic: it fills the queue with blocked appends and checks which waiters are granted, with

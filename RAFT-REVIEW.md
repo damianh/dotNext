@@ -1418,7 +1418,140 @@ Each would be its own issue with a measured before and after, and must keep ever
 | 6 | Backpressure on proposals, and a heartbeat that does not wait for the append queue | Bounded latency and no elections at overload; `ReplicateAsync` fails fast instead of producing unknown outcomes | Low: rejecting a proposal before it is appended is safe; the heartbeat must still carry a consistent commit index |
 
 1 and 2 attack the queue that the H2 and H4 numbers show; 3 halves the c1 latency; 4 and 5 shorten every cycle.
-Leader-side proposal batching (an issue direction) is part of 1.
+Leader-side proposal batching (an issue direction) is part of 1. Candidate 2 is done: see
+[Lock fairness for compatible waiters](#lock-fairness-for-compatible-waiters-126).
+
+### Lock fairness for compatible waiters (#126)
+
+**Problem.** The WAL `LockManager` granted its locks in strict queue order (H3, H4). A read or a commit queued behind
+an append waited for that append and every append ahead of it, each holding the append lock across its persist cycle.
+The leader reads a replication round or heartbeat under the read lock, so at overload the rounds stretched past the
+election timeout.
+
+**Options considered.**
+
+- **(a) Compatible waiters pass queued ones, with a starvation bound.** Chosen. It changes only the order in which the
+  lock manager grants locks; what the locks protect and the persist path are unchanged.
+- **(b) Stop holding the append lock across the persist cycle.** Rejected. The append lock is what orders the page
+  writes, the checkpoint and the publication of the new last index (publish-after-durable, #24, finding 15). Moving the
+  persist cycle out of it would need a separate durable-index publication protocol, a second order between concurrent
+  appends, and its own crash tests. It is the same territory as group commit (#125), which rewrites that path anyway.
+
+**Rule.** `QueuedSynchronizer<TContext>` has a new `protected virtual bool CanOvertake(TContext context, TContext
+suspended)`. Its base implementation returns `false` and turns overtaking off, so every other synchronizer keeps the
+strict queue order. A caller is granted ahead of suspended callers only if `CanAcquire` allows it and `CanOvertake`
+returns `true` for every suspended caller ahead of it. This applies both on arrival and when the queue is drained.
+`LockManager` returns `true` only when holding `context` cannot make `CanAcquire(suspended)` false, so passing never
+delays the passed caller:
+
+| Arriving \ suspended | Read | ReadBarrier | Append | Commit | Overwrite | Flush |
+|---|---|---|---|---|---|---|
+| Read | FIFO | no: a reader blocks the barrier | yes | yes | no | yes |
+| ReadBarrier | yes | FIFO | yes | yes | no | yes |
+| Append | yes | yes | FIFO | yes | no | yes |
+| Commit | yes | yes | yes | FIFO | no | yes |
+| Overwrite | no | no | no | no | FIFO | no |
+| Flush (the flusher) | no | no | no | no | no | FIFO |
+
+How each pair was checked: holding Read, Flush or ReadBarrier changes only the reader count, which blocks ReadBarrier
+and Overwrite. Holding Append blocks only Append and Overwrite. Holding Commit blocks only Commit and Overwrite.
+Overwrite is excluded both ways: nothing passes a queued upgrade, which `AcquirePriorityAsync` places at the head of
+the queue, so the deadlock fix for upgrades (#37, finding 10) is unchanged. An upgrade passes nobody.
+
+**Flusher exception.** With the rule alone, the flusher's read lock passed queued appends. It then took the
+persistence lock between two append cycles, so a node ran one flush cycle per append cycle instead of one per batch.
+On Linux this cut WAL and 1-voter throughput by 36 to 42%. The flusher now takes a separate `Flush` lock. It is
+compatible with the same locks as Read and anyone may pass it, but it passes nobody. Its pass therefore comes after
+the appends that were queued when it arrived, as before #126. Appends that arrive later queue behind it, because they
+cannot pass the earlier appends. The flusher's wait is still reported as `lock-wait-duration{lock=read}` with cause
+`flush`.
+
+**Safety.** The lock compatibility matrix (`CanAcquire`) is unchanged, so no two incompatible holders can coexist,
+and the persist path, the persistence lock and publish-after-durable are untouched. Only the order of grants changes.
+Callers of one kind keep their relative order: appends append in arrival order, and commits apply in arrival order.
+
+**Liveness.**
+
+- A passed caller is never made unacquirable by the caller that passed it, so it waits for no more than before.
+  Overtaking can only shorten waits.
+- Appends cannot be starved by continuous reads, because a reader never blocks an append. Readers can delay only a
+  ReadBarrier or Overwrite, and nobody passes those.
+- The upgrade cannot deadlock. It waits for the readers that hold the lock, every new reader queues behind it, and the
+  holders finish without needing the append lock.
+- The drain remembers up to 8 passed callers. After that, it falls back to the strict order, so a long run of blocked
+  waiters costs at most a FIFO wait.
+- A cancelled suspended caller drains the queue, so the waiters it was blocking are granted.
+
+**Tests** (each is deterministic: it fills the queue with blocked appends and checks which waiters are granted, with
+no timing):
+
+| Test | Checks |
+|---|---|
+| `WriteAheadLogLockManagerTests.CompatibleWaitersDoNotQueueBehindPendingAppends` | Red before #126: read, commit and apply waiters behind N queued appends are granted at once |
+| `WriteAheadLogTests.ReadAndCommitDoNotWaitForQueuedAppends` | Red before #126: on a real WAL, a read and a commit complete while the appends are blocked in their persist cycle |
+| `AppendsAreNotStarvedByContinuousReaders` | The append starvation bound |
+| `ReadersAndCommittersDoNotPassQueuedUpgrade`, `UpgradeAfterReaderPassedQueuedAppends`, `UpgradeWaitsForFlush` | The upgrade path and overwrite |
+| `QueuedReadersAndCommittersPassBlockedAppendAfterOverwrite`, `ReadersDoNotPassQueuedReadBarrier`, `CommittersStayInOrder`, `CanceledBlockedWaiterReleasesWaitersBehindIt`, `FlushKeepsQueueOrderBehindPendingAppends` | The remaining pairs |
+| `QueuedSynchronizerTests.CallersKeepQueueOrderByDefault`, `CallerPassesSuspendedCallersThatItCannotDelay`, `DrainStopsWhenTooManyCallersArePassed` | The base class hook |
+
+**Measured** with `--profile full --diagnostics` on the #123 cells. The Linux runs are CI `workflow_dispatch` on
+ubuntu-24.04 with shared memory (before: run 37476399824; reads and commits only: 37479182899; final: 37484876122).
+The open-loop cells offer a percentage of each run's own closed-loop ceiling, so the absolute rates differ between
+columns.
+
+| Linux | before | final |
+|---|---:|---:|
+| `wal-append-128B` c16 / c64, ack/s | 610 / 654 | 583 / 666 |
+| `raft-closed-1v-128B` c16 / c64, ack/s | 652 / 642 | 659 / 687 |
+| `raft-closed-1v-128B-c64` commit-lock wait p99 | 112.6 ms | 0 |
+| `raft-closed-3v-128B` c16 / c64, ack/s | 591 / 668 | 476 / 489 |
+| `raft-closed-3v-128B-c64` leader read-lock wait p99 / longest round / longest refresh gap | 85.8 / 123 / 124 ms | 0 / 20 / 21 ms |
+| flusher read-lock wait p50, `wal-append-128B` c16 / c64 | 11.1 / 84.2 ms | 24.3 / 92.4 ms |
+| `raft-open-3v-128B` 50% / 90%: longest round | 23 / 101 ms | 15 / 61 ms |
+| `raft-open-3v-128B-120pct` offered / completed per second | 801 / 653 | 587 / 461 |
+| `raft-open-3v-128B-120pct` leader read-lock wait p99 / commit-lock wait p99 | 1,178 / 1,172 ms | 0.6 / 0.1 ms |
+| `raft-open-3v-128B-120pct` longest round / longest refresh gap | 2,570 / 1,589 ms | 63 / 63 ms |
+| `raft-open-3v-128B-120pct` role transitions / unknown outcomes | 14 / 0 | 0 / 0 |
+
+The run with only reads and commits passing (no flusher exception) measured 351 / 399 ack/s for the WAL cells,
+404 / 410 for the 1-voter cells and 372 / 382 for the 3-voter cells, each with one flush cycle per append. It also
+measured 0 role transitions and a 54 ms longest round at 120%.
+
+| Windows, local, back to back | before | final |
+|---|---:|---:|
+| `wal-append-128B` c16 / c64, ack/s | 155 / 139 | 177 / 194 |
+| `raft-closed-1v-128B` c16 / c64, ack/s | 47 / 47 | 51 / 27 |
+| `raft-closed-3v-128B` c16 / c64, ack/s | 167 / 198 | 95 / 98 |
+| `raft-closed-3v-128B-c64` leader read-lock wait p99 / longest round / longest refresh gap | 303 / 334 / 333 ms | 0 / 83 / 91 ms |
+| `raft-open-3v-128B-120pct` offered / completed per second | 238 / 0.1 | 118 / 98 |
+| `raft-open-3v-128B-120pct` leader read-lock wait p99 / commit-lock wait p99 | 1,839 / 1,214 ms | 0 / 0 ms |
+| `raft-open-3v-128B-120pct` longest round / longest refresh gap | 1,617 / 1,621 ms | 26 / 28 ms |
+| `raft-open-3v-128B-120pct` leaders / role transitions / unknown outcomes | 7 / 27 / 5,127 | 1 / 0 / 0 |
+
+The Windows host was in a slow-device episode for part of these runs (Q4). The `raft-closed-1v-128B` cells ran 20 ms
+(before) and 37 ms (final) persist cycles, against about 5 ms in the WAL cells. Both ran one cycle per write, so those
+two cells measured the device. Linux, where this cell went from 642 to 687 per second, is the reference for them. An
+earlier Windows run before the change, in a steady period, also re-elected at 120%: 5 leaders, 25 role transitions,
+3,265 unknown outcomes and a 3.5 s longest round.
+
+**3-voter closed-loop throughput is lower**, by 20 to 27% on Linux and about half on Windows. Before #126 the leader's replication read waited behind the whole
+append queue. That batched replication as a side effect: followers wrote 7.6 entries per persist cycle at c16 and
+31.5 at c64, so only the leader paid one cycle per write. Now a round goes out as soon as the previous one returns. It
+carries 1 to 1.8 entries, and one follower persist cycle per write sets the ceiling. At 120% the absolute rate the
+final run offered (587/s) is about what the baseline completed at 90% (602/s). The difference is what happens beyond
+the ceiling: the baseline's rounds then stretch with the queue until followers start elections, while the final
+rounds stay at one cycle. Group commit (#125) appends in batches on the leader and should restore follower batching.
+Throughput beyond one cycle per write belongs there, not in the lock order.
+
+**Risks.**
+
+- The 3-voter closed-loop ceiling above.
+- The arrival check scans the queue, which costs O(queue length) per acquisition that finds waiters. The queue is
+  bounded by the number of concurrent callers.
+- `CanOvertake` is a new protected API on a public type. Its base implementation doubles as the switch that keeps the
+  old order, and the docs tell overrides not to call it.
+- Group commit (#125) changes the append path. The two meet only in `WriteAheadLog.LockManagement.cs` and
+  `WriteAheadLog.Flusher.cs`.
 
 ## Protocol input budgets (#22)
 

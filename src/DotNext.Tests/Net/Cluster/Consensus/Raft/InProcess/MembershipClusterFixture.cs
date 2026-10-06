@@ -288,6 +288,9 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
 
     internal sealed class MembershipNode : InProcessCluster
     {
+        // Identifies the WAL measurements of a node by its location.
+        internal const string NodeMeasurementTag = "inprocess-node";
+
         private readonly InProcessNetwork network;
 
         [SetsRequiredMembers]
@@ -316,6 +319,7 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
                 Location = location,
                 MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
                 FlushInterval = System.Threading.Timeout.InfiniteTimeSpan,
+                MeasurementTags = new() { { NodeMeasurementTag, location } },
             }, IStateMachine.CreateNoOp())
             {
                 ConfigurationStorage = storage,

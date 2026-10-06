@@ -42,6 +42,9 @@ public sealed class LaggingCandidateElectionTests : RaftTest
             True(await addition);
         }
 
+        // the addition of node 4 can commit on {0,3,4} or {0,2,3} before node 1 has its entry
+        await cluster.ReplicateToAllVotersAsync(n0);
+
         var lastIndex = n0.Log.LastEntryIndex;
         Equal(3L, lastIndex); // no-op, +3, +4
         Equal(lastIndex, n1.Log.LastEntryIndex);

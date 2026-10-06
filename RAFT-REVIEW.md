@@ -1420,6 +1420,140 @@ Each would be its own issue with a measured before and after, and must keep ever
 1 and 2 attack the queue that the H2 and H4 numbers show; 3 halves the c1 latency; 4 and 5 shorten every cycle.
 Leader-side proposal batching (an issue direction) is part of 1.
 
+Filed as #125 (1, done: see [WAL group commit (#125)](#wal-group-commit-125)), #126 (2) and #127 (the flaky tests).
+
+## WAL group commit (#125)
+
+**Change.** Concurrent single-entry `WriteAheadLog.AppendAsync` calls whose payload is in memory or can be
+formatted into a buffer (`BinaryLogEntry`, `IBufferedLogEntry`, entries that supply their own buffer, and the
+leader's proposals from `RaftCluster.ReplicateAsync` through `AppendInCurrentTermAsync`) now share one persist cycle.
+Each call enqueues a request and wakes one committer (`WriteAheadLog.GroupCommit.cs`). The committer takes the append
+lock and the persistence lock once, drains every request queued at that moment (no bound, as for an
+`ILogEntryProducer` batch), writes the entries in queue order, runs one `PersistAppendAsync` and only then completes
+the requests. Streamed entries, snapshots, `ILogEntryProducer` batches, overwrites and term-change appends are
+unchanged: they still take the locks themselves and run their own cycle.
+
+**Contract, per caller.**
+
+- An append completes only after the cycle that covers its entry has flushed the pages, the directories and the
+  checkpoint; `LastEntryIndex` is still published by that cycle, after it is durable (#24, finding 15).
+- If the cycle fails, every request it covers fails with the same exception and the WAL is faulted, as a failed
+  single append faulted it before; none is acknowledged.
+- The current-term guard (`requireCurrentTerm`) and the fault check run per request when the batch is staged: a
+  stale proposal fails alone and the rest of the batch is written.
+- Cancellation is observed while a request is queued: a request canceled then is removed and never written. Once
+  the committer stages it, the request completes with its batch, so cancellation does not abandon a written entry.
+  Before, cancellation was observed until the mutation started; the window is the same in effect (queue versus
+  lock wait).
+- Disposal fails the requests still queued with `ObjectDisposedException`.
+
+No option was added and no default changed. An enqueue that finds the committer idle wakes it inline (no thread hop
+when the locks are free), and the requests complete asynchronously, so a caller's continuation never runs on the
+committer.
+
+**Red first.** `WriteAheadLogGroupCommitTests.ConcurrentAppendsShareOnePersistCycle` counts `persist-phase-duration`
+measurements with `cause=append` through a `MeterListener` filtered on the WAL's `MeasurementTags`. It holds the
+first append's cycle open and queues 7 more behind it. On `fork` the 8 appends cost 8 cycles (the test failed with
+8); with the change they cost 2: the first and one shared by the other 7.
+`InProcess.GroupCommitProposalTests.ConcurrentProposalsShareLeaderPersistCycles` shows the same through
+`ReplicateAsync` on a 3-voter in-process cluster (red on `fork`).
+
+**Coverage.** `WriteAheadLogGroupCommitTests`: the shared cycle; a request canceled while queued is not written
+and the rest are; a request canceled after its cycle started completes; a failed persist faults every covered
+request and none is published; a stale-term proposal fails alone; an overwrite queued behind a group cycle does not
+deadlock (finding 10, the upgrade path) and appends queued behind an overwrite share one cycle after it; every
+buffered entry kind joins the cycle; disposal fails queued requests. `WriteAheadLogDurabilityTests.
+GroupCommittedAppendsSurviveProcessTermination` kills the worker process right after a group is acknowledged
+(private and shared memory) and checks that the reopened WAL holds the whole group and appends after it.
+
+### Finding: an empty heartbeat round waited for the slowest member
+
+The slow-follower cell (3 voters, one follower behind a relay that pauses its traffic for 5 s) regressed with group
+commit alone: proposals stalled for the whole pause instead of committing on the two healthy voters. The cause predates this change but was hidden by the
+one-cycle-per-ack rate. The commit-first rule in `ReplicationProcess` counts a member toward commitment only when it
+reports `Replicated(index)`; an accepted empty heartbeat reported `Touched`. With group commit the leader appends a
+batch, a round replicates it to the fast follower, and the next round is often empty for that follower. That
+answer was `Touched`, so the round waited for the paused member to complete the commit majority.
+
+`ReplicationProcess.ConvertToResult` now reports `Replicated(precedingIndex)` for an accepted empty heartbeat whose
+preceding entry has the leader's term. By the Log Matching property that acceptance proves the member stores the
+leader's log up to that entry, so it is safe to count (Raft §5.4.2: only entries of the current term are committed
+by counting replicas). Rounds that carry entries or a snapshot, and heartbeats whose preceding entry has an older
+term, are unchanged. `ReplicationProcessHeartbeatTests` covers both sides (red on the old code). After the fix the
+slow-follower cell completed in 4 of 4 runs.
+
+Side effect: an empty round no longer waits for an unresponsive member, so the leader marks it unresponsive at the
+start of the next round (`LeaderState.StartReplication` checks `IsAvailable`), as rounds with entries already did.
+`LeaderReadFailureAttributionTests.PeerTransportFailureIsStillReportedAsUnresponsive` now forces a round on each
+step of its wait.
+
+A shorter stall of about 3 s remains in that cell: a linearizable read barrier queued behind appends on the
+strict-FIFO `LockManager`. It appears with the old binaries too and belongs to #126.
+
+### Before and after
+
+Same tool (`--profile full --diagnostics --repeat 3`), median acked/s of 3 rounds; "cyc/ack" is the leader's append
+cycles per acknowledged write and "ent/cyc" the entries per cycle.
+
+**Linux** (CI `workflow_dispatch`, before 37480280376 on `fork`, after 37489433429):
+
+| Cell | Before | After |
+|---|---:|---:|
+| wal-append c1 | 374 | 430 |
+| wal-append c16 | 647 (p50 22.9 ms) | 6,685 (p50 2.3 ms; cyc/ack 0.063, ent/cyc 16) |
+| wal-append c64 | 662 (p50 94.5 ms) | 24,594 (p50 2.6 ms; ent/cyc 63.8) |
+| wal-append c16, private memory | 696 | 6,237 |
+| wal-batch b16 / b256 (path unchanged) | 5,911 / 72,428 | 6,702 / 79,779 |
+| raft-closed 1 voter c1 / c16 / c64 | 377 / 637 / 662 | 430 / 6,609 / 23,622 |
+| raft-closed 3 voters c1 / c16 / c64 | 222 / 585 / 637 | 249 / 2,757 / 10,421 (ent/cyc 8.7 at c16, 35.4 at c64; p50 5.9 ms) |
+
+3-voter open loop on Linux. Before: 120% offered about 764/s and completed 611, 475 and 86/s across the rounds,
+with up to 7,135 unknown outcomes, 2 to 3 leader changes and rounds up to 3.9 s. After: 50%, 90% and 120% offered
+5,210, 9,377 and 12,501/s; every level kept up with 0 unknown outcomes, 1 leader, rounds of at most 37 ms and a p99
+of about 36 ms.
+
+**Windows**, interleaved old, new, old, new on one host and one device (`--cells wal-append-128B,wal-batch-128B,
+raft-closed-3v-128B`), one round each:
+
+| Cell | Old (2 runs) | New (2 runs) |
+|---|---:|---:|
+| wal-append c1 | 100 / 101 | 102 / 103 |
+| wal-append c16 | 194 / 181 (p50 77 / 73 ms) | 1,602 / 1,610 (p50 9.7 ms; ent/cyc 16) |
+| wal-append c64 | 195 / 151 (p50 314 / 305 ms) | 5,619 / 6,183 (p50 10–11 ms; ent/cyc 63) |
+| raft-closed 3 voters c1 | 57 / 60 | 22 / 60 |
+| raft-closed 3 voters c16 | 161 / 169 (p50 96 / 90 ms) | 731 / 593 (p50 22 / 23 ms; ent/cyc 15) |
+| raft-closed 3 voters c64 | 192 / 192 (p50 330 / 328 ms) | 2,699 / 2,635 (p50 23–24 ms; ent/cyc 61–64) |
+
+The cycle itself did not change (4.9 to 5.6 ms per cycle on both binaries when the device is steady). The new c1
+outlier (22/s, 13 ms per cycle) and the old run 2's slow private-memory and batch cells (17 to 25 ms per cycle) are
+device episodes as described in the #123 Q4 answer. The explicit-batch path, run alone three times interleaved, is
+the same on both binaries: b256 at 19,407 to 21,124/s old and 20,783 to 21,423/s new.
+
+The full Windows after-run (`--repeat 3`) agrees: wal-append c16 and c64 at 1,558 and 5,910/s (ent/cyc 16 and
+63.5), raft-closed 3 voters c16 and c64 at 682 and 2,590/s. Its open loop offered about 3,000/s at 120% and kept up
+with 0 unknown outcomes and rounds of at most 94 ms; the before-run on the same host had up to 5,705 unknown
+outcomes and 5 leader changes at 120% (the before full run was degraded by device episodes; use the A/B above for
+ratios).
+
+**Open-loop caveat.** The tool sets the open-loop rate as a fraction of the busiest closed-loop cell with the same
+voters (c64). With group commit that cell is 15 to 40 times faster and an open-loop backlog of up to 4,096 requests
+forms larger batches than c64, so "120%" no longer saturates the leader. The H4 overload behaviour (elections and
+unknown outcomes at overload) is therefore not exercised at the same absolute rate; it would need a higher fraction
+or a proposal rate that outruns the larger batches. Backpressure remains candidate 6.
+
+**Oracles.** The smoke profile exits 0; `--inject drop-applied`, `reorder-applied` and `non-durable-followers` each
+exit 3 with the same oracle as before (apply order, committed-prefix agreement and durability).
+
+**Risks.**
+
+- Batch fairness: the batch has no bound, so one cycle can write a large backlog and the requests queued behind it
+  wait for that cycle. This is the same as one large `ILogEntryProducer` batch.
+- One failure faults the whole batch and every covered caller observes the same exception instance.
+- The first enqueuing caller runs the committer up to its first await (lock acquisition) on its own thread.
+- The empty-heartbeat accounting change moves unresponsive detection for empty rounds one round later.
+- #126 (lock fairness) changes `WriteAheadLog.LockManagement.cs`; the committer only uses the existing
+  `AcquireAppendLockAsync` and persistence lock, so a rebase should be mechanical.
+
 ## Protocol input budgets (#22)
 
 **Question.** Can a peer that sends a malformed, inconsistent or stalled request make a node allocate memory

@@ -19,6 +19,20 @@ upstream sync is merged.
   pending flush callers with `ObjectDisposedException`, waits only for the flush pass that is already running, and
   then releases resources. Call `FlushAsync` before disposing if the commit and applied indices must survive a restart.
   Appended entries are durable either way, and a commit index that is lost is learned again from the leader.
+* **Concurrent single-entry appends are group-committed** (#125). Upstream gives every `AppendAsync` its own persist
+  cycle. In the fork, entries whose payload is in memory or can be formatted into a buffer (`BinaryLogEntry`,
+  `IBufferedLogEntry`, and the leader's proposals from `ReplicateAsync`) are queued, and one committer writes everything
+  queued when its cycle starts and persists it with one cycle. Each append still completes only after that cycle is
+  durable. Visible differences: such an append observes its cancellation token only while it is queued (once its batch
+  starts it completes with the batch), and if the shared cycle fails every append in the batch fails with the same
+  exception and the WAL is faulted. Streamed entries, snapshots, `ILogEntryProducer` batches and overwrites keep their
+  own cycle. See [WAL group commit (#125)](RAFT-REVIEW.md#wal-group-commit-125).
+
+### Replication
+* **An accepted empty heartbeat counts toward commitment when its preceding entry has the leader's term** (#125).
+  Upstream counts such a member only as reachable, so a round with nothing new to send waits for the slowest member
+  before the commit index can advance. Side effect: an unresponsive member is detected at the start of the next round
+  rather than by the empty round itself, as for rounds that carry entries.
 
 ### Checkpoint on-disk format
 | Version | Origin | Layout | Fork support |

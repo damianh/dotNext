@@ -21,7 +21,7 @@ partial class WriteAheadLog
         /// Allows reading of the log entries.
         /// </summary>
         /// <remarks>
-        /// Cannot be acquired concurrently with <see cref="Overwrite"/>, <see cref="ReadBarrier"/>.
+        /// Cannot be acquired concurrently with <see cref="Overwrite"/>, and cannot pass a suspended <see cref="ReadBarrier"/>.
         /// </remarks>
         Read = 0,
 
@@ -29,7 +29,9 @@ partial class WriteAheadLog
         /// Allows the infrastructure to remove the entries applied to the snapshot.
         /// </summary>
         /// <remarks>
-        /// Cannot be acquired concurrently with <see cref="Read"/>, <see cref="ReadBarrier"/>, <see cref="Overwrite"/>.
+        /// Waits for the readers that hold the lock, and cannot be acquired concurrently with
+        /// <see cref="ReadBarrier"/>, <see cref="Overwrite"/>.
+        /// The readers that arrive after the barrier is acquired are not blocked, because they observe the new snapshot.
         /// </remarks>
         ReadBarrier,
 
@@ -54,9 +56,19 @@ partial class WriteAheadLog
         /// </summary>
         /// <remarks>
         /// Cannot be acquired concurrently with <see cref="Append"/>, <see cref="Overwrite"/>, <see cref="Read"/>,
-        /// <see cref="Commit"/>, <see cref="ReadBarrier"/>.
+        /// <see cref="Commit"/>, <see cref="ReadBarrier"/>, <see cref="Flush"/>.
         /// </remarks>
         Overwrite,
+
+        /// <summary>
+        /// Allows the flusher to read the log boundaries and persist the committed entries.
+        /// </summary>
+        /// <remarks>
+        /// Compatible with the same locks as <see cref="Read"/>, but never passes a suspended caller: a flush pass
+        /// also takes the persistence lock, and letting it pass the queued appends would put a whole flush cycle
+        /// between two consecutive append cycles instead of one flush after them.
+        /// </remarks>
+        Flush,
     }
 
 #if DEBUG
@@ -71,7 +83,7 @@ partial class WriteAheadLog
 
         protected override bool CanAcquire(LockType type) => type switch
         {
-            LockType.Read => !overwriteLockState,
+            LockType.Read or LockType.Flush => !overwriteLockState,
             LockType.ReadBarrier => !overwriteLockState && readersCount is 0U,
             LockType.Append => !appendLockState,
             LockType.Commit => !overwriteLockState && !commitLockState,
@@ -79,11 +91,24 @@ partial class WriteAheadLog
             _ => false
         };
 
+        // A caller passes a suspended caller only if holding its lock cannot make CanAcquire false for the suspended one,
+        // so the suspended caller is never delayed: a persist cycle no longer blocks reads and commits (#126).
+        // Callers of the same type stay in order, nothing passes the upgrade to Overwrite, and the flusher passes nobody.
+        protected override bool CanOvertake(LockType type, LockType suspended) => (type, suspended) switch
+        {
+            (_, LockType.Overwrite) or (LockType.Overwrite or LockType.Flush, _) => false,
+            (LockType.Read or LockType.ReadBarrier, LockType.ReadBarrier) => false,
+            (LockType.Read or LockType.ReadBarrier, LockType.Read or LockType.Flush or LockType.Append or LockType.Commit) => true,
+            (LockType.Append, LockType.Read or LockType.Flush or LockType.ReadBarrier or LockType.Commit) => true,
+            (LockType.Commit, LockType.Read or LockType.Flush or LockType.ReadBarrier or LockType.Append) => true,
+            _ => false,
+        };
+
         protected override void AcquireCore(LockType type)
         {
             switch (type)
             {
-                case LockType.Read:
+                case LockType.Read or LockType.Flush:
                     readersCount++;
                     break;
                 case LockType.ReadBarrier:
@@ -108,7 +133,7 @@ partial class WriteAheadLog
         {
             switch (type)
             {
-                case LockType.Read or LockType.ReadBarrier:
+                case LockType.Read or LockType.ReadBarrier or LockType.Flush:
                     readersCount--;
                     break;
                 case LockType.Append or LockType.Overwrite:
@@ -148,6 +173,12 @@ partial class WriteAheadLog
             => AcquireTracedAsync(LockType.Read, "read", cause, token);
 
         public void ReleaseReadLock() => Release(LockType.Read);
+
+        // Reported as the read lock with the flush cause, as before #126, so the diagnostics stay comparable.
+        public ValueTask AcquireFlushLockAsync(CancellationToken token = default)
+            => AcquireTracedAsync(LockType.Flush, "read", FlushCause, token);
+
+        public void ReleaseFlushLock() => Release(LockType.Flush);
         
         public ValueTask AcquireReadBarrierAsync(CancellationToken token = default)
             => AcquireTracedAsync(LockType.ReadBarrier, "read-barrier", CleanupCause, token);

@@ -50,6 +50,16 @@ upstream sync is merged.
 * **Flusher:** the fork's flusher keeps its failure-propagation behaviour (#38 and #40). Upstream's
   `FlushState`/`UnflushedIndex` rework is not used.
 
+### WAL lock order
+* **Reads, commits and appends do not wait in line behind callers they cannot delay** (#126). Upstream's WAL lock
+  manager grants its locks strictly in queue order, so a log read (the applier, or the leader reading the entries of a
+  replication round or heartbeat) and a commit wait for every queued append and its persist cycle. In the fork a
+  caller passes a queued caller when holding its own lock cannot block that caller: reads and commits pass queued
+  appends, and an append passes queued reads and commits. Callers of one kind keep their order, nothing passes the
+  overwrite upgrade, and the flusher passes nobody, so its pass still follows the appends queued before it. The
+  durability and ordering of the log do not change. See
+  [Lock fairness for compatible waiters](RAFT-REVIEW.md#lock-fairness-for-compatible-waiters-126).
+
 ### Leader leases
 * **Lease validity is checked against the monotonic clock.** `TryGetLeaseToken` compares the time provider's
   timestamp with the lease deadline and cancels an expired lease, even if its timer callback has not run yet (#20).
@@ -196,6 +206,7 @@ unchanged. The leader is not stepped down for this; it steps down only on quorum
 | API | Upstream | Fork |
 |---|---|---|
 | `WriteAheadLog` diagnostics: meter `DotNext.IO.WriteAheadLog` histograms `persist-phase-duration`, `lock-wait-duration`, `lock-hold-duration`, and EventSource `DotNext-IO-WriteAheadLog` (keyword `0x1`) | absent | **added**, opt-in: nothing is measured unless a listener subscribes; no behaviour change. See [Durable-write latency investigation](RAFT-REVIEW.md#durable-write-latency-investigation-123) (#123) |
+| `QueuedSynchronizer<TContext>.CanOvertake(TContext, TContext)` (protected virtual) | absent | **added**: lets a derived synchronizer grant a caller ahead of suspended callers it cannot delay; the default keeps the strict queue order (#126) |
 | `WriteAheadLog.Options.FlushOnCommit` | present (6.8.0+) | **removed** |
 | `DotNext.IO.Log.ILogCompactionSupport` | removed in 6.8.0 (breaking change in a minor release) | removed too (follows upstream) |
 | `RaftCluster<TMember>.UseLogConfiguration` (protected) | absent | **added**: enables the log-derived active configuration (#49) |
@@ -219,7 +230,7 @@ configuration barriers), #59 (leader lease timing), #66 (read barrier spin after
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
 #51 (unavailable-member leadership-loss logging), #73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
 #106 (durable applied cluster configuration baseline), #26 (candidate voting supervision), #115 (leader local read
-failure attribution).
+failure attribution), #126 (WAL lock fairness for compatible waiters).
 
 ## Upstream sync log
 

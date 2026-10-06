@@ -11,7 +11,7 @@ using Threading;
 // and entries that format themselves into a buffer) are queued and written by one committer. It drains
 // every request queued when its batch starts, writes them in queue order and persists them with one cycle.
 // The durability contract is unchanged: LastEntryIndex is published by that cycle, and each caller completes
-// only after the cycle that covers its entry. Unbuffered appends keep their own cycle.
+// only after the cycle that covers its entry. Unbuffered appends and configuration entries keep their own cycle.
 partial class WriteAheadLog
 {
     // Diagnostics only, see QueuedSynchronizer.TrackSuspendedCallers.
@@ -200,8 +200,14 @@ partial class WriteAheadLog
         {
             if (Interlocked.CompareExchange(ref state, CanceledState, QueuedState) is QueuedState)
             {
-                ReleaseResources(disposeRegistration: false);
-                TrySetCanceled(token);
+                try
+                {
+                    ReleaseResources(disposeRegistration: false);
+                }
+                finally
+                {
+                    TrySetCanceled(token);
+                }
             }
         }
 
@@ -210,22 +216,43 @@ partial class WriteAheadLog
 
         internal void Complete()
         {
-            ReleaseResources(disposeRegistration: true);
-            TrySetResult(Index);
+            try
+            {
+                ReleaseResources(disposeRegistration: true);
+            }
+            finally
+            {
+                TrySetResult(Index);
+            }
         }
 
         internal void Fail(Exception e)
         {
-            ReleaseResources(disposeRegistration: true);
-            TrySetException(e);
+            try
+            {
+                ReleaseResources(disposeRegistration: true);
+            }
+            finally
+            {
+                TrySetException(e);
+            }
         }
 
+        // The request is settled whatever happens here, and a failure to release one request's buffer
+        // must not prevent the other requests of the batch, whose entries are already durable, from completing.
         private void ReleaseResources(bool disposeRegistration)
         {
-            if (disposeRegistration)
-                registration.Unregister();
+            try
+            {
+                if (disposeRegistration)
+                    registration.Unregister();
 
-            buffer.Dispose();
+                buffer.Dispose();
+            }
+            catch
+            {
+                // Options.Allocator may return an owner whose disposal throws. It does not change the outcome of the append.
+            }
         }
     }
 }

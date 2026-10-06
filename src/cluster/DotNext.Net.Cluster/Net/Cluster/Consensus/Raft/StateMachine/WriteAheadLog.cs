@@ -39,6 +39,7 @@ using Threading.Tasks;
 /// are written together and published by that one cycle, and each append completes only after the cycle that covers
 /// its entry. If that cycle fails, every append it covers fails and the WAL is faulted. Such an append observes its
 /// cancellation token only while it is queued; once its batch starts, it completes with the batch.
+/// Configuration entries (<see cref="IRaftLogEntry.IsConfiguration"/>) are not grouped and keep their own cycle.
 /// A non-cancellation failure while an entry payload is being written, cancellation thrown from the payload while
 /// the request itself was not canceled, an error from the state machine while applying a snapshot, or a real
 /// storage/integrity failure may leave partially modified state, so it faults the WAL and requires reopening it
@@ -407,13 +408,20 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         {
             task = ValueTask.FromException<long>(new InternalException(exception));
         }
-        else if (typeof(TEntry) == typeof(BinaryLogEntry))
+        else if (typeof(TEntry) == typeof(BinaryLogEntry) && !entry.IsConfiguration)
         {
             task = AppendBufferedAsync(Unsafe.As<TEntry, BinaryLogEntry>(ref entry), default, requireCurrentTerm, token);
         }
         else if (entry.IsSnapshot)
         {
             task = ValueTask.FromException<long>(new InvalidOperationException(ExceptionMessages.SnapshotDetected));
+        }
+        else if (entry.IsConfiguration)
+        {
+            // Not group-committed: the cluster activates a configuration only after its append completes
+            // (RaftCluster.AppendConfigurationAsync). The direct path resumes that caller inline, without
+            // a scheduling delay during which a replication round could count the new tail over the old membership.
+            task = AppendUnbufferedAsync(entry, requireCurrentTerm, token);
         }
         else if (entry.TryGetMemory(out var payload))
         {

@@ -237,6 +237,79 @@ public sealed class WriteAheadLogGroupCommitTests : Test
         Equal("entry 5", await entries[(int)indices[4] - 1].ToStringAsync(Encoding.UTF8, token: TestToken));
     }
 
+    // The cluster activates a configuration after its append completes, so a configuration entry is not grouped:
+    // the direct path resumes its caller inline, before a replication round can take the tail with the old membership.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ConfigurationEntryKeepsItsOwnCycle()
+    {
+        using var cycles = new AppendCycles();
+        await using var wal = new WriteAheadLog(CreateOptions(cycles.Tags), IStateMachine.CreateNoOp());
+        var gate = cycles.HoldCycle(1);
+        var first = Task.Run(async () => await wal.AppendAsync(Entry(1), TestToken), TestToken);
+        await gate.Entered.WaitAsync(DefaultTimeout, TestToken);
+
+        var before = wal.AppendAsync(Entry(2), TestToken).AsTask();
+        var configuration = wal.AppendAsync(
+            new BinaryLogEntry { Term = 0L, Content = Encoding.UTF8.GetBytes("configuration"), IsConfiguration = true },
+            TestToken).AsTask();
+        var after = new[]
+        {
+            wal.AppendAsync(Entry(4), TestToken).AsTask(),
+            wal.AppendAsync(Entry(5), TestToken).AsTask(),
+        };
+        gate.Release();
+
+        Equal(1L, await first);
+        long[] indices = [await before, await configuration, .. await Task.WhenAll(after).WaitAsync(DefaultTimeout, TestToken)];
+        Equal(new[] { 2L, 3L, 4L, 5L }, indices.Order());
+        Equal(5L, wal.LastEntryIndex);
+
+        // One cycle for the first append, one for the configuration, one shared by the other three.
+        Equal(3, cycles.Count);
+        using var entries = await wal.ReadAsync(1L, 5L, TestToken);
+        var configurationEntry = entries[(int)indices[1] - 1];
+        True(configurationEntry.IsConfiguration);
+        Equal("configuration", await configurationEntry.ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
+    // Options.Allocator may return an owner whose disposal throws: every request of the batch is still settled.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ThrowingBufferReleaseDoesNotStrandTheBatch()
+    {
+        using var cycles = new AppendCycles();
+        var throwing = true;
+        var options = CreateOptions(cycles.Tags, length => Volatile.Read(in throwing)
+            ? new(static length => new ThrowingOwner(length), length)
+            : new(new byte[length]));
+
+        await using var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        var gate = cycles.HoldCycle(1);
+        var first = Task.Run(async () => await wal.AppendAsync(Entry(1), TestToken), TestToken);
+        await gate.Entered.WaitAsync(DefaultTimeout, TestToken);
+
+        var formatted = new[]
+        {
+            wal.AppendAsync(new BinaryLogEntry<Blittable<long>> { Content = new() { Value = 2L }, Term = 0L }, TestToken).AsTask(),
+            wal.AppendAsync(new BinaryLogEntry<Blittable<long>> { Content = new() { Value = 3L }, Term = 0L }, TestToken).AsTask(),
+        };
+        var last = wal.AppendAsync(Entry(4), TestToken).AsTask();
+        gate.Release();
+
+        Equal(1L, await first);
+        Equal(new[] { 2L, 3L }, await Task.WhenAll(formatted).WaitAsync(DefaultTimeout, TestToken));
+        Equal(4L, await last.WaitAsync(DefaultTimeout, TestToken));
+        Volatile.Write(ref throwing, false);
+        Equal(4L, wal.LastEntryIndex);
+        Equal(5L, await wal.AppendAsync(Entry(5), TestToken));
+    }
+
+    private sealed class ThrowingOwner(int length) : System.Buffers.IMemoryOwner<byte>
+    {
+        public Memory<byte> Memory { get; } = new byte[length];
+
+        public void Dispose() => throw new InvalidOperationException("release failure");
+    }
+
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task DisposalFailsQueuedAppends()
     {
@@ -296,13 +369,14 @@ public sealed class WriteAheadLogGroupCommitTests : Test
     private static BinaryLogEntry Entry(int value, long term = 0L)
         => new() { Term = term, Content = Encoding.UTF8.GetBytes($"entry {value}") };
 
-    private static WriteAheadLog.Options CreateOptions(TagList tags)
+    private static WriteAheadLog.Options CreateOptions(TagList tags, Buffers.MemoryAllocator<byte> allocator = null)
         => new()
         {
             Location = GetTempPath(),
             MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
             FlushInterval = TimeSpan.FromDays(1),
             MeasurementTags = tags,
+            Allocator = allocator,
         };
 
     // Counts append persist cycles by their "pages" phase, which every cycle reports once (#124).

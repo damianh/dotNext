@@ -1431,7 +1431,16 @@ Each call enqueues a request and wakes one committer (`WriteAheadLog.GroupCommit
 lock and the persistence lock once, drains every request queued at that moment (no bound, as for an
 `ILogEntryProducer` batch), writes the entries in queue order, runs one `PersistAppendAsync` and only then completes
 the requests. Streamed entries, snapshots, `ILogEntryProducer` batches, overwrites and term-change appends are
-unchanged: they still take the locks themselves and run their own cycle.
+unchanged: they still take the locks themselves and run their own cycle. So do configuration entries. The cluster
+activates a configuration only after its append completes (`RaftCluster.AppendConfigurationAsync`). A grouped
+append resumes its caller through the thread pool, and during that delay a replication round could take the new
+`LastEntryIndex` with the old membership and commit the configuration under the old quorum.
+`LogDerivedConfigurationTests.LeaderStepsDownOnceItsRemovalIsCommitted` caught this in CI (2 of the 4 remaining
+voters held the removal). The direct path resumes the caller inline, as before #125. The window that remains is
+the same as before #125, and it is narrow: a timer heartbeat between publication and activation.
+
+A cleanup failure is isolated as well. Each request is settled even if the allocator's owner throws when its
+buffer is released, so a release failure cannot strand the rest of the batch (review of #132).
 
 **Contract, per caller.**
 

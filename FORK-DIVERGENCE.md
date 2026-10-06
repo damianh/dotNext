@@ -25,8 +25,8 @@ upstream sync is merged.
   queued when its cycle starts and persists it with one cycle. Each append still completes only after that cycle is
   durable. Visible differences: such an append observes its cancellation token only while it is queued (once its batch
   starts it completes with the batch), and if the shared cycle fails every append in the batch fails with the same
-  exception and the WAL is faulted. Streamed entries, snapshots, `ILogEntryProducer` batches and overwrites keep their
-  own cycle. See [WAL group commit (#125)](RAFT-REVIEW.md#wal-group-commit-125).
+  exception and the WAL is faulted. Streamed entries, snapshots, `ILogEntryProducer` batches, overwrites and
+  configuration entries keep their own cycle. See [WAL group commit (#125)](RAFT-REVIEW.md#wal-group-commit-125).
 
 ### Replication
 * **An accepted empty heartbeat counts toward commitment when its preceding entry has the leader's term** (#125).

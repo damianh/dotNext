@@ -30,14 +30,13 @@ partial class WriteAheadLog
 
     private ValueTask<long> AppendBufferedAsync(BinaryLogEntry entry, MemoryOwner<byte> buffer, bool requireCurrentTerm, CancellationToken token)
     {
-        if (token.IsCancellationRequested)
-        {
-            buffer.Dispose();
-            return ValueTask.FromCanceled<long>(token);
-        }
-
         var request = new AppendRequest(entry, buffer, requireCurrentTerm, releaseBuffersAsynchronously);
+
+        // An already-canceled token completes the request here, through its guarded release path.
         request.RegisterCancellation(token);
+        if (request.Task.IsCompleted)
+            return new(request.Task);
+
         appendRequests.Enqueue(request);
         appendTrigger.Set();
 

@@ -310,6 +310,20 @@ public sealed class WriteAheadLogGroupCommitTests : Test
         public void Dispose() => throw new InvalidOperationException("release failure");
     }
 
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task AlreadyCanceledAppendKeepsItsOutcomeWhenReleaseThrows()
+    {
+        using var cycles = new AppendCycles();
+        var options = CreateOptions(cycles.Tags, static length => new(static length => new ThrowingOwner(length), length));
+        await using var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+
+        await ThrowsAnyAsync<OperationCanceledException>(async () => await wal.AppendAsync(
+            new BinaryLogEntry<Blittable<long>> { Content = new() { Value = 1L }, Term = 0L },
+            new CancellationToken(canceled: true)));
+        Equal(0L, wal.LastEntryIndex);
+        Equal(0, cycles.Count);
+    }
+
     // A custom owner may re-enter the WAL from Dispose, here with a grouped append that it waits for.
     // Its release runs neither under the WAL locks nor on the committer, which must stay free to drain that append.
     [Theory(Timeout = TestTimeouts.Default)]

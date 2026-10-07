@@ -130,7 +130,8 @@ public sealed class WriteAheadLogFlushTests : Test
             await wal.CommitAsync(4L, TestToken);
             await wal.FlushAsync(TestToken);
             await machine.Entered.Task.WaitAsync(TestToken);
-            True(CleanupTask(wal).TryGetTarget(out var cleanup));
+            var cleanup = CleanupTask(wal);
+            NotNull(cleanup);
             await wal.WaitForApplyAsync(4L, TestToken);
             AssertApplierIsWaiting(wal);
 
@@ -289,7 +290,8 @@ public sealed class WriteAheadLogFlushTests : Test
             await wal.CommitAsync(4L, TestToken);
             await wal.FlushAsync(TestToken);
             await machine.Entered.Task.WaitAsync(TestToken);
-            True(CleanupTask(wal).TryGetTarget(out var cleanup));
+            var cleanup = CleanupTask(wal);
+            NotNull(cleanup);
 
             // Append persistence must finish before holding the committed checkpoint pass.
             await wal.AppendAsync(new TestLogEntry("pending target"), TestToken);
@@ -321,7 +323,7 @@ public sealed class WriteAheadLogFlushTests : Test
     private static extern ref Task ApplierTask(WriteAheadLog wal);
 
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "cleanupTask")]
-    private static extern ref WeakReference<Task> CleanupTask(WriteAheadLog wal);
+    private static extern ref Task CleanupTask(WriteAheadLog wal);
 
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(false)]

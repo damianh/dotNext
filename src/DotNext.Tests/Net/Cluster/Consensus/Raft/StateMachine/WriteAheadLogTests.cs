@@ -22,12 +22,13 @@ public sealed class WriteAheadLogTests : Test
     public static async Task LockManager()
     {
         await using var lockManager = new WriteAheadLog.LockManager();
-        await lockManager.AcquireReadLockAsync(TestToken);
+        var ticket = await lockManager.AcquireReadLockAsync(TestToken);
 
         var readBarrierTask = lockManager.AcquireReadBarrierAsync(TestToken).AsTask();
-        lockManager.ReleaseReadLock();
+        lockManager.ReleaseReadLock(ticket);
 
         await readBarrierTask.WaitAsync(TestToken);
+        lockManager.ReleaseReadBarrier();
     }
     
     [Fact(Timeout = TestTimeouts.Default)]

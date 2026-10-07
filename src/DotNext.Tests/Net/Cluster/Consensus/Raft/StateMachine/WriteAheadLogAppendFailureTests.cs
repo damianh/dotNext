@@ -691,8 +691,9 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         using var cancellation = new CancellationTokenSource();
         var locks = LockManagerOf(wal);
         locks.TrackSuspendedCallers();
+        var readTicket = 0L;
         if (overwrite)
-            await locks.AcquireReadLockAsync(TestToken);
+            readTicket = await locks.AcquireReadLockAsync(TestToken);
         else
             await locks.AcquireAppendLockAsync(TestToken);
         try
@@ -710,7 +711,7 @@ public sealed class WriteAheadLogAppendFailureTests : Test
         finally
         {
             if (overwrite)
-                locks.ReleaseReadLock();
+                locks.ReleaseReadLock(readTicket);
             else
                 locks.ReleaseAppendLock();
         }

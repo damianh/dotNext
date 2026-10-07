@@ -1451,12 +1451,15 @@ delays the passed caller:
 
 | Arriving \ suspended | Read | ReadBarrier | Append | Commit | Overwrite | Flush |
 |---|---|---|---|---|---|---|
-| Read | FIFO | no: a reader blocks the barrier | yes | yes | no | yes |
+| Read | FIFO | no: a reader blocks the barrier (yes since #128) | yes | yes | no | yes |
 | ReadBarrier | yes | FIFO | yes | yes | no | yes |
 | Append | yes | yes | FIFO | yes | no | yes |
 | Commit | yes | yes | yes | FIFO | no | yes |
 | Overwrite | no | no | no | no | FIFO | no |
-| Flush (the flusher) | no | no | no | no | no | FIFO |
+| Flush (the flusher) | no | no (yes since #128) | no | no | no | FIFO |
+
+Since #128 the ReadBarrier waits only for the readers registered before it was requested, so Read and Flush pass it;
+see [Cleanup barrier fairness (#128)](#cleanup-barrier-fairness-128).
 
 How each pair was checked: holding Read, Flush or ReadBarrier changes only the reader count, which blocks ReadBarrier
 and Overwrite. Holding Append blocks only Append and Overwrite. Holding Commit blocks only Commit and Overwrite.
@@ -1500,7 +1503,7 @@ no timing):
 | `WriteAheadLogTests.ReadAndCommitDoNotWaitForQueuedAppends` | Red before #126: on a real WAL, a read and a commit complete while the appends are blocked in their persist cycle |
 | `AppendsAreNotStarvedByContinuousReaders` | The append starvation bound |
 | `ReadersAndCommittersDoNotPassQueuedUpgrade`, `UpgradeAfterReaderPassedQueuedAppends`, `UpgradeWaitsForFlush` | The upgrade path and overwrite |
-| `QueuedReadersAndCommittersPassBlockedAppendAfterOverwrite`, `ReadersDoNotPassQueuedReadBarrier`, `CommittersStayInOrder`, `CanceledBlockedWaiterReleasesWaitersBehindIt`, `FlushKeepsQueueOrderBehindPendingAppends` | The remaining pairs |
+| `QueuedReadersAndCommittersPassBlockedAppendAfterOverwrite`, `ReadersDoNotPassQueuedReadBarrier` (replaced by `ReadersAndFlushPassQueuedReadBarrier` in #128), `CommittersStayInOrder`, `CanceledBlockedWaiterReleasesWaitersBehindIt`, `FlushKeepsQueueOrderBehindPendingAppends` | The remaining pairs |
 | `QueuedSynchronizerTests.CallersKeepQueueOrderByDefault`, `CallerPassesSuspendedCallersThatItCannotDelay`, `DrainStopsWhenTooManyCallersArePassed` | The base class hook |
 
 **Measured** with `--profile full --diagnostics` on the #123 cells. The Linux runs are CI `workflow_dispatch` on
@@ -1711,6 +1714,114 @@ exit 3 with the same oracle as before (apply order, committed-prefix agreement a
 - The empty-heartbeat accounting change moves unresponsive detection for empty rounds one round later.
 - #126 (lock fairness) changes `WriteAheadLog.LockManagement.cs`; the committer only uses the existing
   `AcquireAppendLockAsync` and persistence lock, so a rebase should be mechanical.
+
+## Cleanup barrier fairness (#128)
+
+**Problem.** When the flusher publishes a newer snapshot S, the cleanup takes the WAL `ReadBarrier` and then removes the
+squashed metadata and data pages below S and the snapshot files older than S. Under #126 the barrier waited until the
+reader count reached 0, and neither reads nor the flusher's `Flush` lock could pass a suspended barrier. The leader
+holds a read lock for a whole AppendEntries or InstallSnapshot RPC (`ReplicationProcess`). So one slow RPC made the
+barrier wait, and every later replication read, apply pass and flush pass queued behind the barrier until that RPC
+returned. The flusher also awaited the previous cleanup before it scheduled the next one, so a slow RPC that
+overlapped two snapshot advances stalled the flusher and every durability waiter.
+
+**Red first.** `CleanupBarrierFairnessTests.CleanupBarrierDoesNotParkReadsBehindHeldRead` holds a read, queues the
+barrier, then asks for a second read. On `fork` before the fix it failed: the second read parked behind the barrier.
+The test in the issue failed after 2.4 s; the committed deterministic version (no delays, the barrier being queued is
+observed through the lock manager) fails in about 136 ms.
+
+**Hazard set and reachability.** `CleanUpAsync(S)` removes the metadata pages below `page(S)`, the data pages below
+the page of `metadata(S).End`, and the snapshot files older than S. `LogEntryList` reads `stateMachine.Snapshot` after
+its lock is granted and substitutes the snapshot for any range that starts at or below it. A flush pass starts at or
+above the persisted snapshot index. So only a reader whose view was formed before S was visible can reach the hazard
+set.
+
+**Options considered.**
+
+- **(A1) Opportunistic barrier**: try the barrier without queueing and retry when a read is released. Safe, because it
+  is granted only at a reader count of 0, but rejected: overlapping replication reads to several followers, plus the
+  applier and the flusher, need never reach 0, so cleanup can starve. Falling back to a queued barrier after K tries
+  brings the stall back.
+- **(A2) Grace-period (epoch) barrier**: wait only for the readers registered before the cleanup was requested.
+  Chosen. It is local to `LockManager`, changes no public API and no `QueuedSynchronizer` code.
+- **(B) Shrink the read hold so it does not span the RPC.** Rejected for this change. Entries are zero-copy views over
+  the pages and InstallSnapshot streams the snapshot file that the cleanup deletes, so this needs either copying
+  entries out (allocation on the hot path, and impossible for a snapshot) or per-page and per-snapshot reference
+  counts with deferred deletion, which redesigns `PageManager` and `ISnapshotManager` and changes the lifetime
+  contract of `ILogEntryConsumer`.
+
+**Mechanism (A2).** `LockManager` keeps a grace epoch, a count of readers registered in the current epoch and a count
+of preexisting readers, under a `System.Threading.Lock`.
+
+- A Read or Flush holder registers after its lock is granted and before it observes the snapshot or any page. It
+  receives the current epoch as a ticket and passes it back on release. A ticket of an older epoch decrements the
+  preexisting count; the release decrements before it drains the queue, so a barrier is never stranded.
+- `AcquireReadBarrierAsync` starts a new epoch, moves the registered readers into the preexisting count, then queues.
+  `CanAcquire(ReadBarrier)` requires no Overwrite, no other barrier and no preexisting readers.
+- `CanOvertake(Read or Flush, ReadBarrier)` is `true`. This keeps the #126 contract: a new holder registers in the
+  current epoch, so it cannot make `CanAcquire(ReadBarrier)` false. Every other rule is unchanged: nothing passes or
+  is passed by Overwrite (the finding 10 upgrade fix), Flush still passes no queued append, and callers of one type
+  stay in order.
+- The granted barrier increments the reader count instead of setting it to 1, because current-epoch readers may hold
+  the lock, and so it still excludes Overwrite and snapshot installation while the pages are removed.
+- A canceled barrier request leaves its readers in the preexisting count; the next request adds the current ones, so
+  it waits for a superset.
+
+**Safety.** The cleanup requests the barrier only after the snapshot S is published: apply sets
+`stateMachine.Snapshot`, the flusher reads `SnapshotIndex` under its flush lock, persists it, and only then schedules
+the cleanup. A reader that registers after the epoch flip acquires the grace lock after the flip released it, so it
+observes the snapshot at S or newer and its view is outside the hazard set. Contrapositive: every reader that can
+reach the hazard set registered before the flip, is counted as preexisting, and the barrier waits for it. This widens
+the existing rule ("readers that arrive after the barrier is acquired are not blocked, because they observe the new
+snapshot") from "arrived after the grant" to "registered after the request"; both register after S is visible.
+
+**Liveness.** After the flip the preexisting count is finite and can only decrease until the next flip, and the
+cleanup keeps at most one barrier request outstanding. Each held read ends (an RPC is bounded by its timeout or
+cancellation, apply and flush passes are bounded). New reads only touch the current count, and the barrier passes the
+queued Read, Flush, Append and Commit callers, so it is granted once the preexisting readers release and no Overwrite
+is held. Continuous overlapping reads therefore cannot starve the cleanup.
+
+**Cleanup coalescing.** The flusher no longer awaits the cleanup. Under a small lock it raises `pendingCleanupIndex` to
+the new snapshot index and starts a cleanup loop if none is running. The loop removes up to the newest pending index, so
+two snapshot advances during one slow RPC cost one barrier. A loop exits only when, under the same lock, it finds
+nothing pending and clears the running flag, so a newer index is either picked up by that loop or starts a new one from
+the flusher. Only the flusher starts loops, and it stores each one in `cleanupTask` under the lock. The page removal
+and garbage reclamation are monotone in the index, so cleaning up to a newer index at once equals doing it in steps.
+Failures still go through `OnBackgroundTaskFailure` and fault the log, which the flusher observes at its next pass.
+Disposal stops scheduling under the lock and waits for the latest loop, so no loop outlives it
+(`DisposalWaitsForPendingCleanupAndStopsScheduling`).
+
+**Unchanged.** The flush, checkpoint, append and group-commit paths are untouched, so publish-after-durable (#24,
+finding 15) and #125 are unaffected. No timeouts changed.
+
+**Tests.**
+
+| Test | Checks |
+|---|---|
+| `CleanupBarrierFairnessTests.CleanupBarrierDoesNotParkReadsBehindHeldRead` | Red before #128: a read is granted while a barrier waits for an older held read |
+| `CleanupBarrierFairnessTests.CleanupDoesNotRemovePagesReachableByPreexistingReader` | On a real WAL, the pages below the new snapshot stay readable while a reader registered before the cleanup holds them, and are removed after it releases |
+| `CleanupBarrierFairnessTests.CleanupRunsUnderContinuousOverlappingReads` | The cleanup completes while overlapping reads keep the reader count above 0 |
+| `CleanupBarrierFairnessTests.FlusherIsNotBlockedByPendingCleanup` | Two snapshot advances flush and become durable while the cleanup waits for a held reader; afterwards the cleanup removes the pages up to the newest snapshot |
+| `CleanupBarrierFairnessTests.DisposalWaitsForPendingCleanupAndStopsScheduling` | Disposal with a cleanup parked behind a held reader completes that cleanup without removing pages, and a later scheduling request starts no new loop |
+| `WriteAheadLogLockManagerTests.ReadersAndFlushPassQueuedReadBarrier`, `ReadBarrierWaitsForEveryPreexistingReader`, `ReadBarrierWaitsForReadersOfCanceledRequest` | The grace period |
+| `WriteAheadLogLockManagerTests.ReadBarrierIsNotStarvedByOverlappingReaders` | The liveness bound, 100 rounds |
+| `WriteAheadLogLockManagerTests.OverwriteWaitsForGrantedReadBarrier`, `OverwriteExcludesOtherLockTypes` | The barrier still excludes Overwrite |
+
+A read or flush that waited in the queue now completes one continuation later than the release that granted it,
+because it registers after the grant; the lock tests await such waiters instead of checking them synchronously.
+
+**Validation.** Every test class in `Raft.StateMachine` (450 passed, 1 skipped) and the `Raft.InProcess` namespace,
+including `DurableWriteOracleTests` (201 passed, 1 skipped). The load tool's smoke profile exits 0, including the
+slow-follower cell that installs snapshots under load; `--inject drop-applied`, `reorder-applied` and
+`non-durable-followers` each exit 3 with the same oracle as before (apply order, committed-prefix agreement and
+durability).
+
+**Risks.**
+
+- One extra uncontended lock enter and exit per read or flush acquisition and release.
+- A queued read or flush resumes through an extra async step.
+- Pages below S can now be removed while readers registered after the request hold the lock. They cannot reach those
+  pages (above), and the same was already true for readers that arrived after the grant.
 
 ## Protocol input budgets (#22)
 

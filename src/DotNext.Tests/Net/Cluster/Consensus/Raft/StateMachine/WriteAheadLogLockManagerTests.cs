@@ -57,7 +57,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         lockManager.TrackSuspendedCallers();
 
         await lockManager.AcquireAppendLockAsync(TestToken);
-        await lockManager.AcquireReadLockAsync(TestToken);
+        var readTicket = await lockManager.AcquireReadLockAsync(TestToken);
         await lockManager.AcquireCommitLockAsync(TestToken);
 
         lockManager.SetCallerInformation("B: overwrite");
@@ -68,7 +68,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
 
         Equal(["B: overwrite", "C: append"], lockManager.GetSuspendedCallers());
 
-        lockManager.ReleaseReadLock();
+        lockManager.ReleaseReadLock(readTicket);
         False(upgrade.IsCompleted);
         False(append.IsCompleted);
 
@@ -82,7 +82,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         lockManager.ReleaseAppendLock();
 
         await lockManager.AcquireReadBarrierAsync(TestToken);
-        lockManager.ReleaseReadLock();
+        lockManager.ReleaseReadBarrier();
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
@@ -92,7 +92,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         lockManager.TrackSuspendedCallers();
 
         await lockManager.AcquireAppendLockAsync(TestToken);
-        await lockManager.AcquireReadLockAsync(TestToken);
+        var readTicket = await lockManager.AcquireReadLockAsync(TestToken);
 
         using var cts = new CancellationTokenSource();
         lockManager.SetCallerInformation("B: overwrite");
@@ -106,7 +106,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         await ThrowsAnyAsync<OperationCanceledException>(upgrade);
         Equal(["C: append"], lockManager.GetSuspendedCallers());
 
-        lockManager.ReleaseReadLock();
+        lockManager.ReleaseReadLock(readTicket);
         False(append.IsCompleted);
 
         lockManager.ReleaseAppendLock();
@@ -135,16 +135,14 @@ public sealed class WriteAheadLogLockManagerTests : Test
         False(commit.IsCompleted);
         False(readBarrier.IsCompleted);
 
+        // the read was not registered when the barrier was requested, so the barrier does not wait for it (#128)
         lockManager.ReleaseAppendLock();
-        await Task.WhenAll(append, read, commit).WaitAsync(TestToken);
-        False(readBarrier.IsCompleted);
+        await Task.WhenAll(append, read, commit, readBarrier).WaitAsync(TestToken);
 
         lockManager.ReleaseAppendLock();
         lockManager.ReleaseCommitLock();
-        lockManager.ReleaseReadLock();
-
-        await readBarrier.WaitAsync(TestToken);
-        lockManager.ReleaseReadLock();
+        lockManager.ReleaseReadLock(read.Result);
+        lockManager.ReleaseReadBarrier();
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
@@ -152,7 +150,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
     {
         var lockManager = new WriteAheadLog.LockManager();
         await lockManager.AcquireAppendLockAsync(TestToken);
-        await lockManager.AcquireReadLockAsync(TestToken);
+        _ = await lockManager.AcquireReadLockAsync(TestToken);
 
         var upgrade = lockManager.UpgradeToOverwriteLockAsync(TestToken).AsTask();
         var append = lockManager.AcquireAppendLockAsync(TestToken).AsTask();
@@ -194,15 +192,16 @@ public sealed class WriteAheadLogLockManagerTests : Test
             for (var i = 0; i < appends.Length; i++)
                 appends[i] = lockManager.AcquireAppendLockAsync(TestToken);
 
-            True(lockManager.AcquireReadLockAsync(TestToken).IsCompletedSuccessfully);
+            var read = lockManager.AcquireReadLockAsync(TestToken);
+            True(read.IsCompletedSuccessfully);
             True(lockManager.TryAcquireCommitLock());
             lockManager.ReleaseCommitLock();
             True(lockManager.AcquireCommitLockAsync(TestToken).IsCompletedSuccessfully);
             lockManager.ReleaseCommitLock();
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(read.Result);
 
             True(lockManager.AcquireReadBarrierAsync(TestToken).IsCompletedSuccessfully);
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadBarrier();
 
             DoesNotContain(appends, static task => task.IsCompleted);
 
@@ -228,22 +227,23 @@ public sealed class WriteAheadLogLockManagerTests : Test
     public static async Task FlushKeepsQueueOrderBehindPendingAppends()
     {
         var lockManager = new WriteAheadLog.LockManager();
-        ValueTask append1 = default, append2 = default, flush = default, read = default, commit = default, append3 = default;
+        ValueTask append1 = default, append2 = default, commit = default, append3 = default;
+        Task<long> flush = null, read = null;
         try
         {
             await lockManager.AcquireAppendLockAsync(TestToken);
             append1 = lockManager.AcquireAppendLockAsync(TestToken);
             append2 = lockManager.AcquireAppendLockAsync(TestToken);
-            flush = lockManager.AcquireFlushLockAsync(TestToken);
+            flush = lockManager.AcquireFlushLockAsync(TestToken).AsTask();
             False(flush.IsCompleted);
 
             // readers and committers pass the queued flush, and a later append queues behind it
-            read = lockManager.AcquireReadLockAsync(TestToken);
+            read = lockManager.AcquireReadLockAsync(TestToken).AsTask();
             True(read.IsCompletedSuccessfully);
             commit = lockManager.AcquireCommitLockAsync(TestToken);
             True(commit.IsCompletedSuccessfully);
             append3 = lockManager.AcquireAppendLockAsync(TestToken);
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(read.Result);
             lockManager.ReleaseCommitLock();
 
             lockManager.ReleaseAppendLock();
@@ -253,17 +253,19 @@ public sealed class WriteAheadLogLockManagerTests : Test
             // the flush is compatible with the append that holds the lock, and is granted with the last queued append
             lockManager.ReleaseAppendLock();
             True(append2.IsCompletedSuccessfully);
-            True(flush.IsCompletedSuccessfully);
+            await flush.WaitAsync(TestToken);
             False(append3.IsCompleted);
 
-            lockManager.ReleaseFlushLock();
+            lockManager.ReleaseFlushLock(flush.Result);
             lockManager.ReleaseAppendLock();
             True(append3.IsCompletedSuccessfully);
             lockManager.ReleaseAppendLock();
         }
         finally
         {
-            await CleanupAsync(lockManager, append1, append2, flush, read, commit, append3);
+            await CleanupAsync(lockManager, append1, append2, commit, append3);
+            await ObserveFailureAsync(flush);
+            await ObserveFailureAsync(read);
         }
     }
 
@@ -271,28 +273,30 @@ public sealed class WriteAheadLogLockManagerTests : Test
     public static async Task UpgradeWaitsForFlush()
     {
         var lockManager = new WriteAheadLog.LockManager();
-        ValueTask upgrade = default, flush = default;
+        ValueTask upgrade = default;
+        Task<long> flush = null;
         try
         {
             await lockManager.AcquireAppendLockAsync(TestToken);
-            await lockManager.AcquireFlushLockAsync(TestToken);
+            var flushTicket = await lockManager.AcquireFlushLockAsync(TestToken);
 
             upgrade = lockManager.UpgradeToOverwriteLockAsync(TestToken);
             False(upgrade.IsCompleted);
 
-            lockManager.ReleaseFlushLock();
+            lockManager.ReleaseFlushLock(flushTicket);
             True(upgrade.IsCompletedSuccessfully);
 
             // a flush that arrives during the overwrite waits for it
-            flush = lockManager.AcquireFlushLockAsync(TestToken);
+            flush = lockManager.AcquireFlushLockAsync(TestToken).AsTask();
             False(flush.IsCompleted);
             lockManager.ReleaseAppendLock();
-            True(flush.IsCompletedSuccessfully);
-            lockManager.ReleaseFlushLock();
+            await flush.WaitAsync(TestToken);
+            lockManager.ReleaseFlushLock(flush.Result);
         }
         finally
         {
-            await CleanupAsync(lockManager, upgrade, flush);
+            await CleanupAsync(lockManager, upgrade);
+            await ObserveFailureAsync(flush);
         }
     }
 
@@ -300,7 +304,8 @@ public sealed class WriteAheadLogLockManagerTests : Test
     public static async Task QueuedReadersAndCommittersPassBlockedAppendAfterOverwrite()
     {
         var lockManager = new WriteAheadLog.LockManager();
-        ValueTask append1 = default, append2 = default, read = default, commit = default;
+        ValueTask append1 = default, append2 = default, commit = default;
+        Task<long> read = null;
         try
         {
             await lockManager.AcquireAppendLockAsync(TestToken);
@@ -308,7 +313,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
 
             append1 = lockManager.AcquireAppendLockAsync(TestToken);
             append2 = lockManager.AcquireAppendLockAsync(TestToken);
-            read = lockManager.AcquireReadLockAsync(TestToken);
+            read = lockManager.AcquireReadLockAsync(TestToken).AsTask();
             commit = lockManager.AcquireCommitLockAsync(TestToken);
             False(read.IsCompleted);
             False(commit.IsCompleted);
@@ -316,11 +321,11 @@ public sealed class WriteAheadLogLockManagerTests : Test
             // the release grants the first append, and the reader and committer behind the second, blocked, append
             lockManager.ReleaseAppendLock();
             True(append1.IsCompletedSuccessfully);
-            True(read.IsCompletedSuccessfully);
+            await read.WaitAsync(TestToken);
             True(commit.IsCompletedSuccessfully);
             False(append2.IsCompleted);
 
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(read.Result);
             lockManager.ReleaseCommitLock();
             lockManager.ReleaseAppendLock();
             True(append2.IsCompletedSuccessfully);
@@ -328,7 +333,8 @@ public sealed class WriteAheadLogLockManagerTests : Test
         }
         finally
         {
-            await CleanupAsync(lockManager, append1, append2, read, commit);
+            await CleanupAsync(lockManager, append1, append2, commit);
+            await ObserveFailureAsync(read);
         }
     }
 
@@ -339,7 +345,7 @@ public sealed class WriteAheadLogLockManagerTests : Test
         var appends = new ValueTask[3];
         try
         {
-            await lockManager.AcquireReadLockAsync(TestToken);
+            var firstRead = await lockManager.AcquireReadLockAsync(TestToken);
             await lockManager.AcquireAppendLockAsync(TestToken);
 
             for (var i = 0; i < appends.Length; i++)
@@ -348,15 +354,16 @@ public sealed class WriteAheadLogLockManagerTests : Test
             // a reader always holds the lock, with overlapping readers arriving behind the queued appends
             foreach (var append in appends)
             {
-                True(lockManager.AcquireReadLockAsync(TestToken).IsCompletedSuccessfully);
-                lockManager.ReleaseReadLock();
+                var read = lockManager.AcquireReadLockAsync(TestToken);
+                True(read.IsCompletedSuccessfully);
+                lockManager.ReleaseReadLock(read.Result);
 
                 lockManager.ReleaseAppendLock();
                 True(append.IsCompletedSuccessfully);
             }
 
             lockManager.ReleaseAppendLock();
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(firstRead);
         }
         finally
         {
@@ -369,17 +376,18 @@ public sealed class WriteAheadLogLockManagerTests : Test
     {
         var lockManager = new WriteAheadLog.LockManager();
         lockManager.TrackSuspendedCallers();
-        ValueTask upgrade = default, read = default, commit = default;
+        ValueTask upgrade = default, commit = default;
+        Task<long> read = null;
         try
         {
             await lockManager.AcquireAppendLockAsync(TestToken);
-            await lockManager.AcquireReadLockAsync(TestToken);
+            var firstRead = await lockManager.AcquireReadLockAsync(TestToken);
 
             lockManager.SetCallerInformation("B: overwrite");
             upgrade = lockManager.UpgradeToOverwriteLockAsync(TestToken);
 
             lockManager.SetCallerInformation("C: read");
-            read = lockManager.AcquireReadLockAsync(TestToken);
+            read = lockManager.AcquireReadLockAsync(TestToken).AsTask();
             False(lockManager.TryAcquireCommitLock());
 
             lockManager.SetCallerInformation("D: commit");
@@ -388,58 +396,205 @@ public sealed class WriteAheadLogLockManagerTests : Test
             Equal(["B: overwrite", "C: read", "D: commit"], lockManager.GetSuspendedCallers());
 
             // the last reader leaves, so the upgrade is granted before the reader and committer queued behind it
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(firstRead);
             True(upgrade.IsCompletedSuccessfully);
             False(read.IsCompleted);
             False(commit.IsCompleted);
 
             lockManager.ReleaseAppendLock();
-            True(read.IsCompletedSuccessfully);
+            await read.WaitAsync(TestToken);
             True(commit.IsCompletedSuccessfully);
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(read.Result);
             lockManager.ReleaseCommitLock();
         }
         finally
         {
-            await CleanupAsync(lockManager, upgrade, read, commit);
+            await CleanupAsync(lockManager, upgrade, commit);
+            await ObserveFailureAsync(read);
         }
     }
 
+    // #128: the barrier waits only for the readers registered before it was requested. A read or a flush pass that
+    // arrives later observes the snapshot published before the request, so it passes the queued barrier instead of
+    // parking behind it until the held read is released.
     [Fact(Timeout = TestTimeouts.Default)]
-    public static async Task ReadersDoNotPassQueuedReadBarrier()
+    public static async Task ReadersAndFlushPassQueuedReadBarrier()
     {
         var lockManager = new WriteAheadLog.LockManager();
         lockManager.TrackSuspendedCallers();
-        ValueTask barrier = default, read = default;
+        ValueTask barrier = default;
         try
         {
-            await lockManager.AcquireReadLockAsync(TestToken);
+            var heldRead = await lockManager.AcquireReadLockAsync(TestToken);
 
             lockManager.SetCallerInformation("B: read barrier");
             barrier = lockManager.AcquireReadBarrierAsync(TestToken);
+            False(barrier.IsCompleted);
 
-            lockManager.SetCallerInformation("C: read");
-            read = lockManager.AcquireReadLockAsync(TestToken);
+            var read = lockManager.AcquireReadLockAsync(TestToken);
+            True(read.IsCompletedSuccessfully);
+            var flush = lockManager.AcquireFlushLockAsync(TestToken);
+            True(flush.IsCompletedSuccessfully);
 
             // appends and commits cannot delay the barrier, so they pass it
             True(lockManager.AcquireAppendLockAsync(TestToken).IsCompletedSuccessfully);
             True(lockManager.TryAcquireCommitLock());
 
-            Equal(["B: read barrier", "C: read"], lockManager.GetSuspendedCallers());
+            Equal(["B: read barrier"], lockManager.GetSuspendedCallers());
 
-            // the reader behind the barrier is granted only after the barrier, as before
-            lockManager.ReleaseReadLock();
+            // the later readers still hold the lock, but the barrier waits only for the reader registered before it
+            lockManager.ReleaseReadLock(heldRead);
             True(barrier.IsCompletedSuccessfully);
-            True(read.IsCompletedSuccessfully);
 
-            lockManager.ReleaseReadLock();
-            lockManager.ReleaseReadLock();
+            // and the readers keep passing the granted barrier
+            var lateRead = lockManager.AcquireReadLockAsync(TestToken);
+            True(lateRead.IsCompletedSuccessfully);
+
+            lockManager.ReleaseReadLock(lateRead.Result);
+            lockManager.ReleaseReadLock(read.Result);
+            lockManager.ReleaseFlushLock(flush.Result);
+            lockManager.ReleaseReadBarrier();
             lockManager.ReleaseCommitLock();
             lockManager.ReleaseAppendLock();
         }
         finally
         {
-            await CleanupAsync(lockManager, barrier, read);
+            await CleanupAsync(lockManager, barrier);
+        }
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ReadBarrierWaitsForEveryPreexistingReader()
+    {
+        var lockManager = new WriteAheadLog.LockManager();
+        ValueTask barrier = default;
+        try
+        {
+            var read1 = await lockManager.AcquireReadLockAsync(TestToken);
+            var flush = await lockManager.AcquireFlushLockAsync(TestToken);
+            var read2 = await lockManager.AcquireReadLockAsync(TestToken);
+
+            barrier = lockManager.AcquireReadBarrierAsync(TestToken);
+
+            lockManager.ReleaseReadLock(read2);
+            False(barrier.IsCompleted);
+            lockManager.ReleaseFlushLock(flush);
+            False(barrier.IsCompleted);
+            lockManager.ReleaseReadLock(read1);
+            True(barrier.IsCompletedSuccessfully);
+
+            lockManager.ReleaseReadBarrier();
+        }
+        finally
+        {
+            await CleanupAsync(lockManager, barrier);
+        }
+    }
+
+    // #128: continuous overlapping reads, with a reader always holding the lock, cannot starve the barrier,
+    // because the set of the readers it waits for only shrinks.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ReadBarrierIsNotStarvedByOverlappingReaders()
+    {
+        var lockManager = new WriteAheadLog.LockManager();
+        ValueTask barrier = default;
+        try
+        {
+            var held = await lockManager.AcquireReadLockAsync(TestToken);
+            barrier = lockManager.AcquireReadBarrierAsync(TestToken);
+            False(barrier.IsCompleted);
+
+            for (var i = 0; i < 100; i++)
+            {
+                var next = lockManager.AcquireReadLockAsync(TestToken);
+                True(next.IsCompletedSuccessfully);
+                lockManager.ReleaseReadLock(held);
+                held = next.Result;
+
+                // the first iteration releases the only reader registered before the request
+                True(barrier.IsCompletedSuccessfully);
+            }
+
+            await barrier;
+            lockManager.ReleaseReadBarrier();
+
+            // the next barrier request waits only for the reader that holds the lock now
+            barrier = lockManager.AcquireReadBarrierAsync(TestToken);
+            False(barrier.IsCompleted);
+            var other = lockManager.AcquireReadLockAsync(TestToken);
+            True(other.IsCompletedSuccessfully);
+            lockManager.ReleaseReadLock(held);
+            True(barrier.IsCompletedSuccessfully);
+
+            lockManager.ReleaseReadLock(other.Result);
+            lockManager.ReleaseReadBarrier();
+        }
+        finally
+        {
+            await CleanupAsync(lockManager, barrier);
+        }
+    }
+
+    // A canceled request leaves its readers in the preexisting set, so the next request waits for them too.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ReadBarrierWaitsForReadersOfCanceledRequest()
+    {
+        var lockManager = new WriteAheadLog.LockManager();
+        ValueTask barrier = default;
+        try
+        {
+            var read1 = await lockManager.AcquireReadLockAsync(TestToken);
+
+            using (var cts = new CancellationTokenSource())
+            {
+                var canceled = lockManager.AcquireReadBarrierAsync(cts.Token).AsTask();
+                await cts.CancelAsync();
+                await ThrowsAnyAsync<OperationCanceledException>(() => canceled);
+            }
+
+            var read2 = await lockManager.AcquireReadLockAsync(TestToken);
+            barrier = lockManager.AcquireReadBarrierAsync(TestToken);
+
+            lockManager.ReleaseReadLock(read2);
+            False(barrier.IsCompleted);
+            lockManager.ReleaseReadLock(read1);
+            True(barrier.IsCompletedSuccessfully);
+
+            lockManager.ReleaseReadBarrier();
+        }
+        finally
+        {
+            await CleanupAsync(lockManager, barrier);
+        }
+    }
+
+    // The barrier counts as a reader while it is held, so the pages it removes cannot be overwritten under it.
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task OverwriteWaitsForGrantedReadBarrier()
+    {
+        var lockManager = new WriteAheadLog.LockManager();
+        ValueTask upgrade = default, barrier = default;
+        try
+        {
+            await lockManager.AcquireReadBarrierAsync(TestToken);
+            await lockManager.AcquireAppendLockAsync(TestToken);
+
+            upgrade = lockManager.UpgradeToOverwriteLockAsync(TestToken);
+            False(upgrade.IsCompleted);
+
+            lockManager.ReleaseReadBarrier();
+            True(upgrade.IsCompletedSuccessfully);
+
+            // and a barrier requested during the overwrite waits for it
+            barrier = lockManager.AcquireReadBarrierAsync(TestToken);
+            False(barrier.IsCompleted);
+            lockManager.ReleaseAppendLock();
+            True(barrier.IsCompletedSuccessfully);
+            lockManager.ReleaseReadBarrier();
+        }
+        finally
+        {
+            await CleanupAsync(lockManager, upgrade, barrier);
         }
     }
 
@@ -477,23 +632,25 @@ public sealed class WriteAheadLogLockManagerTests : Test
         }
     }
 
+    // #128: a canceled append no longer holds back the flush queued behind it.
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CanceledBlockedWaiterReleasesWaitersBehindIt()
     {
         await using var lockManager = new WriteAheadLog.LockManager();
-        await lockManager.AcquireReadLockAsync(TestToken);
+        await lockManager.AcquireAppendLockAsync(TestToken);
 
         using var cts = new CancellationTokenSource();
-        var barrier = lockManager.AcquireReadBarrierAsync(cts.Token).AsTask();
-        var read = lockManager.AcquireReadLockAsync(TestToken).AsTask();
-        False(read.IsCompleted);
+        var append = lockManager.AcquireAppendLockAsync(cts.Token).AsTask();
+        var flush = lockManager.AcquireFlushLockAsync(TestToken).AsTask();
+        False(append.IsCompleted);
+        False(flush.IsCompleted);
 
         await cts.CancelAsync();
-        await ThrowsAnyAsync<OperationCanceledException>(() => barrier);
-        await read.WaitAsync(TestToken);
+        await ThrowsAnyAsync<OperationCanceledException>(() => append);
+        var ticket = await flush.WaitAsync(TestToken);
 
-        lockManager.ReleaseReadLock();
-        lockManager.ReleaseReadLock();
+        lockManager.ReleaseFlushLock(ticket);
+        lockManager.ReleaseAppendLock();
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
@@ -505,13 +662,14 @@ public sealed class WriteAheadLogLockManagerTests : Test
         {
             await lockManager.AcquireAppendLockAsync(TestToken);
             append = lockManager.AcquireAppendLockAsync(TestToken);
-            True(lockManager.AcquireReadLockAsync(TestToken).IsCompletedSuccessfully);
+            var read = lockManager.AcquireReadLockAsync(TestToken);
+            True(read.IsCompletedSuccessfully);
 
             // the holder of the append lock upgrades, and waits for the reader that passed the queued append
             upgrade = lockManager.UpgradeToOverwriteLockAsync(TestToken);
             False(upgrade.IsCompleted);
 
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(read.Result);
             True(upgrade.IsCompletedSuccessfully);
             False(append.IsCompleted);
 

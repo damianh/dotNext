@@ -75,6 +75,15 @@ upstream sync is merged.
   overwrite upgrade, and the flusher passes nobody, so its pass still follows the appends queued before it. The
   durability and ordering of the log do not change. See
   [Lock fairness for compatible waiters](RAFT-REVIEW.md#lock-fairness-for-compatible-waiters-126).
+* **The snapshot cleanup does not hold up reads or the flusher** (#128). Upstream's cleanup takes a read barrier that
+  waits until no reader holds the WAL read lock, and every later read and flush pass queues behind it. The leader holds
+  that lock for a whole AppendEntries or InstallSnapshot RPC, so one slow follower stalls replication to the others,
+  the applier and the flusher. In the fork the barrier waits only for the readers registered before the cleanup was
+  requested, the only ones that can still reach the pages it removes; later reads and flush passes go ahead of it.
+  Upstream's flusher skips a newer snapshot's cleanup while the previous one runs, so its pages wait for a later
+  snapshot; the fork's flusher (which waited for the previous cleanup before #128) now records the newest snapshot
+  and one cleanup removes the pages up to it, without the flusher waiting. See
+  [Cleanup barrier fairness](RAFT-REVIEW.md#cleanup-barrier-fairness-128).
 
 ### Leader leases
 * **Lease validity is checked against the monotonic clock.** `TryGetLeaseToken` compares the time provider's
@@ -246,7 +255,7 @@ configuration barriers), #59 (leader lease timing), #66 (read barrier spin after
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
 #51 (unavailable-member leadership-loss logging), #73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
 #106 (durable applied cluster configuration baseline), #26 (candidate voting supervision), #115 (leader local read
-failure attribution), #126 (WAL lock fairness for compatible waiters).
+failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL cleanup barrier fairness).
 
 ## Upstream sync log
 

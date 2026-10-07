@@ -35,24 +35,24 @@ partial class WriteAheadLog
     private async ValueTask<LogEntryReader> ReadCoreAsync(long startIndex, long endIndex, CancellationToken token)
     {
         lockManager.SetCallerInformation("Enumerate Entries");
-        await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
+        var ticket = await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
         try
         {
             ThrowOnInternalError();
             ArgumentOutOfRangeException.ThrowIfGreaterThan(endIndex, LastEntryIndex);
-            return CreateReader(startIndex, endIndex);
+            return CreateReader(startIndex, endIndex, ticket);
         }
         catch
         {
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(ticket);
             throw;
         }
     }
 
-    private LogEntryReader CreateReader(long startIndex, long endIndex)
+    private LogEntryReader CreateReader(long startIndex, long endIndex, long ticket)
     {
         var reader = new LogEntryList(stateMachine, startIndex, endIndex, dataPages, metadataPages, out _);
-        return Unsafe.BitCast<(LogEntryList, LockManager), LogEntryReader>((reader, lockManager));
+        return Unsafe.BitCast<(LogEntryList, LockManager, long), LogEntryReader>((reader, lockManager, ticket));
     }
 
     /// <summary>
@@ -64,7 +64,7 @@ partial class WriteAheadLog
     [StructLayout(LayoutKind.Auto)]
     public readonly struct LogEntryReader : IReadOnlyList<LogEntry>, IDisposable
     {
-        private readonly (LogEntryList List, LockManager? Manager) state;
+        private readonly (LogEntryList List, LockManager? Manager, long Ticket) state;
 
         /// <summary>
         /// Gets the log entry by index.
@@ -90,6 +90,6 @@ partial class WriteAheadLog
         /// Informs WAL that the reader is no longer used.
         /// </summary>
         public void Dispose()
-            => state.Manager?.ReleaseReadLock();
+            => state.Manager?.ReleaseReadLock(state.Ticket);
     }
 }

@@ -998,7 +998,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         CancellationToken token = default)
     {
         lockManager.SetCallerInformation("Read Entries");
-        await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
+        var ticket = await lockManager.AcquireReadLockAsync(token).ConfigureAwait(false);
         try
         {
             ThrowOnInternalError();
@@ -1014,7 +1014,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         }
         finally
         {
-            lockManager.ReleaseReadLock();
+            lockManager.ReleaseReadLock(ticket);
         }
     }
 

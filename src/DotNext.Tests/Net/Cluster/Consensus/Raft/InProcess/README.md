@@ -408,12 +408,17 @@ dotnet run --project src\DotNext.Tests\DotNext.Tests.csproj -- --filter-method '
 ```
 
 **Nightly campaign.** `.github/workflows/raft-simulation.yml` runs the `SimulationTests` class (the fixed seeds, the
-oracle facts and the campaign) on `ubuntu-latest` and `windows-latest`:
+oracle facts and the campaign):
 
-- nightly (`schedule`, from the default branch) with 300 seeds per size, both sizes, default steps and a random base seed;
-- on demand (`workflow_dispatch`) with the inputs `seeds`, `voters` (`both`, `3` or `5`), `steps` and `base_seed`, for
-  example `gh workflow run raft-simulation.yml --ref <branch> -f seeds=50 -f voters=5`;
-- on pull requests that change the workflow file, with 5 seeds.
+- nightly (`schedule`, from the default branch) on `ubuntu-latest` only, with 300 seeds per size, both sizes, default
+  steps and a random base seed;
+- on demand (`workflow_dispatch`) on `ubuntu-latest` and `windows-latest`, with the inputs `seeds`, `voters` (`both`,
+  `3` or `5`), `steps` and `base_seed`, for example `gh workflow run raft-simulation.yml --ref <branch> -f seeds=50 -f voters=5`;
+- on pull requests that change the workflow file, on `ubuntu-latest` and `windows-latest`, with 5 seeds.
+
+Windows was dropped from the nightly run because it failed there with failures specific to the Windows harness
+(LIVENESS failures with no commit in 400 iterations, and once a HARNESS file-access failure), while Linux passed.
+Windows is still available through `workflow_dispatch`.
 
 The job has a 60-minute timeout (45 minutes for the test step). Each run writes its parameters (base seed, seeds,
 voters, steps, commit) to the job summary. On failure the job summary lists every failing seed with its category,

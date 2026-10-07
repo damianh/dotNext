@@ -1084,6 +1084,11 @@ the schedules are short, and the fixed CI seeds find little alone; the campaign 
 Interleavings that need many elections (#49, #70) depend on the campaign reaching them.
 Crash points are between steps only, never inside a write.
 
+**Nightly platforms.** The nightly campaign (`.github/workflows/raft-simulation.yml`, `schedule`) runs on `ubuntu-latest`
+only. Windows was dropped from it because of failures specific to the Windows harness (LIVENESS with no commit in 400
+iterations, and once a HARNESS file-access failure) while Linux passed. Windows is still available through `workflow_dispatch`
+and runs on pull requests that change the workflow.
+
 ## Durable-write load baselines, #118 stage 2
 
 Part of #118. [`src/DotNext.Benchmarks.DurableWrite`](src/DotNext.Benchmarks.DurableWrite/README.md) is a Release

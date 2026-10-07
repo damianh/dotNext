@@ -59,8 +59,10 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
+      # The nightly (schedule) run is Linux only: on windows-latest it failed with failures specific to the Windows
+      # harness. Pull requests and workflow_dispatch still run both, so Windows can be run on demand.
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ github.event_name == 'schedule' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

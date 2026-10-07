@@ -57,36 +57,6 @@ partial class WriteAheadLog
     }
 
     [StructLayout(LayoutKind.Auto)]
-    private struct BufferedLogEntry(MemoryOwner<byte> buffer) : IBufferedLogEntry, IDisposable
-    {
-        private MemoryOwner<byte> buffer = buffer;
-        
-        public required long Term { get; init; }
-        public required object? Context { get; init; }
-        public required int? CommandId { get; init; }
-        public required bool IsConfiguration { get; init; }
-
-        readonly long? IDataTransferObject.Length => buffer.Length;
-
-        readonly bool IDataTransferObject.IsReusable => true;
-
-        readonly bool IDataTransferObject.TryGetMemory(out ReadOnlyMemory<byte> memory)
-        {
-            memory = buffer.Memory;
-            return true;
-        }
-
-        bool ILogEntry.IsSnapshot => false;
-
-        readonly ReadOnlySpan<byte> IBufferedLogEntry.Content => buffer.Span;
-
-        readonly ValueTask IDataTransferObject.WriteToAsync<TWriter>(TWriter writer, CancellationToken token)
-            => writer.Invoke(buffer.Memory, token);
-        
-        public void Dispose() => buffer.Dispose();
-    }
-    
-    [StructLayout(LayoutKind.Auto)]
     private readonly struct LogEntryList : IReadOnlyList<LogEntry>
     {
         private readonly long StartIndex;

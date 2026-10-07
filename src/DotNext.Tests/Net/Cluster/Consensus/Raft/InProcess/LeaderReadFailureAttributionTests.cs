@@ -135,9 +135,13 @@ public sealed class LeaderReadFailureAttributionTests : RaftTest
         for (var i = 0; i < 6; i++)
             await cluster.Leader.ForceReplicationAsync(TestToken).AsTask().WaitAsync(DefaultTimeout, TestToken);
 
-        // unresponsive member processing is asynchronous
+        // A round completes once a majority answers, so the peer's failures may still be in flight. The leader
+        // detects an unavailable peer when it starts a round, and unresponsive member processing is asynchronous.
         for (var i = 0; i < 20 && !logger.Entries.Any(static e => e.EventId.Id is UnresponsiveMemberDetectedEventId); i++)
+        {
             await Task.Delay(50, TestToken);
+            await cluster.Leader.ForceReplicationAsync(TestToken).AsTask().WaitAsync(DefaultTimeout, TestToken);
+        }
 
         var trace = Trace(logger);
         True(

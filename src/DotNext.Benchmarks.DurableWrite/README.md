@@ -61,7 +61,7 @@ When either job fails, the node data kept under the runner's temp directory is u
 | `wal-append` | C concurrent writers on one `WriteAheadLog`; each does `AppendAsync`, `CommitAsync`, then waits for the apply. The ack latency is that whole round trip. |
 | `wal-batch` | One writer appends batches of B entries at an explicit index (`AppendAsync(ILogEntryProducer, startIndex)`, the follower's group-commit path), then commits and waits for the apply. |
 | `raft-closed` | V voters over loopback TCP, C closed-loop clients calling `RaftCluster.ReplicateAsync` on the leader. |
-| `raft-open` | Writes offered at a fixed rate, a fraction of the throughput of the busiest closed-loop cell measured in the same run. The latency is measured from the intended send time, so queueing shows up in it (no coordinated omission). In-flight writes are capped at 4,096; an offer above the cap counts as `overloaded`. |
+| `raft-open` | Writes offered at a fixed rate, a fraction of the throughput of the busiest closed-loop cell measured in the same run. The latency is measured from the intended send time, so queueing shows up in it (no coordinated omission). In-flight writes are capped at 4,096; an offer above the cap counts as `overloaded`. Since group commit (#125) a backlog forms larger batches than the c64 cell, so 120% may no longer saturate the leader. |
 | `slow-follower` | V voters, frequent snapshots, and one follower behind a TCP relay that delays every chunk by 5 ms and pauses for 5 s at 30% of the run. The follower falls behind the snapshot index and must catch up through `InstallSnapshot` while the load continues. If it installs no snapshot, the cell did not test what it is for, and the run exits 4. |
 
 | Profile | Matrix | Duration per cell |
@@ -210,7 +210,8 @@ What makes the acknowledgment durable on the fork, checked in the code:
 - Every append ends in `WriteAheadLog.PersistAppendAsync`. Under the append lock, it flushes the data and metadata
   pages to the device, flushes both directories and writes the recovery checkpoint. Only then does it publish
   `LastEntryIndex`. This is publish-after-durable, the same rule as #24 for term and vote. `FlushInterval` covers
-  only the commit checkpoint, not entry durability.
+  only the commit checkpoint, not entry durability. Concurrent single-entry appends share one such persist (group
+  commit, #125); each completes only after the persist that covers its entry.
 - A follower replies to AppendEntries only after that persist, and the leader counts a replica only on the reply.
 - `RaftCluster.ReplicateAsync` appends durably on the leader and replicates to a majority. It returns once the
   entry is committed and applied on the leader. So an acknowledged write is on the disk of a majority.
@@ -278,6 +279,9 @@ These numbers are **baselines, not thresholds**. Nothing in CI compares against 
 violation. Use them to see whether a change moves throughput or latency on the same host.
 
 ### Windows, i9-14900K, NTFS (2026-10-05, revision 3dd6faf5)
+
+This baseline predates WAL group commit (#125), which changes the `wal-append`, `raft-closed` and `raft-open` cells at
+C > 1; see [WAL group commit (#125)](../../RAFT-REVIEW.md#wal-group-commit-125) for before and after numbers.
 
 Raw report: [`baselines/windows-i9-14900K-2026-10-05.json`](baselines/windows-i9-14900K-2026-10-05.json), profile
 `full`, shared memory, every other option at its default.
@@ -355,7 +359,7 @@ Observations, for follow-up rather than for this tool:
 
 - **WAL appends do not scale with concurrency.** `wal-append` gains at most about 2.7x from c1 to c64, because each
   `AppendAsync` runs its flushes under one lock (`PersistAppendAsync`). Batched appends (`wal-batch`, one
-  `AppendAsync` for many entries) reach 4,000 to 16,000 entries/s.
+  `AppendAsync` for many entries) reach 4,000 to 16,000 entries/s. (Addressed by group commit, #125.)
 - **A single-node cluster gets slower with more clients.** `raft-closed-1v-128B` falls from 100/s at c1 to 47/s at c64
   (54/s and 45/s in run 1). Replicated clusters do not, perhaps because there the leader's appends overlap with
   replication.

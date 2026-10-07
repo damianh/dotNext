@@ -32,12 +32,24 @@ public sealed class WalCrashWorker : Test
         {
             await WriteAheadLogDurabilityTests.SeedPrefixAsync(WriteAheadLogDurabilityTests.CreateOptions(
                 settings.Location, settings.Strategy, settings.Direct, 0, settings.Hash));
+            using var cycles = settings.Scenario is "group" ? new WriteAheadLogGroupCommitTests.AppendCycles() : null;
             await using var wal = new WriteAheadLog(WriteAheadLogDurabilityTests.CreateOptions(
-                settings.Location, settings.Strategy, settings.Direct, settings.FlushMode, settings.Hash), IStateMachine.CreateNoOp());
+                settings.Location, settings.Strategy, settings.Direct, settings.FlushMode, settings.Hash,
+                cycles?.Tags ?? default), IStateMachine.CreateNoOp());
             await wal.InitializeAsync(TestToken);
             if (settings.Scenario is "overwrite")
             {
                 await WriteAheadLogDurabilityTests.InterruptReplacementAsync(wal, ReadyAsync);
+                return;
+            }
+
+            if (cycles is not null)
+            {
+                // The process is killed right after the shared cycle acknowledges the group.
+                var indices = await WriteAheadLogGroupCommitTests.AppendGroupAsync(wal, cycles);
+                Equal(Enumerable.Range(2, WriteAheadLogGroupCommitTests.Concurrency).Select(static i => (long)i), indices);
+                Equal(2, cycles.Count);
+                await ReadyAsync();
                 return;
             }
             await wal.AppendAsync(new TestLogEntry("acknowledged tail") { Term = 1L }, TestToken);

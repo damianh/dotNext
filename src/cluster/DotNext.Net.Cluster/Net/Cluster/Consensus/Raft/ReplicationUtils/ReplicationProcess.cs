@@ -208,6 +208,12 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
             case HeartbeatResult.ReplicatedWithLeaderTerm:
                 OnReplicated();
                 return MemberResult.Replicated(replicationIndex);
+            // An accepted empty heartbeat whose preceding entry has the leader's term proves, by the Log Matching
+            // property, that the member stores the leader's log up to that entry. It counts toward commitment,
+            // so a round with nothing new doesn't wait for a slow member to complete the commit majority.
+            case HeartbeatResult.Replicated when precedingTerm == Term && replicationIndex == member.State.PrecedingIndex:
+                OnReplicated();
+                return MemberResult.Replicated(replicationIndex);
             case HeartbeatResult.Replicated:
                 OnReplicated();
                 return MemberResult.Touched;

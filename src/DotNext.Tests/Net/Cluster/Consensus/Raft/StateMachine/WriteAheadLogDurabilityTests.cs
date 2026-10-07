@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
 namespace DotNext.Net.Cluster.Consensus.Raft.StateMachine;
@@ -112,6 +113,24 @@ public sealed class WriteAheadLogDurabilityTests : Test
         using var entries = await wal.ReadAsync(2L, 3L, TestToken);
         Equal("old two", await entries[0].ToStringAsync(Encoding.UTF8, token: TestToken));
         Equal("old three", await entries[1].ToStringAsync(Encoding.UTF8, token: TestToken));
+    }
+
+    // #125: the process is killed right after a group-committed batch is acknowledged.
+    [Theory(Timeout = TestTimeouts.Default)]
+    [InlineData(WriteAheadLog.MemoryManagementStrategy.PrivateMemory)]
+    [InlineData(WriteAheadLog.MemoryManagementStrategy.SharedMemory)]
+    public static async Task GroupCommittedAppendsSurviveProcessTermination(WriteAheadLog.MemoryManagementStrategy strategy)
+    {
+        var location = GetTempPath();
+        await WalCrashWorker.KillAfterAcknowledgmentAsync(new(location, strategy, false, 0,
+            WriteAheadLog.IntegrityHashAlgorithm.Crc64, "group"));
+        var options = CreateOptions(location, strategy, false, 0, WriteAheadLog.IntegrityHashAlgorithm.Crc64);
+        await using var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp());
+        await wal.InitializeAsync(TestToken);
+        Equal(1L + WriteAheadLogGroupCommitTests.Concurrency, wal.LastEntryIndex);
+        Equal(1L, wal.LastCommittedEntryIndex);
+        await WriteAheadLogGroupCommitTests.AssertGroupAsync(wal, 2L);
+        Equal(2L + WriteAheadLogGroupCommitTests.Concurrency, await wal.AppendAsync(new TestLogEntry("next") { Term = 2L }, TestToken));
     }
 
     internal static async Task InterruptReplacementAsync(WriteAheadLog wal, Func<Task> ready)
@@ -297,13 +316,14 @@ public sealed class WriteAheadLogDurabilityTests : Test
     }
 
     internal static WriteAheadLog.Options CreateOptions(string location, WriteAheadLog.MemoryManagementStrategy strategy,
-        bool direct, int flushMode, WriteAheadLog.IntegrityHashAlgorithm hash) => new()
+        bool direct, int flushMode, WriteAheadLog.IntegrityHashAlgorithm hash, TagList tags = default) => new()
         {
             Location = location,
             MemoryManagement = strategy,
             NoBuffering = direct,
             HashAlgorithm = hash,
             FlushInterval = flushMode switch { 0 => Timeout.InfiniteTimeSpan, 1 => TimeSpan.Zero, _ => TimeSpan.FromDays(1) },
+            MeasurementTags = tags,
         };
 
     internal static async Task SeedPrefixAsync(WriteAheadLog.Options options)

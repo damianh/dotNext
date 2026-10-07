@@ -2,14 +2,15 @@ using System.Threading.Tasks.Sources;
 
 namespace DotNext.Threading;
 
-internal sealed class AsyncAutoResetEventSlim(bool initialState = false) : IValueTaskSource<bool>
+// runContinuationsAsynchronously: false runs the waiter on the thread that calls Set, up to the waiter's first await.
+internal sealed class AsyncAutoResetEventSlim(bool initialState = false, bool runContinuationsAsynchronously = true) : IValueTaskSource<bool>
 {
     private const int SignaledState = 0;
     private const int NotSignaledState = 1;
     private const int CallbackAttachedState = 2;
 
     private volatile int state = initialState ? NotSignaledState : SignaledState;
-    private ManualResetValueTaskSourceCore<bool> source = new() { RunContinuationsAsynchronously = true };
+    private ManualResetValueTaskSourceCore<bool> source = new() { RunContinuationsAsynchronously = runContinuationsAsynchronously };
 
     public void Set()
     {

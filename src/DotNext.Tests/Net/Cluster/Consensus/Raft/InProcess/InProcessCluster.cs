@@ -107,7 +107,10 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
             ElectionTimeout,
             startFollower,
             lease,
-            FailureDetectorFactory);
+            FailureDetectorFactory)
+        {
+            Activity = Activity,
+        };
         await replacement.StartAsync(token).ConfigureAwait(false);
         return replacement;
     }

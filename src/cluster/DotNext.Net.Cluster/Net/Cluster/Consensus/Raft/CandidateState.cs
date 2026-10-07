@@ -47,6 +47,11 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
             Logger.VotingFailed(Term, e);
             MoveToFollowerState(randomizeTimeout: true);
         }
+        finally
+        {
+            // the transition, if any, is already counted
+            Activity?.Exit();
+        }
     }
     
     private IAsyncEnumerable<Task<(TMember, long, bool?)>> StartVoting(long lastIndex, long lastTerm)
@@ -207,6 +212,7 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
     {
         CandidateState.TransitionRateMeter.Add(1, in MeasurementTags);
         Logger.VotingStarted(timeout, Term);
+        Activity?.Enter();
         votingTask = VoteAsync(timeout);
     }
 

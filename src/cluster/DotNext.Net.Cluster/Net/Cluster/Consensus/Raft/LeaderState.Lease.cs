@@ -77,10 +77,19 @@ internal partial class LeaderState<TMember>
     private volatile bool writeBarrierApplied;
     private Task? writeBarrierTask;
 
+    // Completes when the activation is settled: the barrier is applied, the activation failed, or leadership is lost.
+    // WaitForLeadershipAsync waits for the same barrier independently, so it can return before the lease is active.
+    private readonly TaskCompletionSource leaseActivation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal Task LeaseActivation => leaseActivation.Task;
+
     private void StartLeaseActivation()
     {
         if (lease is null)
+        {
+            leaseActivation.TrySetResult();
             return;
+        }
 
         ValueTask task;
         try
@@ -96,6 +105,7 @@ internal partial class LeaderState<TMember>
         {
             task.GetAwaiter().GetResult();
             writeBarrierApplied = true;
+            leaseActivation.TrySetResult();
         }
         else
         {
@@ -118,6 +128,10 @@ internal partial class LeaderState<TMember>
         {
             // the lease stays inactive for this term
             Logger.LeaderLeaseActivationFailed(WriteBarrier, e);
+        }
+        finally
+        {
+            leaseActivation.TrySetResult();
         }
     }
 

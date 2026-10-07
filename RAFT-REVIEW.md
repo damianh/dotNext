@@ -1078,7 +1078,7 @@ mutated meaningfully: it only differs when the state write fails, which needs I/
 a publish-before-flush approximation was not detected by the simulation or by `TermVoteDurabilityTests`.
 
 **Residual blind spots.** Membership changes, linearizable reads and read barriers (#65), leases, snapshots and compaction,
-I/O faults (#24), real transports, and process kill. Thread-pool scheduling and the wall-clock settle heuristic are not controlled,
+I/O faults (#24), real transports, and process kill. Thread-pool scheduling is not controlled,
 so a seed does not guarantee replay: a seed that failed in a campaign passed on three replays. Election timeouts are fixed per node,
 the schedules are short, and the fixed CI seeds find little alone; the campaign is where faults are found.
 Interleavings that need many elections (#49, #70) depend on the campaign reaching them.
@@ -1088,6 +1088,43 @@ Crash points are between steps only, never inside a write.
 only. Windows was dropped from it because of failures specific to the Windows harness (LIVENESS with no commit in 400
 iterations, and once a HARNESS file-access failure) while Linux passed. Windows is still available through `workflow_dispatch`
 and runs on pull requests that change the workflow.
+
+## Contention-only test flakes (#129)
+
+Two families of in-process tests failed only under CPU contention. Neither was a product bug.
+
+**Simulation LIVENESS failures: harness.** `SimulationTests.FixedSeedKeepsSafetyAndRecoversLiveness` and the Windows
+nightly campaign failed with `no new proposal committed in 400 iterations`, terms climbing and no stable leader.
+The simulation clock is a `ManualTimeProvider`, and election timeouts come from it, not from real time. But the
+driver had two wall-clock dependencies. It awaited each delivery for at most 200 ms (`Task.Delay`). Between steps, it
+waited for the cluster to go quiet with a heuristic: two stable 1 ms windows, at most 50 ms. Real work does not stop
+at those bounds. Each node does real WAL I/O, and a new leader appends and flushes its no-op entry before it starts
+leading. Under contention that took 190–1076 ms (measured), while the scheduler kept advancing virtual time. The other
+nodes' election timeouts and the candidate's own vote deadline fired before `MoveToLeaderState` ran, which started a new
+term, and so on. Only contended runs failed: Windows nightly runners and loaded local machines; Linux nightlies passed.
+Reproduced with 4 parallel processes pinned to 8 cores running the InProcess namespace: 4 of 4 processes failed.
+
+Fix: the settle waits on signals, not time. `RaftCluster` has an internal `ActivityTracker Activity`, null in
+production, that counts each node's runnable work. That covers state transitions, follower and leader loops from
+wake-up to park, replication and voting rounds while they wait on the network, and `ReplicateAsync` appends.
+`SettleAsync` returns when every node that is up is idle or has a message pending in the network (the scheduler
+holds it). Deliveries are no longer awaited with a 200 ms cut-off; they are tracked with their target node. The RNG
+draw order is unchanged, so a seed makes the same decisions; the oracles and the liveness check are unchanged.
+A node that never settles fails as `HARNESS` after 20 s rather than passing silently.
+
+**`LeaderLeaseTimingTests`: test fixture.** `LeaseExpiresBeforeVotersForgetLeaderWithinDriftBound` and
+`LateLeaseTimerDoesNotExtendLease` failed on `True(IsLeaseUsable(leader))` right after the first forced round.
+`DeliverRoundAsync` is not the cause: the leader renews the lease before the round's task completes. The lease
+is gated on the leader's write barrier being applied, and the leader observes it in its own continuation
+(`StartLeaseActivation`). `WaitForLeadershipAsync`, which the fixture awaited, waits for the same barrier through a
+separate continuation, so under contention it could return first and the lease was still inactive. That is conservative
+(a read falls back to the read barrier), not unsafe. Fix: an internal `RaftCluster.LeaseActivation` task, completed
+when the activation is settled (applied, failed or leadership lost); `InProcessClusterFixture.StartLeaderAsync` and
+the test's `CommitWriteBarrierAsync` await it.
+
+Known flakes left out of scope: `LaggingCandidateElectionTests`, `LeaderStepsDownOnceItsRemovalIsCommitted`,
+`FollowerReadBarrierTests.IsolatedFormerLeaderCannotAuthorizeFollowerRead`, `RaftHttpClusterTests.RegressionIssue108`/`153`,
+and the Windows nightly HARNESS file-access failure (10-02).
 
 ## Durable-write load baselines, #118 stage 2
 

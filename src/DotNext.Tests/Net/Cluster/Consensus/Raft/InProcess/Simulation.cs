@@ -17,8 +17,12 @@ using StateMachine;
 /// What the seed controls: every scheduler decision (which pending message is delivered, dropped or has its response lost,
 /// which link is cut, how far time advances, who is asked to propose, who crashes) and the per-node election timeouts.
 /// What it does not: thread-pool scheduling inside a step, the order in which continuations run after a delivery or a timer,
-/// the WAL's background work, and the wall-clock settle between steps. A seed is therefore not a guarantee of replay;
-/// the trace is the record of what actually happened.
+/// and how many of its messages a node has sent when it starts waiting for the first response. A seed is therefore not
+/// a guarantee of replay; the trace is the record of what actually happened.
+/// Between steps the scheduler waits on signals, never on the wall clock: every node reports its runnable work through
+/// an <see cref="ActivityTracker"/> (thread-pool hops, log I/O, state transitions), and a step is settled when each node
+/// that is up is either idle or waits for a message the scheduler holds. Virtual time therefore never runs ahead of
+/// a node that is slow in real time, so a run is as valid on a contended machine as on an idle one.
 /// </remarks>
 internal sealed class Simulation : IAsyncDisposable
 {
@@ -30,7 +34,6 @@ internal sealed class Simulation : IAsyncDisposable
     // break the index-to-entry mapping used by the oracles.
     private const long NoCompaction = 1_000_000L;
     private static readonly TimeSpan Guard = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan DeliveryWait = TimeSpan.FromMilliseconds(200);
     private static readonly int[] ElectionTimeoutsMs = [100, 130, 160, 190, 220];
     private static readonly int[] AdvanceMs = [5, 10, 25, 50, 100, 150];
     private static string revision;
@@ -46,9 +49,10 @@ internal sealed class Simulation : IAsyncDisposable
     private readonly List<string> trace = [];
     private readonly ConcurrentQueue<(int Node, long Term)> claims = new();
     private readonly List<Proposal> proposals = [];
-    private readonly List<(string What, Task Task)> inFlight = [];
+    private readonly List<(string What, InProcessCluster Target, Task Task)> inFlight = [];
     private readonly List<(int First, int Second, bool Bidirectional)> partitions = [];
     private readonly CancellationTokenSource lifetime = new();
+    private TaskCompletionSource activityChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private CancellationToken token;
     private TimeSpan elapsed;
     private int crashes;
@@ -170,6 +174,7 @@ internal sealed class Simulation : IAsyncDisposable
             MemoryManagement = WriteAheadLog.MemoryManagementStrategy.PrivateMemory,
             FlushInterval = Timeout.InfiniteTimeSpan,
         }, IStateMachine.CreateNoOp(NoCompaction));
+        var activity = new ActivityTracker { Idle = OnIdle };
         var node = new InProcessCluster(
             network,
             ((DnsEndPoint)membership[slot.Index]).Host,
@@ -177,7 +182,10 @@ internal sealed class Simulation : IAsyncDisposable
             slot.Wal,
             clock,
             TimeSpan.FromMilliseconds(slot.TimeoutMs),
-            startFollower: true);
+            startFollower: true)
+        {
+            Activity = activity,
+        };
         var index = slot.Index;
         node.LeaderChanged += (sender, leader) =>
         {
@@ -186,9 +194,12 @@ internal sealed class Simulation : IAsyncDisposable
         };
 
         slot.Node = node;
+        slot.Activity = activity;
         slot.Up = true;
         await node.StartAsync(token);
     }
+
+    private void OnIdle() => Interlocked.Exchange(ref activityChanged, new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
 
     private async Task CloseAsync(Slot slot)
     {
@@ -231,7 +242,7 @@ internal sealed class Simulation : IAsyncDisposable
         {
             case Kind.Deliver:
             case Kind.DeliverLoseResponse:
-                await DeliverAsync(pending[random.Next(pending.Length)], kind is Kind.DeliverLoseResponse, pending.Length);
+                Deliver(pending[random.Next(pending.Length)], kind is Kind.DeliverLoseResponse, pending.Length);
                 break;
             case Kind.Drop:
                 var dropped = pending[random.Next(pending.Length)];
@@ -296,13 +307,17 @@ internal sealed class Simulation : IAsyncDisposable
         Log($"#{stepNumber} propose {payload} to node-{target.Index} (term {term}, believes leader: {target.BelievesLeader})");
     }
 
-    private async Task DeliverAsync(PendingMessage message, bool loseResponse, int pendingCount)
+    private void Deliver(PendingMessage message, bool loseResponse, int pendingCount)
     {
         Log($"#{stepNumber} {(loseResponse ? "deliver, lose response" : "deliver")} {Describe(message)} ({pendingCount} pending)");
+        StartDelivery(message, loseResponse ? DeliverAndLoseResponseAsync(message) : network.TryDeliverAsync(message));
+    }
+
+    private async Task DeliverAndLoseResponseAsync(PendingMessage message)
+    {
         try
         {
-            var delivery = loseResponse ? network.DeliverAndLoseResponseAsync(message) : network.TryDeliverAsync(message);
-            await WaitForDeliveryAsync(delivery, Describe(message));
+            await network.DeliverAndLoseResponseAsync(message);
         }
         catch (InvalidOperationException)
         {
@@ -310,22 +325,10 @@ internal sealed class Simulation : IAsyncDisposable
         }
     }
 
-    // A handler may legitimately wait for something the scheduler holds, so a delivery is not awaited indefinitely.
-    private async Task WaitForDeliveryAsync(Task delivery, string what)
-    {
-        using var timeout = new CancellationTokenSource();
-        var winner = await Task.WhenAny(delivery, Task.Delay(DeliveryWait, timeout.Token));
-        await timeout.CancelAsync();
-        if (ReferenceEquals(winner, delivery))
-        {
-            await delivery;
-        }
-        else
-        {
-            Log($"    handler still running after {DeliveryWait.TotalMilliseconds}ms: {what}");
-            inFlight.Add((what, delivery));
-        }
-    }
+    // A handler may legitimately wait for something the scheduler holds, so a delivery is not awaited:
+    // the settle waits for it unless its target is blocked on a pending message.
+    private void StartDelivery(PendingMessage message, Task delivery)
+        => inFlight.Add((Describe(message), slots.First(s => s.Node.Id == message.TargetId).Node, delivery));
 
     private PendingMessage[] SortedPending()
         => network.PendingMessages
@@ -342,46 +345,51 @@ internal sealed class Simulation : IAsyncDisposable
         => $"{m.MessageType} node-{IndexOf(m.SourceId)}->node-{IndexOf(m.TargetId)}"
            + (m.LastEntryIndex >= 0L ? $" lastEntry={m.LastEntryIndex}" : string.Empty);
 
-    // A wall-clock heuristic: steps are not atomic, so wait until observable progress stops.
+    // Waits until every node that is up is idle or blocked on a message the scheduler holds. Each wait is released by
+    // a signal: a node becoming idle, a message becoming pending, or a handler completing. The guard only reports
+    // a node that never settles (e.g. a handler waiting for virtual time) as a harness failure.
     private async Task SettleAsync()
     {
         var watch = Stopwatch.StartNew();
-        string previous = null;
-        var stable = 0;
-        while (stable < 2 && watch.ElapsedMilliseconds < 50L)
+        for (;;)
         {
-            var until = watch.Elapsed + TimeSpan.FromMilliseconds(1);
-            while (watch.Elapsed < until)
-                await Task.Yield();
+            // capture the signals before the state they announce changes
+            var activity = Volatile.Read(in activityChanged).Task;
+            var pendingChanged = network.PendingChanged;
+            var deliveries = inFlight.Select(static f => f.Task).Where(static t => !t.IsCompleted).ToArray();
 
-            var signature = Signature();
-            if (signature == previous)
+            if (Busy() is not { Count: > 0 } busy)
+                return;
+
+            var remaining = Guard - watch.Elapsed;
+            try
             {
-                stable++;
+                if (remaining <= TimeSpan.Zero)
+                    throw new TimeoutException();
+
+                await Task.WhenAny(deliveries.Append(activity).Append(pendingChanged)).WaitAsync(remaining, token);
             }
-            else
+            catch (TimeoutException)
             {
-                stable = 0;
-                previous = signature;
+                throw new InvalidOperationException($"the cluster did not settle in {Guard.TotalSeconds}s: {string.Join(", ", busy)}");
             }
         }
     }
 
-    private string Signature()
+    // Nodes that have runnable work and haven't sent a message the scheduler holds.
+    private List<string> Busy()
     {
-        var builder = new StringBuilder();
-        foreach (var message in network.PendingMessages)
-            builder.Append(message.Id).Append(',');
-
+        var waiting = network.PendingMessages.Select(static m => m.SourceId).ToHashSet();
+        var busy = new List<string>();
         foreach (var slot in slots.Where(static s => s.Up))
         {
-            var node = slot.Node;
-            builder.Append('|').Append(node.Term).Append(':').Append(node.AuditTrail.LastEntryIndex)
-                .Append(':').Append(node.AuditTrail.LastCommittedEntryIndex).Append(':').Append(slot.BelievesLeader);
+            var activities = slot.Activity.Count;
+            var handlers = inFlight.Count(f => ReferenceEquals(f.Target, slot.Node) && !f.Task.IsCompleted);
+            if ((activities > 0 || handlers > 0) && !waiting.Contains(slot.Node.Id))
+                busy.Add($"node-{slot.Index} ({activities} activities, {handlers} handlers)");
         }
 
-        builder.Append('|').Append(proposals.Count(static p => p.Task.IsCompleted)).Append(claims.Count);
-        return builder.ToString();
+        return busy;
     }
 
     // Records leadership claims and the outcome of every client operation that has completed.
@@ -508,10 +516,9 @@ internal sealed class Simulation : IAsyncDisposable
                 foreach (var message in pending.OrderBy(_ => random.Next()))
                 {
                     Log($"liveness {iteration}: deliver {Describe(message)}");
-                    await WaitForDeliveryAsync(network.TryDeliverAsync(message), Describe(message));
+                    StartDelivery(message, network.TryDeliverAsync(message));
+                    await SettleAsync();
                 }
-
-                await SettleAsync();
             }
 
             await ObserveAsync();
@@ -533,6 +540,7 @@ internal sealed class Simulation : IAsyncDisposable
                 ReadOnlyMemory<byte> bytes = Encoding.UTF8.GetBytes(payload);
                 var task = ((IRaftCluster)node).ReplicateAsync(bytes, token: lifetime.Token).AsTask();
                 proposals.Add(target = new(payload, leader, node, task));
+                await SettleAsync();
             }
 
             Advance(25, $"liveness {iteration}: advance");
@@ -644,6 +652,8 @@ internal sealed class Simulation : IAsyncDisposable
         internal WriteAheadLog Wal { get; set; }
 
         internal InProcessCluster Node { get; set; }
+
+        internal ActivityTracker Activity { get; set; }
 
         internal bool Up { get; set; }
 

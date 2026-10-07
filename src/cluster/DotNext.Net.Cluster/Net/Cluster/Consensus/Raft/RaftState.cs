@@ -26,6 +26,8 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
 
     private protected void UpdateLeaderStickiness(Timestamp refreshedAt) => stateMachine.UpdateLeaderStickiness(refreshedAt);
 
+    private protected ActivityTracker? Activity => stateMachine.Activity;
+
     private protected void MoveToCandidateState()
         => ThreadPool.UnsafeQueueUserWorkItem(new TransitionToCandidateState(this), preferLocal: true);
 
@@ -47,10 +49,17 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
     private abstract class StateTransitionWorkItem : IRaftStateMachine.IWeakCallerStateIdentity, IThreadPoolWorkItem
     {
         private const nint ZeroHandle = 0;
+        private readonly ActivityTracker? activity;
         private volatile nint handle;
 
         private protected StateTransitionWorkItem(RaftState<TMember> state)
-            => handle = WeakGCHandle<RaftState<TMember>>.ToIntPtr(new(state));
+        {
+            handle = WeakGCHandle<RaftState<TMember>>.ToIntPtr(new(state));
+
+            // the transition is counted from the request until the state machine has handled it
+            activity = state.Activity;
+            activity?.Enter();
+        }
 
         private RaftState<TMember>? Target
         {
@@ -80,15 +89,21 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
             GC.SuppressFinalize(this);
         }
 
-        private protected abstract void Execute(IRaftStateMachine<TMember> stateMachine);
+        private protected abstract Task Execute(IRaftStateMachine<TMember> stateMachine);
 
         void IThreadPoolWorkItem.Execute()
         {
             // reference is dead, release GC handle ASAP
             if (Target?.stateMachine is { } stateMachine)
-                Execute(stateMachine);
+            {
+                var task = Execute(stateMachine);
+                activity?.Exit(task);
+            }
             else
+            {
                 Clear();
+                activity?.Exit();
+            }
         }
 
         // Likely never be executed because all consumers call Clear() explicitly.
@@ -103,8 +118,8 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
         {
         }
 
-        private protected override void Execute(IRaftStateMachine<TMember> stateMachine)
-            => _ = stateMachine.MoveToCandidateState(this);
+        private protected override Task Execute(IRaftStateMachine<TMember> stateMachine)
+            => stateMachine.MoveToCandidateState(this);
     }
 
     private sealed class TransitionToFollowerState : StateTransitionWorkItem
@@ -119,8 +134,8 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
             this.newTerm = newTerm;
         }
 
-        private protected override void Execute(IRaftStateMachine<TMember> stateMachine)
-            => _ = stateMachine.MoveToFollowerState(this, randomizeTimeout, newTerm);
+        private protected override Task Execute(IRaftStateMachine<TMember> stateMachine)
+            => stateMachine.MoveToFollowerState(this, randomizeTimeout, newTerm);
     }
 
     private sealed class TransitionToLeaderState : StateTransitionWorkItem
@@ -135,8 +150,8 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
             this.writeBarrier = writeBarrier;
         }
 
-        private protected override void Execute(IRaftStateMachine<TMember> stateMachine)
-            => _ = stateMachine.MoveToLeaderState(this, leader, writeBarrier);
+        private protected override Task Execute(IRaftStateMachine<TMember> stateMachine)
+            => stateMachine.MoveToLeaderState(this, leader, writeBarrier);
     }
 
     private sealed class UnavailableMemberNotification : StateTransitionWorkItem
@@ -153,13 +168,13 @@ internal abstract class RaftState<TMember> : Disposable, IAsyncDisposable
             this.currentTerm = currentTerm;
         }
 
-        private protected override void Execute(IRaftStateMachine<TMember> stateMachine)
-            => _ = stateMachine.UnavailableMemberDetected(this, member, currentTerm, token);
+        private protected override Task Execute(IRaftStateMachine<TMember> stateMachine)
+            => stateMachine.UnavailableMemberDetected(this, member, currentTerm, token);
     }
 
     private sealed class IncomingHeartbeatTimedOutNotification(RaftState<TMember> currentState) : StateTransitionWorkItem(currentState)
     {
-        private protected override void Execute(IRaftStateMachine<TMember> stateMachine)
-            => _ = stateMachine.IncomingHeartbeatTimedOut(this);
+        private protected override Task Execute(IRaftStateMachine<TMember> stateMachine)
+            => stateMachine.IncomingHeartbeatTimedOut(this);
     }
 }

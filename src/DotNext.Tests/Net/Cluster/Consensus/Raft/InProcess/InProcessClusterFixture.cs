@@ -89,6 +89,9 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
         }
         await retry;
         await Leader.WaitForLeadershipAsync(TestToken);
+
+        // The lease is activated by its own continuation on the write barrier, which can run after the one above.
+        await Leader.LeaseActivation;
         Equal(1L, States[0].LastCommittedEntryIndex);
     }
 

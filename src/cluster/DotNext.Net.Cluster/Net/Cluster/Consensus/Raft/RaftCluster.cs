@@ -147,6 +147,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <inheritdoc />
     ref readonly TagList IRaftStateMachine.MeasurementTags => ref measurementTags;
 
+    // Test seam: counts the runnable background work of this node, see ActivityTracker.
+    internal ActivityTracker? Activity { get; init; }
+
+    /// <inheritdoc />
+    ActivityTracker? IRaftStateMachine.Activity => Activity;
+
     /// <summary>
     /// Gets election timeout used by the local member.
     /// </summary>
@@ -170,6 +176,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         token = new(canceled: true);
         return false;
     }
+
+    // Completes when the current leader has settled its lease activation; completed if the node is not a leader.
+    internal Task LeaseActivation => Volatile.Read(in state) is LeaderState<TMember> leader ? leader.LeaseActivation : Task.CompletedTask;
 
     /// <inheritdoc cref="IRaftCluster.LeadershipToken"/>
     public CancellationToken LeadershipToken => Volatile.Read(in state) switch
@@ -1652,11 +1661,21 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         var tokenSource = CombineTokens(token, leaderState.Token);
         try
         {
-            // 1 - append entry to the log
-            var index = await AuditTrail.AppendInCurrentTermAsync(entry, tokenSource.Token).ConfigureAwait(false);
+            long index;
+            Activity?.Enter();
+            try
+            {
+                // 1 - append entry to the log
+                index = await AuditTrail.AppendInCurrentTermAsync(entry, tokenSource.Token).ConfigureAwait(false);
 
-            // 2 - force replication
-            leaderState.ForceReplication();
+                // 2 - force replication
+                leaderState.ForceReplication();
+            }
+            finally
+            {
+                // waiting for the commit depends on the other members, it's not the work of this node
+                Activity?.Exit();
+            }
 
             // 3 - wait for commit
             await AuditTrail.WaitForApplyAsync(index, tokenSource.Token).ConfigureAwait(false);

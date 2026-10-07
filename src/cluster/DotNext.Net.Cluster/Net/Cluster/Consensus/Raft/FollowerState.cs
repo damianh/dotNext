@@ -25,34 +25,42 @@ internal sealed class FollowerState<TMember> : RefreshableState<TMember>
 
     public override CancellationToken Token => refreshed ? stateToken : new(canceled: true);
 
-    private async Task Track(TimeSpan timeout)
+    private async Task Track(TimeSpan timeout, ActivityTracker.Loop? loop)
     {
-        // spin loop to wait for the timeout
-        while (await RaftTimer.WaitAsync(refreshEvent, timeout, TimeProvider, stateToken).ConfigureAwait(false))
+        try
         {
-            // Transition can be suppressed. If so, resume the loop and reset the timer.
-            // If the event is in signaled state then the returned task is completed synchronously.
-            await suppressionEvent.WaitAsync(stateToken).ConfigureAwait(false);
+            // spin loop to wait for the timeout
+            while (await RaftTimer.WaitAsync(refreshEvent, timeout, TimeProvider, stateToken, loop).ConfigureAwait(false))
+            {
+                // Transition can be suppressed. If so, resume the loop and reset the timer.
+                // If the event is in signaled state then the returned task is completed synchronously.
+                await suppressionEvent.WaitAsync(stateToken).ConfigureAwait(false);
+            }
+
+            timedOut = true;
+
+            // Timeout happened, move to candidate state.
+            // However, at this point, the cluster may receive Vote request which calls Refresh() method
+            // and turns refreshEvent into signaled state.
+            // In that case, we have a race condition between Follower and future Candidate state
+            // (because transition to Candidate state is scheduled via ThreadPool asynchronously).
+            // To resolve the issue, inside of transition handler we must check refreshEvent state.
+            // If it is in signaled state, resume following and do not move to Candidate state.
+            // See: https://github.com/dotnet/dotNext/issues/168
+            MoveToCandidateState();
         }
-
-        timedOut = true;
-
-        // Timeout happened, move to candidate state.
-        // However, at this point, the cluster may receive Vote request which calls Refresh() method
-        // and turns refreshEvent into signaled state.
-        // In that case, we have a race condition between Follower and future Candidate state
-        // (because transition to Candidate state is scheduled via ThreadPool asynchronously).
-        // To resolve the issue, inside of transition handler we must check refreshEvent state.
-        // If it is in signaled state, resume following and do not move to Candidate state.
-        // See: https://github.com/dotnet/dotNext/issues/168
-        MoveToCandidateState();
+        finally
+        {
+            loop?.Close();
+        }
     }
 
     internal void StartServing(TimeSpan timeout)
     {
         refreshEvent.Reset();
         timedOut = false;
-        tracker = Track(timeout);
+        loop = Activity is { } activity ? new(activity) : null;
+        tracker = Track(timeout, loop);
 
         FollowerState.TransitionRateMeter.Add(1, in MeasurementTags);
     }
@@ -61,6 +69,7 @@ internal sealed class FollowerState<TMember> : RefreshableState<TMember>
 
     public override void Refresh()
     {
+        loop?.Wake();
         refreshEvent.Set();
         refreshed = true;
         base.Refresh();

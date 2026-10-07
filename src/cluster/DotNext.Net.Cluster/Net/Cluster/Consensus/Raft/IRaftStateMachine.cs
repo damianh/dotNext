@@ -26,6 +26,9 @@ internal interface IRaftStateMachine
     }
 
     ref readonly TagList MeasurementTags { get; }
+
+    // test seam, see ActivityTracker
+    ActivityTracker? Activity => null;
 }
 
 internal interface IRaftStateMachine<TMember> : IRaftStateMachine

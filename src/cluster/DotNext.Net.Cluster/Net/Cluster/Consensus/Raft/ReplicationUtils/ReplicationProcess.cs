@@ -44,6 +44,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
     private bool memberCallStarted;
     private bool available = true;
     private IFailureDetector? detector;
+    private ActivityTracker? activity;
 
     public ReplicationProcess(TMember member, int queueSize)
     {
@@ -89,13 +90,22 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
         init => detector = value;
     }
 
+    // a queued round is counted until its result is reported to the barrier
+    public ActivityTracker? Activity
+    {
+        init => activity = value;
+    }
+
     public override void Replicate(ReplicationBarrier barrier)
     {
+        activity?.Enter();
+
         // If member is too slow and cannot process the queue, we assume that it's temporary unavailable
         if (!writer.TryWrite(barrier))
         {
             barrier.SetResult(MemberResult.Unavailable);
             Logger.SlowMember(member.EndPoint);
+            activity?.Exit();
         }
     }
 
@@ -122,7 +132,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
         // even in case of cancellation
         while (await reader.WaitToReadAsync(CancellationToken.None).ConfigureAwait(false))
         {
-            for (MemberResult? result; reader.TryRead(out var barrier); SetResult(barrier, in result))
+            for (MemberResult? result; reader.TryRead(out var barrier); SetResult(barrier, in result), activity?.Exit())
             {
                 replicationIndex = member.State.PrecedingIndex;
                 matchedIndex = -1L;

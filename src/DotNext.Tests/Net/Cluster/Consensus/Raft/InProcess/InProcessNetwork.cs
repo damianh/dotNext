@@ -35,6 +35,16 @@ internal sealed class InProcessNetwork
         }
     }
 
+    // Completes when the next message becomes pending.
+    internal Task PendingChanged
+    {
+        get
+        {
+            lock (syncRoot)
+                return pendingChanged.Task;
+        }
+    }
+
     internal void Register(InProcessCluster node)
     {
         lock (syncRoot)

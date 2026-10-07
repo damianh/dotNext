@@ -229,6 +229,7 @@ public sealed class LeaderLeaseTimingTests : RaftTest
             await node.ForceReplicationAsync(TestToken);
 
         await node.WaitForLeadershipAsync(TestToken);
+        await node.LeaseActivation;
     }
     private static bool IsLeaseUsable(InProcessCluster node)
         => node.TryGetLeaseToken(out var token) && !token.IsCancellationRequested;

@@ -15,14 +15,15 @@ internal partial class LeaderState<TMember>
     [SuppressMessage("Usage", "CA2213", Justification = "Disposed correctly by Dispose() method")]
     private readonly SingleProducerMultipleConsumersCoordinator replicationQueue;
 
-    private ValueTask<bool> WaitForReplicationAsync(Timestamp startTime, TimeSpan period, CancellationToken token)
+    private ValueTask<bool> WaitForReplicationAsync(Timestamp startTime, TimeSpan period, ActivityTracker.Loop? loop, CancellationToken token)
     {
         // subtract heartbeat processing duration from heartbeat period for better stability
         return RaftTimer.WaitAsync(
             replicationEvent,
             TimeSpan.Max(period - startTime.GetElapsedTime(TimeProvider), TimeSpan.Zero),
             TimeProvider,
-            token);
+            token,
+            loop);
     }
 
     internal ValueTask ForceReplicationAsync(CancellationToken token)
@@ -34,6 +35,7 @@ internal partial class LeaderState<TMember>
             replicationTask = replicationQueue.WaitAsync(token);
 
             // resume heartbeat loop to force replication
+            loop?.Wake();
             replicationEvent.Set();
         }
         catch (ObjectDisposedException e)
@@ -49,6 +51,7 @@ internal partial class LeaderState<TMember>
     {
         try
         {
+            loop?.Wake();
             replicationEvent.Set();
         }
         catch (ObjectDisposedException e)

@@ -16,7 +16,7 @@ public sealed class CleanupBarrierFairnessTests : Test
     {
         var location = GetTempPath();
         await using var machine = new SnapshotAtSix(new(Path.Combine(location, "snapshot")));
-        await using var wal = new WriteAheadLog(new() { Location = location }, machine);
+        await using var wal = new WriteAheadLog(new() { Location = location, FlushInterval = Timeout.InfiniteTimeSpan }, machine);
         LockManagerOf(wal).TrackSuspendedCallers();
         for (var i = 1; i <= 7; i++)
             await wal.AppendAsync(new TestLogEntry("x") { Term = 1L }, TestToken);
@@ -48,7 +48,7 @@ public sealed class CleanupBarrierFairnessTests : Test
     private static extern ref WriteAheadLog.LockManager LockManagerOf(WriteAheadLog wal);
 
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "cleanupTask")]
-    private static extern ref WeakReference<Task> CleanupTaskOf(WriteAheadLog wal);
+    private static extern ref Task CleanupTaskOf(WriteAheadLog wal);
 
     private const long SnapshotDepth = 10L;
 
@@ -159,6 +159,45 @@ public sealed class CleanupBarrierFairnessTests : Test
         True(File.Exists(metadataPage(options, 4)));
     }
 
+    // Disposal waits for the cleanup it stops, and no cleanup starts after it (#128 review).
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task DisposalWaitsForPendingCleanupAndStopsScheduling()
+    {
+        var options = CreateOptions();
+        var firstMetadataPage = Path.Combine(options.Location, "metadata", "0");
+        var wal = new WriteAheadLog(options, IStateMachine.CreateNoOp(SnapshotDepth));
+        LockManagerOf(wal).TrackSuspendedCallers();
+
+        var lastIndex = GetMetadataEntriesPerPage() * 2L + SnapshotDepth / 2L;
+        await AppendAsync(wal, 1L, lastIndex);
+
+        var held = await wal.ReadAsync(1L, 1L, TestToken);
+        await CommitAndFlushAsync(wal, lastIndex);
+        WaitForSuspendedCaller(wal, CleanupCaller);
+        var cleanup = CleanupTaskOf(wal);
+        NotNull(cleanup);
+
+        // the disposal cancels the barrier request, which waits for the held read
+        await wal.DisposeAsync();
+        True(cleanup.IsCompleted);
+        True(File.Exists(firstMetadataPage));
+
+        ScheduleCleanUp(wal, lastIndex);
+        Same(cleanup, CleanupTaskOf(wal));
+
+        try
+        {
+            held.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+            // the lock manager is disposed with the log
+        }
+    }
+
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "ScheduleCleanUp")]
+    private static extern void ScheduleCleanUp(WriteAheadLog wal, long upToIndex);
+
     private static WriteAheadLog.Options CreateOptions() => new()
     {
         Location = GetTempPath(),
@@ -182,18 +221,19 @@ public sealed class CleanupBarrierFairnessTests : Test
 
     private static async Task AwaitCleanupAsync(WriteAheadLog wal)
     {
-        True(CleanupTaskOf(wal).TryGetTarget(out var cleanup));
+        var cleanup = CleanupTaskOf(wal);
+        NotNull(cleanup);
         await cleanup.WaitAsync(TestToken);
         True(cleanup.IsCompletedSuccessfully);
     }
 
     private static long ReadInt64(byte[] bytes) => BitConverter.ToInt64(bytes);
 
+    // Mirrors WriteAheadLog.Page.MinSize: metadata pages have a fixed size whatever the OS page size.
+    private const int MetadataPageSize = 4096;
+
     private static long GetMetadataEntriesPerPage()
-    {
-        var pageSize = int.Max(4096, Environment.SystemPageSize);
-        return pageSize / GetAlignedSize(LogEntryMetadata.Size, pageSize);
-    }
+        => MetadataPageSize / GetAlignedSize(LogEntryMetadata.Size, MetadataPageSize);
 
     // Mirrors MetadataPageManager.GetAlignedSize for a log without integrity hashes.
     private static int GetAlignedSize(int headerSize, int containerSize)

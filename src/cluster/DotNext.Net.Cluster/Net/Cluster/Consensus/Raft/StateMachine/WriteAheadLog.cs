@@ -1059,7 +1059,7 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         await appenderTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         await committerTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
-        if (cleanupTask.TryGetTarget(out var task))
+        if (StopCleanUp() is { } task)
             await task.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         
         CleanUp();

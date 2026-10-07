@@ -1781,13 +1781,15 @@ cancellation, apply and flush passes are bounded). New reads only touch the curr
 queued Read, Flush, Append and Commit callers, so it is granted once the preexisting readers release and no Overwrite
 is held. Continuous overlapping reads therefore cannot starve the cleanup.
 
-**Cleanup coalescing.** The flusher no longer awaits the cleanup. It raises `pendingCleanupIndex` to the new snapshot
-index (atomic max) and starts a cleanup loop if none is running. The loop removes up to the newest pending index, so
-two snapshot advances during one slow RPC cost one barrier. On exit it clears the running flag and re-checks the pending
-index; either it or the flusher that raised the index starts the next loop, so no request is lost. The page removal
+**Cleanup coalescing.** The flusher no longer awaits the cleanup. Under a small lock it raises `pendingCleanupIndex` to
+the new snapshot index and starts a cleanup loop if none is running. The loop removes up to the newest pending index, so
+two snapshot advances during one slow RPC cost one barrier. A loop exits only when, under the same lock, it finds
+nothing pending and clears the running flag, so a newer index is either picked up by that loop or starts a new one from
+the flusher. Only the flusher starts loops, and it stores each one in `cleanupTask` under the lock. The page removal
 and garbage reclamation are monotone in the index, so cleaning up to a newer index at once equals doing it in steps.
-Failures still go through `OnBackgroundTaskFailure` and fault the log, which the flusher observes at its next pass;
-disposal still waits for the running cleanup.
+Failures still go through `OnBackgroundTaskFailure` and fault the log, which the flusher observes at its next pass.
+Disposal stops scheduling under the lock and waits for the latest loop, so no loop outlives it
+(`DisposalWaitsForPendingCleanupAndStopsScheduling`).
 
 **Unchanged.** The flush, checkpoint, append and group-commit paths are untouched, so publish-after-durable (#24,
 finding 15) and #125 are unaffected. No timeouts changed.
@@ -1800,6 +1802,7 @@ finding 15) and #125 are unaffected. No timeouts changed.
 | `CleanupBarrierFairnessTests.CleanupDoesNotRemovePagesReachableByPreexistingReader` | On a real WAL, the pages below the new snapshot stay readable while a reader registered before the cleanup holds them, and are removed after it releases |
 | `CleanupBarrierFairnessTests.CleanupRunsUnderContinuousOverlappingReads` | The cleanup completes while overlapping reads keep the reader count above 0 |
 | `CleanupBarrierFairnessTests.FlusherIsNotBlockedByPendingCleanup` | Two snapshot advances flush and become durable while the cleanup waits for a held reader; afterwards the cleanup removes the pages up to the newest snapshot |
+| `CleanupBarrierFairnessTests.DisposalWaitsForPendingCleanupAndStopsScheduling` | Disposal with a cleanup parked behind a held reader completes that cleanup without removing pages, and a later scheduling request starts no new loop |
 | `WriteAheadLogLockManagerTests.ReadersAndFlushPassQueuedReadBarrier`, `ReadBarrierWaitsForEveryPreexistingReader`, `ReadBarrierWaitsForReadersOfCanceledRequest` | The grace period |
 | `WriteAheadLogLockManagerTests.ReadBarrierIsNotStarvedByOverlappingReaders` | The liveness bound, 100 rounds |
 | `WriteAheadLogLockManagerTests.OverwriteWaitsForGrantedReadBarrier`, `OverwriteExcludesOtherLockTypes` | The barrier still excludes Overwrite |

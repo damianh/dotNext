@@ -15,7 +15,6 @@ partial class WriteAheadLog
     private readonly AsyncTrigger? flushCompleted;
     private readonly AsyncExclusiveLock? foregroundFlushLock;
     private readonly Task flusherTask;
-    private readonly WeakReference<Task?> cleanupTask = new(target: null, trackResurrection: false);
     
     private Checkpoint checkpoint;
     private long commitIndex; // Commit lock protects modification of this field
@@ -31,9 +30,6 @@ partial class WriteAheadLog
         if (T.IsBackground)
             token = cancellation.Token;
 
-        // Weak ref tracks the task, but allows GC to collect associated state machine
-        // as soon as possible. While the task is running, it cannot be collected, because it's referenced
-        // by the async state machine.
         try
         {
             while (!token.IsCancellationRequested && backgroundTaskFailure is null)

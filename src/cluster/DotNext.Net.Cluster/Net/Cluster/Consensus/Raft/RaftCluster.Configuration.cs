@@ -247,6 +247,7 @@ public partial class RaftCluster
         {
             DefaultAllocator = MemoryAllocator,
             ConnectTimeout = ConnectTimeout,
+            RequestTimeout = RequestTimeout,
             ConnectionFactory = clientFactory,
         };
 

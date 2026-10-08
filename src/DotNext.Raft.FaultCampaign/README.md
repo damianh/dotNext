@@ -32,7 +32,7 @@ same interleaving (real processes and real time).
 | `--payload <bytes>` | 256 | write size |
 | `--clients <n>` | 4 | closed-loop clients |
 | `--recovery-timeout <s>` | 30 | bound on each recovery and catch-up wait |
-| `--max-duration <min>` | 10 | bound on the whole run |
+| `--max-duration <min>` | 10 | bound on the whole run, from the driver's start to the verdict; every wait and hold stops at it (exit 5). Stopping the nodes afterwards (up to 15 s) is not included |
 | `--keep-data true\|false` | `false` | keep the node data directories after a passing run |
 
 ### Exit codes
@@ -95,8 +95,10 @@ node died, or leadership was lost) is never retried with the same key, so a dupl
 clients get 20 new acknowledgments.
 
 **Oracles** (the stage 2 `OnlineHistoryChecker` and `SimulationHistory`), after warmup and after each episode. The
-checkpoint waits for one more acknowledgment, then for every node to apply up to the highest commit index reported; any
-write acknowledged before the checkpoint is at or below that index. Then:
+checkpoint waits for the acknowledgment of a write submitted after every acknowledgment being checked, then for every
+node to apply up to the highest commit index reported; any write acknowledged before the checkpoint is at or below that
+index. At the end the clients stop after their requests in flight, one more write is acknowledged, and a final
+checkpoint audits every acknowledged write, so `history.json` of a passing run holds all of them. Then:
 
 - apply order: per node, contiguous indices and no duplicate writes, across restarts and snapshot installs;
 - committed-prefix agreement: every node's applied history is a prefix of one sequence;
@@ -104,11 +106,14 @@ write acknowledged before the checkpoint is at or below that index. Then:
 - recovery (durability): each acknowledged write is in every node's history, at its index;
 - election safety: at most one leader claim per term, across all incarnations.
 
-**Failure signals** (`Driver/LogClassifier.cs`), mapped to RAFT-REVIEW "Failure signals and operator actions (#26)".
-Expected (a peer is down or restarting): Warning 74010 `MemberUnavailable`, 74015 `ReplicationFailed`, HTTP 75001
-`MemberUnavailable`, and EventId 0 request failures. Unexpected (exit 6): 74028, 74030, 74031, 74032, 74035, 74037, 74048,
+**Failure signals** (`Driver/LogClassifier.cs`), classified by event id; the unexpected ones map to RAFT-REVIEW "Failure
+signals and operator actions (#26)". Expected, accepted at any time because they are transient and retried (a persistent
+one fails the liveness oracles, exit 4): Warning 74010 `MemberUnavailable` and HTTP 75001 `MemberUnavailable` (a peer is
+down, restarting or being terminated), 74015 `ReplicationFailed` (log mismatch after an election, including warmup), and
+EventId 0 request failures. Unexpected (exit 6): 74028, 74030, 74031, 74032, 74035, 74037, 74048,
 74049, HTTP 75002, any Critical, `IntegrityException`, `HashMismatchException`, `MissingPageException`, a terminal WAL
-failure, an unhandled exception, or a node exit the driver did not cause. Any other Warning or Error is reported as
+failure, an unhandled exception, a node exit the driver did not cause, or a failed background snapshot reported in a node's
+status (`snapshotFailures` in `report.json`). Any other Warning or Error is reported as
 unclassified and does not fail the run.
 
 ## Oracle teeth

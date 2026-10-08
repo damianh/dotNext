@@ -5,7 +5,8 @@ namespace DotNext.Raft.FaultCampaign.Driver;
 
 internal enum SignalClass
 {
-    // A documented signal of a fault the campaign injects, such as a request to a killed peer.
+    // A transient, retried signal of a peer that is down or restarting, or of a leader change. It is accepted by event id
+    // at any time, not only while a fault is injected; a persistent one fails the liveness oracles instead.
     Expected,
 
     // A documented signal of a failure the campaign does not inject: the run fails with exit code 6.
@@ -39,11 +40,14 @@ internal sealed class LogClassifier
         [75002] = "75002 UnhandledException (HTTP 500, malformed peer input)",
     };
 
-    // A peer that is down or restarting: the request to it fails and replication is retried (#26).
+    // Transient and retried. 74010 and 75001: a request to a peer failed, because it is down, restarting, or being
+    // terminated at the end of the run. 74015: a follower rejected the leader's consistency check and the leader backs off
+    // its next index; this follows every election, including the first one during warmup. They are not tied to a fault
+    // window: a peer that stays unreachable fails the recovery or checkpoint catch-up oracle (exit 4).
     private static readonly Dictionary<int, string> ExpectedEvents = new()
     {
         [74010] = "74010 MemberUnavailable",
-        [74015] = "74015 ReplicationFailed (retried)",
+        [74015] = "74015 ReplicationFailed (log mismatch, retried)",
         [75001] = "75001 MemberUnavailable (HTTP)",
     };
 

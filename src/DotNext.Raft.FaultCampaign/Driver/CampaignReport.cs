@@ -89,6 +89,9 @@ internal sealed class NodeReport
     public required long AppliedEntries { get; init; }
     public required string[] Logs { get; init; }
     public required string[] UnexpectedExits { get; init; }
+
+    // Failed background snapshots (HistoryStateMachine.OnSnapshotFailed), summed over the incarnations of the node.
+    public required int SnapshotFailures { get; init; }
 }
 
 internal sealed class SignalReport
@@ -97,6 +100,9 @@ internal sealed class SignalReport
     public SortedDictionary<string, int> Expected { get; } = new(StringComparer.Ordinal);
     public SortedDictionary<string, int> Unclassified { get; } = new(StringComparer.Ordinal);
     public SortedDictionary<string, int> Unexpected { get; } = new(StringComparer.Ordinal);
+
+    // Failed background snapshots reported by the nodes' status: unexpected (exit 6), as no injected fault causes one.
+    public int SnapshotFailures { get; set; }
 
     // The first lines of each unexpected or unclassified rule, with their file and line number.
     public List<string> Examples { get; } = [];

@@ -2030,21 +2030,27 @@ all from disk). Four closed-loop clients write unique 256 B entries to the leade
 retried with the same key.
 
 **Oracles.** After each fault is removed: recovery within 30 s (every node answers, a leader exists, 20 new
-acknowledgments), else exit 4. Then a checkpoint: wait for one more acknowledgment and for every node to apply up to the
-highest commit index reported (every earlier acknowledged write is at or below the commit index of the leader that
-acknowledges a later one), fetch every node's applied history, and run the stage 2 checks across all incarnations and
+acknowledgments), else exit 4. Then a checkpoint: wait for the acknowledgment of a write submitted after every acknowledgment
+being checked, and for every node to apply up to the highest commit index reported (every earlier acknowledged write is
+at or below the commit index of the leader that acknowledges a later one), fetch every node's applied history, and run the stage 2 checks across all incarnations and
 snapshot installs: apply order, committed-prefix agreement, acknowledged writes, election safety (one leader claim per
 term, from the claim journals), and a recovery audit that every acknowledged write is at its index on **every** node,
-including the restarted ones. A violation is exit 3.
+including the restarted ones. A violation is exit 3. After the last episode the clients stop and a final checkpoint
+audits every acknowledged write.
 
-**Failure signals.** Node logs are classified against "Failure signals and operator actions (#26)". Expected for the
-injected faults: Warning 74010 `MemberUnavailable`, 74015 `ReplicationFailed`, HTTP 75001 `MemberUnavailable`, and EventId
-0 request failures. Unexpected (exit 6): 74028, 74030-74032, 74035, 74037, 74048, 74049, HTTP 75002 (HTTP 500 for
+**Failure signals.** Node logs are classified by event id; "Failure signals and operator actions (#26)" lists the
+unexpected ones. Accepted at any time, because they are transient and retried: Warning 74010 `MemberUnavailable` and HTTP
+75001 `MemberUnavailable` (a request to a peer that is down, restarting or being terminated), 74015 `ReplicationFailed` (a
+follower rejected the leader's consistency check; this follows every election, including the first one during warmup),
+and EventId 0 request failures. They are not tied to a fault window: a peer that stays unreachable fails the recovery or
+checkpoint catch-up oracle (exit 4). Unexpected (exit 6): 74028, 74030-74032, 74035, 74037, 74048, 74049, HTTP 75002 (HTTP 500 for
 malformed input), any Critical, an integrity or terminal WAL exception, an unhandled exception, or a node exit the
-driver did not cause, including a non-zero exit after SIGTERM. Other warnings and errors are reported as unclassified,
+driver did not cause, including a non-zero exit after SIGTERM, or a failed background snapshot (the node's
+`SnapshotFailures` counter, summed over incarnations). Other warnings and errors are reported as unclassified,
 not failed.
 
-**Bounds.** 10 minutes per run by default; 30 s per recovery or catch-up; 2 GiB free in the output directory to start
+**Bounds.** 10 minutes per run by default, measured from the driver's start; reaching it ends the run as incomplete
+(exit 5); 30 s per recovery or catch-up; 2 GiB free in the output directory to start
 and 1 GiB before each episode, else exit 5. Data is deleted after a passing run. Loopback only, no privileges, no OS-wide network
 or disk changes.
 
@@ -2053,7 +2059,7 @@ caught by apply order (`node 0 skipped index 100, which node 1 applied as 'm0-c2
 starts every node from an empty data directory on every launch, so the cluster kill loses acknowledged writes: caught by
 committed-prefix agreement (`index 2 is applied as (term 1, 'm0-c3-s1') on node 0 but as (term 1, 'm0-c2-s41') on
 node 0`; the same node, before and after its restart). CI requires exit 3 with a named oracle for both, on both
-transports. `FaultCampaignHarnessTests` (28 tests) covers the history feed across restarts and snapshot installs, the
+transports. `FaultCampaignHarnessTests` (34 tests) covers the history feed across restarts and snapshot installs, the
 recovery audit, the signal classifier, the schedule and the command line.
 
 **Results** (2026-10-08, AMD Ryzen 7 PRO 8700GE x16, 64 GiB, NixOS 26.11, ext4 on dm-crypt, .NET 10.0.12 workstation

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
@@ -36,17 +35,36 @@ internal sealed class Campaign : IDisposable
     private readonly LogClassifier classifier = new();
     private readonly NodeStatus?[] statuses;
     private readonly long[] claimOffsets;
-    private readonly ConcurrentQueue<(int Node, WriteKey Key)> pendingAcks = new();
+
+    // Acknowledgments not yet audited. An acknowledgment is added and counted atomically, under ackSync, so that a
+    // checkpoint can take all the acknowledgments up to a count.
+    private readonly Lock ackSync = new();
+    private readonly List<(int Node, WriteKey Key)> pendingAcks = [];
+
+    // The highest count of acknowledged writes seen by a client when it submitted a write that was acknowledged later.
+    private long ackBarrier = -1L;
+
+    // Per node, the snapshot failures reported by each incarnation (the counter restarts with the process).
+    private readonly Lock failuresSync = new();
+    private readonly Dictionary<Guid, int>[] snapshotFailures;
     private readonly Random victims;
-    private readonly Stopwatch clock = Stopwatch.StartNew();
+    private readonly Stopwatch clock;
+
+    // stop aborts the clients and the monitor; drain stops the clients after their requests in flight; bound is the
+    // --max-duration of the run, from the start of the driver.
+    private readonly CancellationTokenSource stop = new(), drain = new(), bound;
+    private readonly List<Task> clients = [];
     private volatile int leader = -1;
     private Task? monitor;
     private long acknowledged, rejected, unknown;
 
-    private Campaign(CampaignOptions options, CampaignReport report, int[] raftPorts, int[] controlPorts)
+    private Campaign(CampaignOptions options, CampaignReport report, int[] raftPorts, int[] controlPorts, Stopwatch clock)
     {
         this.options = options;
         this.report = report;
+        this.clock = clock;
+        bound = new(TimeSpan.Max(TimeSpan.Zero, options.MaxDuration - clock.Elapsed));
+        snapshotFailures = Enumerable.Range(0, CampaignOptions.Nodes).Select(static _ => new Dictionary<Guid, int>()).ToArray();
         nodes = new NodeProcess[CampaignOptions.Nodes];
         for (var i = 0; i < nodes.Length; i++)
             nodes[i] = new(options, i, raftPorts, controlPorts[i]);
@@ -60,6 +78,7 @@ internal sealed class Campaign : IDisposable
 
     internal static async Task<int> RunAsync(ReadOnlyMemory<string> args)
     {
+        var clock = Stopwatch.StartNew();
         var options = CampaignOptions.Parse(args.Span);
         PrepareOutput(options.OutputDirectory);
         var episodes = Schedule.Create(options.Seed, options.Episodes);
@@ -98,7 +117,7 @@ internal sealed class Campaign : IDisposable
             report.Episodes.Add(new() { Number = episode.Number, Fault = episode.Name, HoldMs = (int)episode.Hold.TotalMilliseconds });
 
         var (raftPorts, controlPorts) = AllocatePorts(CampaignOptions.Nodes);
-        using var campaign = new Campaign(options, report, raftPorts, controlPorts);
+        using var campaign = new Campaign(options, report, raftPorts, controlPorts, clock);
         try
         {
             await campaign.ExecuteAsync(episodes).ConfigureAwait(false);
@@ -163,9 +182,8 @@ internal sealed class Campaign : IDisposable
         for (var i = 0; i < nodes.Length; i++)
             nodes[i].Start(InjectionAtStart(i, first: true));
 
-        using var stop = new CancellationTokenSource();
         var monitor = this.monitor = MonitorAsync(stop.Token);
-        var clients = Enumerable.Range(0, options.Clients).Select(c => ClientAsync(c, stop.Token)).ToArray();
+        clients.AddRange(Enumerable.Range(0, options.Clients).Select(c => ClientAsync(c, drain.Token)));
         try
         {
             await RunEpisodesAsync(episodes).ConfigureAwait(false);
@@ -192,50 +210,93 @@ internal sealed class Campaign : IDisposable
 
     private async Task RunEpisodesAsync(Episode[] episodes)
     {
-        var deadline = clock.Elapsed + options.MaxDuration;
-
-        Log($"warmup to index {options.WarmupEntries}");
-        if (!await WaitUntilAsync(() => statuses.All(s => s?.AppliedIndex >= options.WarmupEntries), WarmupTimeout).ConfigureAwait(false))
+        var phase = "warmup";
+        EpisodeReport? current = null;
+        try
         {
-            report.LivenessFailure = $"warmup: the nodes did not all apply {options.WarmupEntries} entries within " +
-                $"{WarmupTimeout.TotalSeconds} s ({DescribeStatuses()})";
-            return;
+            Log($"warmup to index {options.WarmupEntries}");
+            if (!await WaitUntilAsync(() => statuses.All(s => s?.AppliedIndex >= options.WarmupEntries), WarmupTimeout).ConfigureAwait(false))
+            {
+                report.LivenessFailure = $"warmup: the nodes did not all apply {options.WarmupEntries} entries within " +
+                    $"{WarmupTimeout.TotalSeconds} s ({DescribeStatuses()})";
+                return;
+            }
+
+            if (!await CheckpointAsync("warmup", null).ConfigureAwait(false))
+                return;
+
+            foreach (var episode in episodes)
+            {
+                var result = report.Episodes[episode.Number - 1];
+                if (bound.IsCancellationRequested)
+                {
+                    report.Incomplete = $"the run reached its bound of {options.MaxDuration.TotalMinutes} min before episode {episode.Number}";
+                    return;
+                }
+
+                if (EnvironmentInfo.GetFreeBytes(options.OutputDirectory) is < MinFreeBytes and var free)
+                {
+                    report.Incomplete = $"only {free} bytes free in {options.OutputDirectory} before episode {episode.Number}";
+                    return;
+                }
+
+                phase = $"episode {episode.Number} ({episode.Name})";
+                current = result;
+                Log($"episode {episode.Number}: {episode.Name}, hold {episode.Hold.TotalMilliseconds:F0} ms");
+                if (!await InjectAsync(episode, result).ConfigureAwait(false))
+                    return;
+
+                if (!await CheckpointAsync(phase, result).ConfigureAwait(false))
+                    return;
+
+                if (episode.Kind is FaultKind.LaggingSnapshot && result.SnapshotsInstalled is not > 0)
+                {
+                    result.Outcome = "incomplete";
+                    report.Incomplete = $"episode {episode.Number} ({episode.Name}): node {result.Victims[0]} caught up without installing a snapshot";
+                    return;
+                }
+
+                result.Outcome = "pass";
+                current = null;
+            }
+
+            phase = "the final checkpoint";
+            if (await FinalCheckpointAsync().ConfigureAwait(false) && bound.IsCancellationRequested)
+                report.Incomplete = $"the run passed the final checkpoint after its bound of {options.MaxDuration.TotalMinutes} min";
+        }
+        catch (OperationCanceledException) when (bound.IsCancellationRequested)
+        {
+            // Every wait and hold observes the bound. Reaching it is not a liveness failure: the run is incomplete.
+            if (current is not null)
+                current.Outcome = "incomplete";
+
+            report.Incomplete = $"the run reached its bound of {options.MaxDuration.TotalMinutes} min during {phase}";
+        }
+    }
+
+    // The clients are stopped after their requests in flight, so that no write is acknowledged after the cutoff of the
+    // final checkpoint and every acknowledgment is audited. The barrier of that checkpoint is a write submitted after all
+    // of those acknowledgments: one client writes until it gets one acknowledgment, then stops too.
+    private async Task<bool> FinalCheckpointAsync()
+    {
+        await drain.CancelAsync().ConfigureAwait(false);
+        await Task.WhenAll(clients).WaitAsync(bound.Token).ConfigureAwait(false);
+
+        var mark = Interlocked.Read(in acknowledged);
+        using var last = new CancellationTokenSource();
+        var client = ClientAsync(options.Clients, last.Token);
+        clients.Add(client);
+        var acked = await WaitUntilAsync(() => Interlocked.Read(in acknowledged) > mark, options.RecoveryTimeout).ConfigureAwait(false);
+        await last.CancelAsync().ConfigureAwait(false);
+        await client.WaitAsync(bound.Token).ConfigureAwait(false);
+        if (!acked)
+        {
+            report.LivenessFailure = $"final checkpoint: no write was acknowledged within {options.RecoveryTimeout.TotalSeconds} s " +
+                $"after the clients stopped ({DescribeStatuses()})";
+            return false;
         }
 
-        if (!await CheckpointAsync("warmup", null).ConfigureAwait(false))
-            return;
-
-        foreach (var episode in episodes)
-        {
-            var result = report.Episodes[episode.Number - 1];
-            if (clock.Elapsed > deadline)
-            {
-                report.Incomplete = $"the run reached its bound of {options.MaxDuration.TotalMinutes} min before episode {episode.Number}";
-                return;
-            }
-
-            if (EnvironmentInfo.GetFreeBytes(options.OutputDirectory) is < MinFreeBytes and var free)
-            {
-                report.Incomplete = $"only {free} bytes free in {options.OutputDirectory} before episode {episode.Number}";
-                return;
-            }
-
-            Log($"episode {episode.Number}: {episode.Name}, hold {episode.Hold.TotalMilliseconds:F0} ms");
-            if (!await InjectAsync(episode, result).ConfigureAwait(false))
-                return;
-
-            if (!await CheckpointAsync($"episode {episode.Number} ({episode.Name})", result).ConfigureAwait(false))
-                return;
-
-            if (episode.Kind is FaultKind.LaggingSnapshot && result.SnapshotsInstalled is not > 0)
-            {
-                result.Outcome = "incomplete";
-                report.Incomplete = $"episode {episode.Number} ({episode.Name}): node {result.Victims[0]} caught up without installing a snapshot";
-                return;
-            }
-
-            result.Outcome = "pass";
-        }
+        return await CheckpointAsync("final checkpoint", null, final: true).ConfigureAwait(false);
     }
 
     // Injects the fault, removes it, and waits for the cluster to recover.
@@ -280,7 +341,7 @@ internal sealed class Campaign : IDisposable
         }
 
         result.Victims = restart;
-        await Task.Delay(episode.Hold).ConfigureAwait(false);
+        await Task.Delay(episode.Hold, bound.Token).ConfigureAwait(false);
         if (episode.Kind is FaultKind.LaggingSnapshot && !await LagAsync(restart[0], episode, result).ConfigureAwait(false))
             return false;
 
@@ -336,21 +397,39 @@ internal sealed class Campaign : IDisposable
     /// <summary>
     /// The oracles, after the fault is removed and the cluster has recovered.
     /// </summary>
+    /// <param name="final"><see langword="true"/> if the clients are stopped and the last acknowledged write is the barrier.</param>
     /// <returns><see langword="false"/> if the run must stop.</returns>
-    private async Task<bool> CheckpointAsync(string name, EpisodeReport? result)
+    private async Task<bool> CheckpointAsync(string name, EpisodeReport? result, bool final = false)
     {
-        var acks = new List<(int Node, WriteKey Key)>();
-        while (pendingAcks.TryDequeue(out var ack))
-            acks.Add(ack);
+        // The cutoff: every acknowledgment counted so far is checked here, the later ones at the next checkpoint.
+        List<(int Node, WriteKey Key)> acks;
+        long mark;
+        lock (ackSync)
+        {
+            acks = [.. pendingAcks];
+            pendingAcks.Clear();
+            mark = Interlocked.Read(in acknowledged);
+        }
 
-        // Every write acknowledged so far is committed at or below the commit index of the leader that acknowledges a
-        // later write. Wait for a later write, then for every node to apply up to the highest commit index seen.
-        var mark = Interlocked.Read(in acknowledged);
+        // Every write acknowledged before the cutoff is committed at or below the commit index of the leader that
+        // acknowledges a write submitted after it. Wait for such a write, then for every node to apply up to the
+        // highest commit index that a status polled after it reports. In the final checkpoint no write is acknowledged
+        // after the cutoff, and the last acknowledged write is that barrier: it is at or below the commit index of the
+        // leader that acknowledged it.
+        var barrier = final ? mark - 1L : mark;
+        var barrierSeen = false;
         var target = 0L;
         var caughtUp = await WaitUntilAsync(() =>
         {
-            if (Interlocked.Read(in acknowledged) <= mark || statuses.Any(static s => s is null))
+            if (statuses.Any(static s => s is null))
                 return false;
+
+            if (!barrierSeen)
+            {
+                // The statuses of the next poll are fresh.
+                barrierSeen = Volatile.Read(in ackBarrier) >= barrier;
+                return false;
+            }
 
             target = long.Max(target, statuses.Max(static s => s!.CommitIndex));
             return statuses.All(s => s!.AppliedIndex >= target);
@@ -372,7 +451,7 @@ internal sealed class Campaign : IDisposable
             // A fresh page from every node, so that every history reaches the target.
             for (var i = 0; i < nodes.Length; i++)
             {
-                if (!await IngestAsync(i, CancellationToken.None).ConfigureAwait(false) || feed.Current(i).Count < target)
+                if (!await IngestAsync(i, bound.Token).ConfigureAwait(false) || feed.Current(i).Count < target)
                 {
                     if (result is not null)
                         result.Outcome = "liveness failure";
@@ -431,8 +510,28 @@ internal sealed class Campaign : IDisposable
         return true;
     }
 
+    // A failed background snapshot is dropped and logged by HistoryStateMachine only through Trace, which the
+    // classifier does not see, so the driver counts the failures that the nodes report in their status. No injected
+    // fault explains one: a snapshot canceled by the disposal of the state machine (SIGTERM) is not reported.
     private bool HasUnexpectedSignals()
-        => classifier.Unexpected.Any() || nodes.Any(static n => n.UnexpectedExits.Count > 0);
+        => classifier.Unexpected.Any() || nodes.Any(static n => n.UnexpectedExits.Count > 0) || SnapshotFailures() > 0;
+
+    private void RecordSnapshotFailures(int node, NodeStatus status)
+    {
+        lock (failuresSync)
+        {
+            var failures = snapshotFailures[node];
+            failures[status.Incarnation] = int.Max(failures.GetValueOrDefault(status.Incarnation), status.SnapshotFailures);
+        }
+    }
+
+    private int SnapshotFailures(int node)
+    {
+        lock (failuresSync)
+            return snapshotFailures[node].Values.Sum();
+    }
+
+    private int SnapshotFailures() => Enumerable.Range(0, nodes.Length).Sum(SnapshotFailures);
 
     private async Task MonitorAsync(CancellationToken token)
     {
@@ -472,6 +571,9 @@ internal sealed class Campaign : IDisposable
         for (var i = 0; i < polled.Length; i++)
         {
             Volatile.Write(ref statuses[i], polled[i]);
+            if (polled[i] is { } status)
+                RecordSnapshotFailures(i, status);
+
             if (polled[i] is { IsLeader: true } s && (current < 0 || s.Term > polled[current]!.Term))
                 current = i;
         }
@@ -526,12 +628,14 @@ internal sealed class Campaign : IDisposable
         }
     }
 
-    private async Task ClientAsync(int client, CancellationToken token)
+    // drain stops the client after its request in flight; the campaign's stop token aborts it.
+    private async Task ClientAsync(int client, CancellationToken drain)
     {
+        var token = stop.Token;
         var payload = new Payload(options.PayloadSize);
         var buffer = payload.CreateBuffer();
         var seq = 0L;
-        while (!token.IsCancellationRequested)
+        while (!drain.IsCancellationRequested && !token.IsCancellationRequested)
         {
             try
             {
@@ -545,11 +649,18 @@ internal sealed class Campaign : IDisposable
                 // A new sequence number for every attempt: the oracle requires a closed-loop client to send its next
                 // write only after the outcome of the previous one is known or can no longer change.
                 var key = new WriteKey(WriteKey.ClosedLoop, client, ++seq);
+                var submitted = Interlocked.Read(in acknowledged);
                 switch (await nodes[target].WriteAsync(payload.Write(buffer, key), token).ConfigureAwait(false))
                 {
                     case WriteOutcome.Acknowledged:
-                        pendingAcks.Enqueue((target, key));
-                        Interlocked.Increment(ref acknowledged);
+                        lock (ackSync)
+                        {
+                            pendingAcks.Add((target, key));
+                            Interlocked.Increment(ref acknowledged);
+                            if (submitted > ackBarrier)
+                                Volatile.Write(ref ackBarrier, submitted);
+                        }
+
                         break;
                     case WriteOutcome.Rejected:
                         Interlocked.Increment(ref rejected);
@@ -575,14 +686,14 @@ internal sealed class Campaign : IDisposable
     }
 
     // Checks the condition after each status poll of the monitor (or after a fresh poll) until it holds or the
-    // timeout expires.
+    // timeout expires. Throws OperationCanceledException at the bound of the run.
     private async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout, bool freshStatus = false)
     {
         var deadline = clock.Elapsed + timeout;
         while (true)
         {
             if (freshStatus)
-                await PollStatusAsync(CancellationToken.None).ConfigureAwait(false);
+                await PollStatusAsync(bound.Token).ConfigureAwait(false);
 
             // A failed monitor leaves the statuses stale: report the failure rather than a liveness failure.
             if (monitor is { IsFaulted: true } failed)
@@ -594,7 +705,7 @@ internal sealed class Campaign : IDisposable
             if (clock.Elapsed > deadline)
                 return false;
 
-            await Task.Delay(StatusInterval).ConfigureAwait(false);
+            await Task.Delay(StatusInterval, bound.Token).ConfigureAwait(false);
         }
     }
 
@@ -622,10 +733,12 @@ internal sealed class Campaign : IDisposable
                 AppliedEntries = feed.Current(node.Id).Count,
                 Logs = node.LogFiles.Select(l => Path.GetRelativePath(options.OutputDirectory, l)).ToArray(),
                 UnexpectedExits = node.UnexpectedExits.ToArray(),
+                SnapshotFailures = SnapshotFailures(node.Id),
             });
         }
 
         report.Signals.LogLines = classifier.Lines;
+        report.Signals.SnapshotFailures = SnapshotFailures();
         foreach (var group in classifier.Signals.GroupBy(static s => (s.Class, s.Rule)))
         {
             var counts = group.Key.Class switch
@@ -645,6 +758,14 @@ internal sealed class Campaign : IDisposable
 
         if (report.Violation is null && checker.Violation is { } violation)
             report.Violation = ViolationReport.Create("shutdown", violation);
+
+        // A run passes only if the final checkpoint audited every acknowledged write.
+        int unaudited;
+        lock (ackSync)
+            unaudited = pendingAcks.Count;
+
+        if (unaudited > 0 && report is { Error: null, Violation: null, LivenessFailure: null, Incomplete: null } && !HasUnexpectedSignals())
+            report.Error = $"{unaudited} acknowledged writes were not audited";
 
         (report.Verdict, report.ExitCode) = report switch
         {
@@ -688,6 +809,9 @@ internal sealed class Campaign : IDisposable
         foreach (var exit in report.Nodes.SelectMany(static n => n.UnexpectedExits))
             Log($"unexpected exit: {exit}");
 
+        foreach (var node in report.Nodes.Where(static n => n.SnapshotFailures > 0))
+            Log($"snapshot failures: node {node.Id} dropped {node.SnapshotFailures} failed background snapshots");
+
         foreach (var example in report.Signals.Examples)
             Log($"signal: {example}");
 
@@ -703,5 +827,8 @@ internal sealed class Campaign : IDisposable
             node.Dispose();
 
         feedLock.Dispose();
+        stop.Dispose();
+        drain.Dispose();
+        bound.Dispose();
     }
 }

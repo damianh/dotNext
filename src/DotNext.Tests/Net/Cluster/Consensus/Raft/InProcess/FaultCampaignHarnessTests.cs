@@ -183,4 +183,23 @@ public sealed class FaultCampaignHarnessTests : Test
         Throws<UsageException>(line.RequireAllRead);
         Throws<UsageException>(static () => new CommandLine(["--seed"]));
     }
+
+    [Theory]
+    [InlineData("NaN")]
+    [InlineData("Infinity")]
+    [InlineData("-Infinity")]
+    [InlineData("0.1")]
+    [InlineData("241")]
+    public static void NumberOutOfRangeIsAUsageError(string text)
+    {
+        var line = new CommandLine(["--max-duration", text]);
+        Throws<UsageException>(() => line.GetDouble("max-duration", 10D, 0.5D, 240D));
+    }
+
+    [Fact]
+    public static void NumberInRangeIsParsed()
+    {
+        Equal(1.5D, new CommandLine(["--max-duration", "1.5"]).GetDouble("max-duration", 10D, 0.5D, 240D));
+        Equal(10D, new CommandLine([]).GetDouble("max-duration", 10D, 0.5D, 240D));
+    }
 }

@@ -122,7 +122,10 @@ internal sealed partial class NodeProcess : IDisposable
     internal async Task KillAsync()
     {
         if (process is not { HasExited: false } p)
+        {
+            CheckUnexpectedExit();
             return;
+        }
 
         expectedExit = true;
         p.Kill(entireProcessTree: false);
@@ -137,7 +140,10 @@ internal sealed partial class NodeProcess : IDisposable
     internal async Task<bool> TerminateAsync(TimeSpan grace)
     {
         if (process is not { HasExited: false } p)
+        {
+            CheckUnexpectedExit();
             return true;
+        }
 
         expectedExit = true;
         if (Kill(p.Id, SigTerm) is not 0)

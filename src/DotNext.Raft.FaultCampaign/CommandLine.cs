@@ -51,7 +51,7 @@ internal sealed class CommandLine
         if (Get(name) is not { } text)
             return defaultValue;
 
-        if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || value < min || value > max)
+        if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value) || value < min || value > max)
             throw new UsageException($"option --{name} must be a number in [{min}, {max}], found '{text}'");
 
         return value;

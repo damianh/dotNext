@@ -5,8 +5,9 @@ A bounded, reproducible load tool for the durable write path of the fork: `Write
 histograms, flush and apply cost, lag, backlog, CPU/GC and write amplification) as JSON with the environment
 metadata, and it fails **only** on correctness oracles. There are no latency, throughput or memory thresholds.
 
-This is stage 2 of #118. Real-process fault and burn-in campaigns (process kill, power loss, HTTP/UDP transports)
-are stage 3; see [Blind spots](#blind-spots).
+This is stage 2 of #118. Stage 3 starts with a real-process fault smoke campaign (process kill and restart over HTTP
+and TCP): [`src/DotNext.Raft.FaultCampaign`](../DotNext.Raft.FaultCampaign/README.md). Power loss and burn-in
+remain open; see [Blind spots](#blind-spots).
 
 The older [`DotNext.Benchmarks.WAL`](../DotNext.Benchmarks.WAL/Program.cs) (2,000 x 1 KiB appends into one
 `WriteAheadLog`, compared against FASTER) is unchanged; it compares raw log implementations and carries the FASTER
@@ -369,11 +370,14 @@ Observations, for follow-up rather than for this tool:
 ## Blind spots
 
 - **Power loss and page-cache loss.** The recovery audit reopens the files in the same OS instance; it cannot tell
-  whether the device honours a flush. Stage 3.
-- **Process kill and restart under load,** and recovery after a crash mid-append. Stage 3.
+  whether the device honours a flush. Not covered by stage 3 so far either.
+- **Process kill and restart under load,** and recovery after a crash mid-append. Covered by the stage 3 smoke campaign
+  ([`DotNext.Raft.FaultCampaign`](../DotNext.Raft.FaultCampaign/README.md)), which kills real node processes under a
+  closed-loop load; a kill lands at an arbitrary point, not deliberately mid-append.
 - **Cross-process isolation.** All nodes share one process: CPU, GC, thread pool and allocations are per process, not
   per node, and one node's GC pause stalls the others.
-- **The HTTP and UDP transports,** and real network latency, loss and partitions. The relay only delays and pauses one
+- **The HTTP and UDP transports,** and real network latency, loss and partitions (the stage 3 smoke campaign runs HTTP
+  and TCP between processes on loopback, without partitions). The relay only delays and pauses one
   follower's TCP traffic.
 - **Membership changes under load,** and I/O faults (`ENOSPC`, `EIO`, torn writes).
 - **Leader-side batching of client proposals** is not exposed through the public API, so it is not measured.

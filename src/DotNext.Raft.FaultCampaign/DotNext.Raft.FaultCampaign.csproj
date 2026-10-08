@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsPackable>false</IsPackable>
+        <InvariantGlobalization>true</InvariantGlobalization>
+        <Authors>.NET Foundation and Contributors</Authors>
+        <Product>.NEXT Family of Libraries</Product>
+        <Copyright>Copyright © .NET Foundation and Contributors</Copyright>
+        <RootNamespace>DotNext.Raft.FaultCampaign</RootNamespace>
+        <!-- CA1812: linked sources from the durable-write tool and the simulation tests declare types this tool does not use. -->
+        <NoWarn>$(NoWarn);DOTNEXT001;CA1812</NoWarn>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <ServerGarbageCollection>false</ServerGarbageCollection>
+        <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\cluster\DotNext.AspNetCore.Cluster\DotNext.AspNetCore.Cluster.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Using Include="DotNext.Net.Cluster.Consensus.Raft.InProcess" />
+      <Using Include="DotNext.Benchmarks.DurableWrite" />
+      <Using Include="DotNext.Benchmarks.DurableWrite.Oracles" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <!-- Reused unchanged: the seeded simulation's safety oracles and the durable-write tool's (#118 stage 2) history
+           state machine, online oracles, payload and environment probe. -->
+      <Compile Include="..\DotNext.Tests\Net\Cluster\Consensus\Raft\InProcess\SimulationHistory.cs" Link="Shared\SimulationHistory.cs" />
+      <Compile Include="..\DotNext.Benchmarks.DurableWrite\Oracles\*.cs" Link="Shared\Oracles\%(Filename)%(Extension)" />
+      <Compile Include="..\DotNext.Benchmarks.DurableWrite\HistoryStateMachine.cs" Link="Shared\HistoryStateMachine.cs" />
+      <Compile Include="..\DotNext.Benchmarks.DurableWrite\LatencyHistogram.cs" Link="Shared\LatencyHistogram.cs" />
+      <Compile Include="..\DotNext.Benchmarks.DurableWrite\EnvironmentInfo.cs" Link="Shared\EnvironmentInfo.cs" />
+      <Compile Include="..\DotNext.Benchmarks.DurableWrite\Payload.cs" Link="Shared\Payload.cs" />
+    </ItemGroup>
+
+</Project>

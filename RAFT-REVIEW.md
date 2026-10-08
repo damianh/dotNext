@@ -1207,7 +1207,8 @@ not thresholds. Observations for follow-up, none of them a correctness failure:
 process kill and crash mid-append; cross-process isolation (CPU and GC are per process, not per node); the HTTP and UDP
 transports and real networks; membership changes and I/O faults under load; leader-side batching of client proposals,
 which the public API does not expose. A baseline is one machine, filesystem and device; compare runs on the same host
-only. Stage 3 of #118 covers real-process fault and burn-in campaigns.
+only. Stage 3 of #118 covers real-process fault and burn-in campaigns; its first part is the smoke campaign in
+"Real-process fault campaign, #118 stage 3" below.
 
 ## Durable-write latency investigation, #123
 
@@ -1986,6 +1987,96 @@ operator fixes storage and calls `ResignAsync` or restarts the leader.
 
 **Not changed.** No automatic recovery from unknown storage failures, no WAL logger, no new metrics.
 
+## Real-process fault campaign, #118 stage 3
+
+Part of #118, first PR of stage 3: a smoke campaign, not a burn-in. The tool is
+[`src/DotNext.Raft.FaultCampaign`](src/DotNext.Raft.FaultCampaign/README.md). It runs a 3-node cluster as three
+separate OS processes on loopback, over HTTP or over TCP, kills and restarts them under a closed-loop write load, and
+checks the stage 2 oracles after each fault. It closes the "process kill" and "real transports between processes" blind
+spots of stage 1 and stage 2. Test-only; no production code changed. Linux only, HTTP and TCP only, and the default
+`MemoryManagementStrategy` only (user-directed scope).
+
+**Commands.**
+
+```bash
+dotnet build src/DotNext.Raft.FaultCampaign -c Release
+cd src/DotNext.Raft.FaultCampaign
+./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport http --seed 1 --out /tmp/fc/http   # about 45 s
+./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport tcp  --seed 1 --out /tmp/fc/tcp
+./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport http --inject drop-applied --episodes leader-kill --out /tmp/fc/drop        # exit 3
+./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport tcp  --inject volatile-storage --episodes cluster-kill --out /tmp/fc/vol    # exit 3
+```
+
+CI: `.github/workflows/raft-fault-campaign.yml` on `ubuntu-24.04`, nightly (seed = run number), on `workflow_dispatch`
+(seed input), and on pull requests that touch Raft, the WAL, the shared oracles or the tool (seed 1). One job per
+transport, 25 minutes, `--max-duration 8` minutes for the campaign and 3 for each injection. Reports, histories, node
+logs and leader claims are always uploaded; the node data directories are kept and uploaded on any failure.
+
+**Process under test.** `RaftNode` itself has no write, status or history endpoint, and its state machine cannot
+carry the history the oracles need, so the tool runs its own test-only host (`Node/NodeHost.cs`) that mirrors RaftNode's
+hosting: `JoinCluster` on a slim `WebApplication` (HTTP) or `RaftCluster.TcpConfiguration` (TCP), static in-memory
+membership of three voters, `WriteAheadLog` at its library defaults (`SharedMemory`, `FlushInterval = 0`), and the
+stage 2 `HistoryStateMachine` (snapshot every 50 entries; the snapshot carries the whole applied history). Deviations
+from RaftNode: election timeout 1000-2000 ms and request timeout 3 s instead of 150-300 ms, as in stage 2, because every
+append is persisted before it completes and a 150 ms timeout churns leadership on a slow disk without any fault; a
+separate loopback control port (`/write` through `ReplicateAsync` with a 10 s timeout, `/status`, `/history`); JSON
+console logging; a leader-claim journal outside the data directory; no peer authentication (loopback only).
+
+**Faults.** Warmup to index 150, then a fixed schedule; the seed picks only the victim followers and the hold times
+(0.5-4 s): `leader-kill` (SIGKILL), `leader-kill`, `leader-term` (SIGTERM, graceful, 15 s grace), `follower-kill`,
+`leader-kill`, `lagging-snapshot` (SIGKILL a follower and keep it down until both other nodes have a snapshot past its
+log, so whichever leads must send `InstallSnapshot`; no install is exit 5), `cluster-kill` (SIGKILL all three, restart
+all from disk). Four closed-loop clients write unique 256 B entries to the leader throughout; an unknown outcome is never
+retried with the same key.
+
+**Oracles.** After each fault is removed: recovery within 30 s (every node answers, a leader exists, 20 new
+acknowledgments), else exit 4. Then a checkpoint: wait for one more acknowledgment and for every node to apply up to the
+highest commit index reported (every earlier acknowledged write is at or below the commit index of the leader that
+acknowledges a later one), fetch every node's applied history, and run the stage 2 checks across all incarnations and
+snapshot installs: apply order, committed-prefix agreement, acknowledged writes, election safety (one leader claim per
+term, from the claim journals), and a recovery audit that every acknowledged write is at its index on **every** node,
+including the restarted ones. A violation is exit 3.
+
+**Failure signals.** Node logs are classified against "Failure signals and operator actions (#26)". Expected for the
+injected faults: Warning 74010 `MemberUnavailable`, 74015 `ReplicationFailed`, HTTP 75001 `MemberUnavailable`, and EventId
+0 request failures. Unexpected (exit 6): 74028, 74030-74032, 74035, 74037, 74048, 74049, HTTP 75002 (HTTP 500 for
+malformed input), any Critical, an integrity or terminal WAL exception, an unhandled exception, or a node exit the
+driver did not cause, including a non-zero exit after SIGTERM. Other warnings and errors are reported as unclassified,
+not failed.
+
+**Bounds.** 10 minutes per run by default; 30 s per recovery or catch-up; 2 GiB free in the output directory to start
+and 1 GiB before each episode, else exit 5. Data is deleted after a passing run. Loopback only, no privileges, no OS-wide network
+or disk changes.
+
+**Checker validation.** `--inject drop-applied` makes node 0 skip the apply of index 100 in its first incarnation:
+caught by apply order (`node 0 skipped index 100, which node 1 applied as 'm0-c2-s25'`). `--inject volatile-storage`
+starts every node from an empty data directory on every launch, so the cluster kill loses acknowledged writes: caught by
+committed-prefix agreement (`index 2 is applied as (term 1, 'm0-c3-s1') on node 0 but as (term 1, 'm0-c2-s41') on
+node 0`; the same node, before and after its restart). CI requires exit 3 with a named oracle for both, on both
+transports. `FaultCampaignHarnessTests` (28 tests) covers the history feed across restarts and snapshot installs, the
+recovery audit, the signal classifier, the schedule and the command line.
+
+**Results** (2026-10-08, AMD Ryzen 7 PRO 8700GE x16, 64 GiB, NixOS 26.11, ext4 on dm-crypt, .NET 10.0.12 workstation
+concurrent GC). Seeds 1-7 on both transports passed: 14 runs, 98 episodes, 36-48 s each, 447-569 acknowledged and
+16-28 unknown writes per run. Recovery: 0.6-2.7 s after a leader kill or SIGTERM, 0.7-1.1 s after a follower kill,
+0.6-1.1 s after a lagging restart, 2.9-3.9 s after a cluster kill. Every lagging follower installed exactly one snapshot
+(its log ended 56-99 entries before the other nodes' snapshots); the victims of the other single-node kills also installed
+snapshots in most runs, because a hold of a few seconds spans one or two snapshot intervals.
+Signals: only the expected ones (HTTP: 75001 88-155 per run, 74015 10-12, 74010 2-4, one EventId 0 cancelled request;
+TCP: 74010 96-156, 74015 11-12); no unclassified or unexpected signal, no unexpected exit. The campaign found no Raft
+bug. It found one harness race, fixed before these results: restarting a node disposed the previous `Process` object
+while the status monitor still read it, the monitor died, and the stale statuses were reported as a liveness failure.
+
+**Residual blind spots.** One machine and loopback; no latency, loss or partitions. Kills land at arbitrary points, not
+deliberately mid-append or mid-snapshot. SIGKILL does not lose the page cache, so this says nothing about power loss.
+The schedule is short (7 faults, about 45 s) and fixed; elections are 1-2 s, not RaftNode's 150-300 ms. No membership
+changes, so a wiped node cannot rejoin (a voter that loses its log can violate safety; it must be removed and re-added).
+No TLS, UDP, Windows, other memory strategies, SIGSTOP or slow-disk faults, and no resource-accumulation tracking.
+
+**Follow-ups** (not in this PR): network partition and heal; membership churn, including re-adding a wiped node; long
+burn-in campaigns; resource accumulation (handles, memory, WAL files) over many restarts; power-loss testing; SIGSTOP
+pauses; TLS; other memory strategies.
+
 ## Scope and limitations
 
 The review covered consensus transitions, replication and quorum handling,
@@ -1999,7 +2090,10 @@ complete distributed fault-injection campaign. The security assessment did
 not include live exploit reproduction against a network listener or
 deployment-policy verification. The durable-write load baselines (#118 stage 2)
 check the history and durability oracles under load on one machine; they do not
-cover power loss, process kill or real networks.
+cover power loss, process kill or real networks. The real-process smoke campaign
+(#118 stage 3) adds process kill and restart of separate node processes over
+HTTP and TCP on loopback; it does not cover power loss, partitions, membership
+churn or long runs.
 
 The cache-configuration probe used `System.Runtime.Caching` 10.0.0.5, while the
 built test output contains 10.0.0.11. Its results challenge the blanket claim of

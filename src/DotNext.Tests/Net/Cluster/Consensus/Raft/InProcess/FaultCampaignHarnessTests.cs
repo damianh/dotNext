@@ -1,0 +1,186 @@
+using DotNext.Benchmarks.DurableWrite.Oracles;
+using DotNext.Raft.FaultCampaign;
+using DotNext.Raft.FaultCampaign.Driver;
+
+namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
+
+/// <summary>
+/// The driver pieces of the real-process fault campaign (<c>src/DotNext.Raft.FaultCampaign</c>): how the history
+/// polled from a node process reaches the oracles, the recovery oracle, the log classification, and the schedule. The
+/// campaign's <c>--inject</c> modes show that the oracles catch a failure in a running cluster.
+/// </summary>
+public sealed class FaultCampaignHarnessTests : Test
+{
+    private static readonly Guid First = Guid.NewGuid(), Second = Guid.NewGuid();
+
+    private static AppliedEntry[] Log(params WriteKey?[] keys)
+        => keys.Select(static (k, i) => new AppliedEntry(i + 1L, 1L, k)).ToArray();
+
+    private static WriteKey Key(int client, long seq) => new(WriteKey.ClosedLoop, client, seq);
+
+    [Fact]
+    public static void PagesThatContinueTheHistoryAreApplied()
+    {
+        var checker = new OnlineHistoryChecker(1);
+        var feed = new HistoryFeed(checker, 1);
+        var log = Log(Key(0, 1), Key(0, 2), Key(1, 1));
+
+        True(feed.Ingest(0, First, 0, 0, log[..2]));
+        Equal((2, First, 0), feed.NextRequest(0));
+        True(feed.Ingest(0, First, 0, 2, log[2..]));
+
+        Equal(log, feed.Current(0));
+        Equal(3L, checker.LastApplied(0));
+        Equal(1, feed.Replacements(0));
+        Null(checker.Violation);
+    }
+
+    [Fact]
+    public static void PageThatDoesNotContinueTheHistoryIsDropped()
+    {
+        var feed = new HistoryFeed(new OnlineHistoryChecker(1), 1);
+        True(feed.Ingest(0, First, 0, 0, Log(Key(0, 1))));
+
+        False(feed.Ingest(0, First, 0, 2, Log(Key(0, 1), Key(0, 2), Key(0, 3))[2..]));
+        False(feed.Ingest(0, Second, 0, 1, []));
+        Single(feed.Current(0));
+    }
+
+    [Fact]
+    public static void RestartedNodeMayComeBackWithAShorterHistory()
+    {
+        var checker = new OnlineHistoryChecker(2);
+        var feed = new HistoryFeed(checker, 2);
+        var log = Log(Key(0, 1), Key(0, 2), Key(0, 3));
+        True(feed.Ingest(0, First, 0, 0, log));
+
+        // Node 1 applied three entries, was killed before its commit index was persisted, and restarted with one.
+        True(feed.Ingest(1, First, 0, 0, log));
+        True(feed.Ingest(1, Second, 1, 0, log[..1]));
+        True(feed.Ingest(1, Second, 1, 1, log[1..]));
+
+        Equal(2, feed.Replacements(1));
+        Null(checker.Violation);
+    }
+
+    [Fact]
+    public static void ReplacedHistoryIsCheckedAgainstTheCommittedPrefix()
+    {
+        var checker = new OnlineHistoryChecker(2);
+        var feed = new HistoryFeed(checker, 2);
+        True(feed.Ingest(0, First, 0, 0, Log(Key(0, 1), Key(0, 2))));
+
+        // Node 1 restarted from an empty data directory, as the volatile-storage injection does, and a new leader
+        // committed a different write at index 1.
+        True(feed.Ingest(1, Second, 0, 0, Log(Key(1, 1))));
+
+        Equal(OnlineHistoryChecker.PrefixAgreement, checker.Violation?.Oracle);
+    }
+
+    [Fact]
+    public static void RecoveryAuditRequiresEveryAcknowledgedWriteOnEveryNode()
+    {
+        var log = Log(null, Key(0, 1), Key(0, 2));
+        AcknowledgedWrite[] acks = [new(Key(0, 1), 0, 2L), new(Key(0, 2), 1, 3L)];
+
+        Null(RecoveryAudit.Check(acks, [log, log, log]));
+        Equal(OnlineHistoryChecker.Durability, RecoveryAudit.Check(acks, [log, log, log[..2]])?.Oracle);
+
+        var other = Log(null, Key(0, 1), Key(1, 7));
+        var violation = RecoveryAudit.Check(acks, [log, other, log]);
+        Equal(OnlineHistoryChecker.Durability, violation?.Oracle);
+        Contains("node 1 has applied", violation?.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("""{"EventId":74032,"LogLevel":"Critical","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""", "Unexpected")]
+    [InlineData("""{"EventId":74048,"LogLevel":"Error","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""", "Unexpected")]
+    [InlineData("""{"EventId":74049,"LogLevel":"Error","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""", "Unexpected")]
+    [InlineData("""{"EventId":75002,"LogLevel":"Error","Category":"DotNext.Net.Cluster.Consensus.Raft.Http.RaftHttpCluster"}""", "Unexpected")]
+    [InlineData("""{"EventId":1,"LogLevel":"Critical","Category":"Microsoft.Hosting.Lifetime"}""", "Unexpected")]
+    [InlineData("""{"EventId":74010,"LogLevel":"Warning","Category":"X","Exception":"DotNext.IO.Log.IntegrityException: ..."}""", "Unexpected")]
+    [InlineData("Unhandled exception. System.IO.IOException: disk", "Unexpected")]
+    [InlineData("""{"EventId":74010,"LogLevel":"Warning","Category":"DotNext.Net.Cluster.Consensus.Raft.Tcp.TcpServer"}""", "Expected")]
+    [InlineData("""{"EventId":74015,"LogLevel":"Warning","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""", "Expected")]
+    [InlineData("""{"EventId":75001,"LogLevel":"Warning","Category":"DotNext.Net.Cluster.Consensus.Raft.Http.RaftHttpCluster"}""", "Expected")]
+    [InlineData("""{"EventId":0,"LogLevel":"Error","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""", "Expected")]
+    [InlineData("""{"EventId":3,"LogLevel":"Warning","Category":"Microsoft.AspNetCore.Server.Kestrel"}""", "Unclassified")]
+    [InlineData("""{"EventId":74000,"LogLevel":"Warning","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""", "Unclassified")]
+    [InlineData("{not json", "Unclassified")]
+    public static void LogLinesAreClassifiedByTheDocumentedSignals(string line, string expected)
+        => Equal(expected, LogClassifier.Classify(line)?.Class.ToString());
+
+    [Theory]
+    [InlineData("""{"EventId":74000,"LogLevel":"Debug","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""")]
+    [InlineData("""{"EventId":14,"LogLevel":"Information","Category":"Microsoft.Hosting.Lifetime"}""")]
+    [InlineData("   at System.Net.Sockets.Socket.Connect()")]
+    [InlineData("")]
+    public static void OtherLinesAreNotSignals(string line)
+        => Null(LogClassifier.Classify(line));
+
+    [Fact]
+    public static void ScanReadsOnlyCompleteLines()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            const string unexpected = """{"EventId":74035,"LogLevel":"Error","Category":"DotNext.Net.Cluster.Consensus.Raft.RaftCluster"}""";
+            var classifier = new LogClassifier();
+            File.WriteAllText(path, unexpected + "\n" + unexpected[..10]);
+            classifier.Scan(path);
+            Single(classifier.Signals);
+
+            File.AppendAllText(path, unexpected[10..] + "\n");
+            classifier.Scan(path);
+            classifier.Scan(path);
+
+            Equal(2, classifier.Signals.Count);
+            Equal(new[] { 1, 2 }, classifier.Signals.Select(static s => s.Line));
+            Equal(2, classifier.Lines);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public static void HistoryRecordsRoundTrip()
+    {
+        AppliedEntry[] entries = [new(1L, 1L, null), new(2L, 3L, Key(2, 40L)), AppliedEntry.CreateSkipped(3L)];
+        Equal(entries, entries.Select(static e => ControlApi.Decode(ControlApi.Encode(e))));
+    }
+
+    [Fact]
+    public static void ScheduleIsDeterministicAndCoversEveryFault()
+    {
+        Equal(Schedule.Create(7, null), Schedule.Create(7, null));
+        Equal(Enum.GetValues<FaultKind>().Order(), Schedule.Default.Distinct().Order());
+        All(Schedule.Create(7, null), static e => InRange(e.Hold.TotalMilliseconds, 500D, 4000D));
+
+        foreach (var kind in Enum.GetValues<FaultKind>())
+            Equal(kind, Schedule.Parse(Schedule.NameOf(kind)));
+
+        Throws<UsageException>(static () => Schedule.Parse("partition"));
+    }
+
+    [Fact]
+    public static void FollowerIsNeverTheLeader()
+    {
+        var random = new Random(1);
+        for (var leader = 0; leader < 3; leader++)
+        {
+            for (var i = 0; i < 100; i++)
+                NotEqual(leader, Schedule.PickFollower(random, 3, leader));
+        }
+    }
+
+    [Fact]
+    public static void UnknownOptionIsAUsageError()
+    {
+        var line = new CommandLine(["--seed", "3", "--sede", "4"]);
+        Equal(3, line.GetInt32("seed", 1));
+        Throws<UsageException>(line.RequireAllRead);
+        Throws<UsageException>(static () => new CommandLine(["--seed"]));
+    }
+}

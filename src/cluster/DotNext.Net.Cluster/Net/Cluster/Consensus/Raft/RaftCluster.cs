@@ -147,6 +147,12 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     /// <inheritdoc />
     ref readonly TagList IRaftStateMachine.MeasurementTags => ref measurementTags;
 
+    // Test seam: counts the runnable background work of this node, see ActivityTracker.
+    internal ActivityTracker? Activity { get; init; }
+
+    /// <inheritdoc />
+    ActivityTracker? IRaftStateMachine.Activity => Activity;
+
     /// <summary>
     /// Gets election timeout used by the local member.
     /// </summary>
@@ -170,6 +176,9 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         token = new(canceled: true);
         return false;
     }
+
+    // Completes when the current leader has settled its lease activation; completed if the node is not a leader.
+    internal Task LeaseActivation => Volatile.Read(in state) is LeaderState<TMember> leader ? leader.LeaseActivation : Task.CompletedTask;
 
     /// <inheritdoc cref="IRaftCluster.LeadershipToken"/>
     public CancellationToken LeadershipToken => Volatile.Read(in state) switch
@@ -1006,45 +1015,63 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         var lastTerm = await AuditTrail.GetTermAsync(lastIndex, LifecycleToken).ConfigureAwait(false);
         var votes = 0;
 
-        // analyze responses
-        await foreach (var response in SendRequestsAsync(members.Values, currentTerm, lastIndex, lastTerm, LifecycleToken).ConfigureAwait(false))
+        // the pre-vote runs within the counted transition, it's not counted while it waits for the responses
+        var requests = Activity is { } activity ? new ActivityTracker.Requests(activity, LifecycleToken) : null;
+        try
         {
-            Debug.Assert(response.IsCompleted);
+            var responses = Task.WhenEach(members.Values
+                .Select(member => ActivityTracker.Requests.Start(
+                    requests,
+                    static args => args.member.PreVoteAsync(args.currentTerm, args.lastIndex, args.lastTerm, args.LifecycleToken),
+                    (member, currentTerm, lastIndex, lastTerm, LifecycleToken)))
+                .ToArray());
 
-            try
+            // analyze responses
+            var enumerator = responses.GetAsyncEnumerator();
+            await using (enumerator.ConfigureAwait(false))
             {
-                switch (response.GetAwaiter().GetResult().Value)
+                while (await ActivityTracker.Requests.WaitAsync(requests, enumerator.MoveNextAsync()).ConfigureAwait(false))
                 {
-                    case PreVoteResult.Accepted:
-                        votes++;
-                        break;
-                    case PreVoteResult.RejectedByFollower:
-                        votes--;
-                        break;
-                    case PreVoteResult.RejectedByLeader:
-                        votes = short.MinValue;
-                        break;
+                    var response = enumerator.Current;
+                    Debug.Assert(response.IsCompleted);
+                    requests?.Observe(response);
+
+                    try
+                    {
+                        switch (response.GetAwaiter().GetResult().Value)
+                        {
+                            case PreVoteResult.Accepted:
+                                votes++;
+                                break;
+                            case PreVoteResult.RejectedByFollower:
+                                votes--;
+                                break;
+                            case PreVoteResult.RejectedByLeader:
+                                votes = short.MinValue;
+                                break;
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return false;
+                    }
+                    catch (MemberUnavailableException)
+                    {
+                        votes -= 1;
+                    }
+                    finally
+                    {
+                        response.Dispose();
+                    }
                 }
             }
-            catch (OperationCanceledException)
-            {
-                return false;
-            }
-            catch (MemberUnavailableException)
-            {
-                votes -= 1;
-            }
-            finally
-            {
-                response.Dispose();
-            }
+        }
+        finally
+        {
+            requests?.Abandon();
         }
 
         return votes > 0;
-
-        static IAsyncEnumerable<Task<Result<PreVoteResult>>> SendRequestsAsync(IEnumerable<TMember> members, long currentTerm, long lastIndex,
-            long lastTerm, CancellationToken token)
-            => Task.WhenEach(members.Select(member => member.PreVoteAsync(currentTerm, lastIndex, lastTerm, token)));
     }
 
     /// <summary>
@@ -1652,11 +1679,21 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         var tokenSource = CombineTokens(token, leaderState.Token);
         try
         {
-            // 1 - append entry to the log
-            var index = await AuditTrail.AppendInCurrentTermAsync(entry, tokenSource.Token).ConfigureAwait(false);
+            long index;
+            Activity?.Enter();
+            try
+            {
+                // 1 - append entry to the log
+                index = await AuditTrail.AppendInCurrentTermAsync(entry, tokenSource.Token).ConfigureAwait(false);
 
-            // 2 - force replication
-            leaderState.ForceReplication();
+                // 2 - force replication
+                leaderState.ForceReplication();
+            }
+            finally
+            {
+                // waiting for the commit depends on the other members, it's not the work of this node
+                Activity?.Exit();
+            }
 
             // 3 - wait for commit
             await AuditTrail.WaitForApplyAsync(index, tokenSource.Token).ConfigureAwait(false);

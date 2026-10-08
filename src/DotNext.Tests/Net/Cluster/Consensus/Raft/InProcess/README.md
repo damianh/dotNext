@@ -279,7 +279,10 @@ for the conditions a new leader must meet first.
 - `InProcessCluster.LeaseOptions` enables leases with an optional
   `ClockDriftBound`. `InProcessClusterFixture` accepts these options and a
   per-node clock factory, and `RestartAsync(member)` replaces a node while
-  keeping its persistent state.
+  keeping its persistent state. `StartLeaderAsync` returns only after the
+  leader has settled its lease activation (`RaftCluster.LeaseActivation`,
+  internal): `WaitForLeadershipAsync` waits for the same write barrier
+  independently and can return first (#129).
 - `DriftingTimeProvider` makes a node's monotonic clock and timers run slower
   than the shared clock by a constant factor. Drift within the configured
   bound keeps the lease inside the voters' stickiness window. Drift beyond it
@@ -360,11 +363,24 @@ membership changes, reads, leases, snapshots or compaction, I/O faults, or real 
 production timer has no randomness), the order of deliveries, and the timing of crashes. Time is manual. Delays and
 drops go through `InProcessNetwork`'s hold, deliver and drop controls.
 
-**What is not controlled.** Thread-pool scheduling inside a step (continuations of a delivered handler), the wall-clock
-`SettleAsync` heuristic that decides when a step has gone quiet (it stops after two stable 1 ms windows, at most 50 ms), and the
-term read in the `LeaderChanged` handler, which can race with a concurrent term change. **A seed alone is therefore
-not a guarantee of replay.** The recorded trace of actual decisions is the record of what happened, and it is
-printed with the seed, the cluster size and the git revision on every failure.
+**What is not controlled.** Thread-pool scheduling inside a step (continuations of a delivered handler), how many of
+its messages a node has sent when it starts waiting for the first response, and the term read in the `LeaderChanged`
+handler, which can race with a concurrent term change. **A seed alone is therefore not a guarantee of replay.** The
+recorded trace of actual decisions is the record of what happened, and it is printed with the seed, the cluster size
+and the git revision on every failure.
+
+**Settling between steps (#129).** The scheduler never waits on the wall clock. Each node is built with an internal
+`ActivityTracker` (`RaftCluster.Activity`, null in production) that counts its runnable work: state transitions,
+election, heartbeat and replication loops between wake-up and park, voting and pre-voting, and `ReplicateAsync`
+appends, including their real log I/O. Work that waits is not counted, and whatever releases the wait (a signal, a
+timer, a response) counts the hop until the waiter resumes. A held Vote, PreVote, AppendEntries or InstallSnapshot
+lends its sender's count to the network until the response is delivered, so a node blocked on a held message is idle
+while its other work (log I/O, handlers) is still counted. Deliveries are not awaited; they are tracked with their
+target node. `SettleAsync` returns when every node that is up is idle (no activity and no running handler). It waits
+on signals only: a tracker reaching zero or a handler completing. Time therefore advances only when every node has caught up, however slow the machine is. Before
+#129 a 50 ms wall-clock heuristic decided when a step was quiet, so under CPU contention virtual time ran ahead of a new
+leader still persisting its no-op entry, and election timeouts fired in a loop (LIVENESS failures with terms climbing).
+A node that never settles fails the run as `HARNESS failure` after 20 s, with the busy nodes in the message.
 
 **Oracles** (`SimulationHistory`, checked at every checkpoint: every 10 steps, before a crash and at the end):
 

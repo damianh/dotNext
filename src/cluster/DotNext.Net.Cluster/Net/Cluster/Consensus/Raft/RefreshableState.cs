@@ -11,6 +11,9 @@ internal abstract class RefreshableState<TMember>(IRaftStateMachine<TMember> sta
     protected readonly AsyncAutoResetEvent refreshEvent = new(initialState: false) { MeasurementTags = stateMachine.MeasurementTags };
     protected readonly AsyncManualResetEvent suppressionEvent = new(initialState: true) { MeasurementTags = stateMachine.MeasurementTags };
 
+    // accounts the loop that waits for refreshEvent, if activity tracking is enabled
+    private protected ActivityTracker.Loop? loop;
+
     public virtual void Refresh()
     {
         Logger.TimeoutReset();
@@ -22,7 +25,7 @@ internal abstract class RefreshableState<TMember>(IRaftStateMachine<TMember> sta
     private void SuspendTracking()
     {
         suppressionEvent.Reset();
-        refreshEvent.Set();
+        ActivityTracker.Loop.Set(loop, refreshEvent);
     }
 
     private void ResumeTracking() => suppressionEvent.Set();

@@ -199,7 +199,8 @@ internal sealed class InProcessNetwork
                     dispatch,
                     action,
                     token,
-                    RemovePending)
+                    RemovePending,
+                    LenderOf(sourceNode.Node, messageType))
                 {
                     LastEntryIndex = lastEntryIndex,
                 };
@@ -223,6 +224,14 @@ internal sealed class InProcessNetwork
             _ => dispatch.InvokeAsync(member, action, token),
         };
     }
+
+    // The sender awaits these responses from a single unit of work that it accounts, see ActivityTracker.
+    private static ActivityTracker LenderOf(InProcessCluster source, RaftMessageType messageType) => messageType switch
+    {
+        RaftMessageType.Vote or RaftMessageType.PreVote or RaftMessageType.AppendEntries or RaftMessageType.InstallSnapshot
+            => source.Activity,
+        _ => null,
+    };
 
     internal async Task DeliverAsync(PendingMessage message)
     {
@@ -382,6 +391,7 @@ file sealed class PendingMessage<TResult> : PendingMessage
     private readonly TaskCompletionSource<TResult> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly CancellationTokenRegistration cancellationRegistration;
     private int state; // 0: queued, 1: dispatching, 2: completed without dispatch
+    private ActivityTracker lender;
 
     internal PendingMessage(
         long id,
@@ -392,12 +402,18 @@ file sealed class PendingMessage<TResult> : PendingMessage
         DispatchRegistration dispatch,
         Func<ILocalMember, CancellationToken, ValueTask<TResult>> action,
         CancellationToken token,
-        Action<PendingMessage> remove)
+        Action<PendingMessage> remove,
+        ActivityTracker lender)
         : base(id, member, sourceId, targetId, messageType, dispatch)
     {
         this.action = action;
         this.token = token;
         this.remove = remove;
+
+        // the sender's unit of work waits for the response, it's counted again when the response is delivered
+        this.lender = lender;
+        lender?.Exit();
+
         cancellationRegistration = token.UnsafeRegister(
             static state => ((PendingMessage<TResult>)state).Cancel(),
             this);
@@ -422,6 +438,7 @@ file sealed class PendingMessage<TResult> : PendingMessage
         try
         {
             var result = await Dispatch.InvokeAsync(Member, action, token).ConfigureAwait(false);
+            Return();
             if (responseFailure is null)
                 completion.TrySetResult(result);
             else
@@ -429,10 +446,12 @@ file sealed class PendingMessage<TResult> : PendingMessage
         }
         catch (OperationCanceledException e)
         {
+            Return();
             completion.TrySetCanceled(e.CancellationToken);
         }
         catch (Exception e)
         {
+            Return();
             completion.TrySetException(e);
         }
         finally
@@ -441,11 +460,16 @@ file sealed class PendingMessage<TResult> : PendingMessage
         }
     }
 
+    private void Return() => Interlocked.Exchange(ref lender, null)?.Enter();
+
     internal override void Fail(Exception exception)
     {
         cancellationRegistration.Dispose();
         if (Interlocked.CompareExchange(ref state, 2, 0) is 0)
+        {
+            Return();
             completion.TrySetException(exception);
+        }
     }
 
     private void Cancel()
@@ -453,6 +477,7 @@ file sealed class PendingMessage<TResult> : PendingMessage
         // Once dispatch starts, its completion owns the payload until the handler exits.
         if (Interlocked.CompareExchange(ref state, 2, 0) is 0)
         {
+            Return();
             completion.TrySetCanceled(token);
             remove(this);
             cancellationRegistration.Unregister();

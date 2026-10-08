@@ -22,6 +22,9 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
 
     private Task? heartbeatTask;
 
+    // accounts the heartbeat loop, if activity tracking is enabled
+    private ActivityTracker.Loop? loop;
+
     internal LeaderState(IRaftStateMachine<TMember> stateMachine, int replicationLag)
         : base(stateMachine)
     {
@@ -56,7 +59,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
     public override CancellationToken Token { get; } // cached to prevent ObjectDisposedException
 
     [AsyncMethodBuilder(typeof(SpawningAsyncTaskMethodBuilder))]
-    private async Task DoHeartbeats(TimeSpan period)
+    private async Task DoHeartbeats(TimeSpan period, ActivityTracker.Loop? loop)
     {
         IReadOnlyCollection<TMember> membersCopy = [];
 
@@ -76,7 +79,8 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
                 using (forced ? default : GCLatencyMode.SustainedLowLatency.Enable())
                 {
                     // process responses
-                    var (quorum, hasConsensus) = await ReplicateAsync(out var barrier).ConfigureAwait(false);
+                    var replication = ReplicateAsync(out var barrier, loop);
+                    var (quorum, hasConsensus) = await ActivityTracker.Loop.WaitAsync(loop, barrier, replication).ConfigureAwait(false);
                     if (GetCommitIndex(barrier, quorum, hasConsensus) is not { } commitIndex)
                         break;
 
@@ -100,7 +104,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
 
                 // resume all suspended callers added to the queue concurrently before SwitchValve()
                 replicationQueue.Drain();
-                forced = await WaitForReplicationAsync(startTime, period, Token).ConfigureAwait(false);
+                forced = await WaitForReplicationAsync(startTime, period, loop, Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (Token.IsCancellationRequested)
@@ -119,6 +123,10 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
                 // Transition asynchronously so disposing this state doesn't await the heartbeat task from itself.
                 MoveToFollowerState(randomizeTimeout: true);
             }
+        }
+        finally
+        {
+            loop?.Close();
         }
     }
 
@@ -174,10 +182,10 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
         removedMembers.Clear(); // help GC
     }
 
-    private ValueTask<ReplicationResult> ReplicateAsync(out ReplicationBarrier barrier)
+    private ValueTask<ReplicationResult> ReplicateAsync(out ReplicationBarrier barrier, ActivityTracker.Loop? loop)
     {
         barrier = RentBarrier();
-        var task = barrier.WaitAsync(runningReplications.Count, AuditTrail.LastEntryIndex);
+        var task = barrier.WaitAsync(runningReplications.Count, AuditTrail.LastEntryIndex, loop);
         StartReplication(barrier);
         return task;
     }
@@ -191,6 +199,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
             AuditTrail = AuditTrail,
             FailureDetector = FailureDetectorFactory?.Invoke(maxLease, member),
             MeasurementTags = MeasurementTags,
+            Activity = Activity,
         };
 
         process.Start(Token);
@@ -280,7 +289,8 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
     {
         runningReplications.Add(leaderNode, new());
         StartLeaseActivation();
-        heartbeatTask = DoHeartbeats(period);
+        loop = Activity is { } activity ? new(activity) : null;
+        heartbeatTask = DoHeartbeats(period, loop);
         LeaderState.TransitionRateMeter.Add(1, in MeasurementTags);
     }
     
@@ -321,6 +331,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
             Cancel();
             heartbeatTask = null;
             writeBarrierTask = null;
+            leaseActivation.TrySetResult();
 
             DestroyLease();
 

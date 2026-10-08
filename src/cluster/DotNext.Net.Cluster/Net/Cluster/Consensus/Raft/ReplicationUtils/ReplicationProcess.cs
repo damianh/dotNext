@@ -44,7 +44,7 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
     private bool memberCallStarted;
     private bool available = true;
     private IFailureDetector? detector;
-    private ActivityTracker? activity;
+    private ActivityTracker.Loop? loop;
 
     public ReplicationProcess(TMember member, int queueSize)
     {
@@ -90,22 +90,19 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
         init => detector = value;
     }
 
-    // a queued round is counted until its result is reported to the barrier
+    // the process is counted while it runs, not while it waits for a round; Start() must be called
     public ActivityTracker? Activity
     {
-        init => activity = value;
+        init => loop = value is null ? null : new(value);
     }
 
     public override void Replicate(ReplicationBarrier barrier)
     {
-        activity?.Enter();
-
         // If member is too slow and cannot process the queue, we assume that it's temporary unavailable
-        if (!writer.TryWrite(barrier))
+        if (!(loop?.Signal(reader, static args => args.writer.TryWrite(args.barrier), (writer, barrier)) ?? writer.TryWrite(barrier)))
         {
             barrier.SetResult(MemberResult.Unavailable);
             Logger.SlowMember(member.EndPoint);
-            activity?.Exit();
         }
     }
 
@@ -116,7 +113,15 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
         if (interrupt)
             interruption.Cancel(throwOnFirstException: false);
 
-        writer.Complete();
+        if (loop is null)
+            writer.Complete();
+        else
+            loop.Signal(reader, static writer =>
+            {
+                writer.Complete();
+                return true;
+            }, writer);
+
         return reader.Completion;
     }
 
@@ -128,58 +133,65 @@ internal sealed class ReplicationProcess<TMember> : ReplicationProcess, ILogEntr
         // when the member needs to be removed due to membership changes.
         using var source = CancellationToken.Combine(token, interruption.Token);
         
-        // Do not pass the token to WaitToReadAsync(), because we want to read all the signals from the channel
-        // even in case of cancellation
-        while (await reader.WaitToReadAsync(CancellationToken.None).ConfigureAwait(false))
+        try
         {
-            for (MemberResult? result; reader.TryRead(out var barrier); SetResult(barrier, in result), activity?.Exit())
+            // Do not pass the token to WaitToReadAsync(), because we want to read all the signals from the channel
+            // even in case of cancellation
+            while (await ActivityTracker.Loop.WaitAsync(loop, reader, reader.WaitToReadAsync(CancellationToken.None)).ConfigureAwait(false))
             {
-                replicationIndex = member.State.PrecedingIndex;
-                matchedIndex = -1L;
-                memberCallStarted = false;
-                try
+                for (MemberResult? result; reader.TryRead(out var barrier); SetResult(barrier, in result))
                 {
-                    precedingTerm = await AuditTrail.GetTermAsync(replicationIndex, source.Token).ConfigureAwait(false);
-                    var response = available
-                        ? await ReplicateAsync(replicationIndex + 1L, barrier.Checkpoint, source.Token).ConfigureAwait(false)
-                        : throw new MemberUnavailableException(member);
+                    replicationIndex = member.State.PrecedingIndex;
+                    matchedIndex = -1L;
+                    memberCallStarted = false;
+                    try
+                    {
+                        precedingTerm = await AuditTrail.GetTermAsync(replicationIndex, source.Token).ConfigureAwait(false);
+                        var response = available
+                            ? await ReplicateAsync(replicationIndex + 1L, barrier.Checkpoint, source.Token).ConfigureAwait(false)
+                            : throw new MemberUnavailableException(member);
 
-                    detector?.ReportHeartbeat();
-                    result = ConvertToResult(in response);
-                }
-                catch (MemberUnavailableException)
-                {
-                    result = MemberResult.Unavailable;
-                }
-                catch (OperationCanceledException e) when (e.CausedBy(source, token))
-                {
-                    result = MemberResult.Canceled;
-                    detector = null; // disable failure detection
-                    // continue loop to drain the channel
-                }
-                catch (OperationCanceledException e) when (e.CausedBy(source, interruption.Token))
-                {
-                    // the process has been interrupted, report this member as unavailable and disable failure detection
-                    result = MemberResult.Unavailable;
-                    detector = null;
-                }
-                catch (Exception e) when (!memberCallStarted)
-                {
-                    // The leader could not read its own log for this member. The member was not contacted,
-                    // so the failure detector is neither fed nor queried for this round. The round still
-                    // counts as unavailable, so the leader steps down if it cannot replicate to a majority.
-                    Logger.LocalLogReadFailed(member.EndPoint, e);
-                    result = MemberResult.Unavailable;
-                    continue;
-                }
-                catch (Exception e)
-                {
-                    Logger.LogError(e, ExceptionMessages.UnexpectedError);
-                    result = MemberResult.Unavailable;
-                }
+                        detector?.ReportHeartbeat();
+                        result = ConvertToResult(in response);
+                    }
+                    catch (MemberUnavailableException)
+                    {
+                        result = MemberResult.Unavailable;
+                    }
+                    catch (OperationCanceledException e) when (e.CausedBy(source, token))
+                    {
+                        result = MemberResult.Canceled;
+                        detector = null; // disable failure detection
+                        // continue loop to drain the channel
+                    }
+                    catch (OperationCanceledException e) when (e.CausedBy(source, interruption.Token))
+                    {
+                        // the process has been interrupted, report this member as unavailable and disable failure detection
+                        result = MemberResult.Unavailable;
+                        detector = null;
+                    }
+                    catch (Exception e) when (!memberCallStarted)
+                    {
+                        // The leader could not read its own log for this member. The member was not contacted,
+                        // so the failure detector is neither fed nor queried for this round. The round still
+                        // counts as unavailable, so the leader steps down if it cannot replicate to a majority.
+                        Logger.LocalLogReadFailed(member.EndPoint, e);
+                        result = MemberResult.Unavailable;
+                        continue;
+                    }
+                    catch (Exception e)
+                    {
+                        Logger.LogError(e, ExceptionMessages.UnexpectedError);
+                        result = MemberResult.Unavailable;
+                    }
 
-                CheckHealthStatus();
+                    CheckHealthStatus();
+                }
             }
+        }
+        finally
+        {
+            loop?.Close();
         }
     }
 

@@ -28,6 +28,7 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
     [AsyncMethodBuilder(typeof(SpawningAsyncTaskMethodBuilder))]
     private async Task VoteAsync(TimeSpan timeout)
     {
+        var requests = Activity is { } activity ? new ActivityTracker.Requests(activity, votingCancellationToken) : null;
         try
         {
             // Perf: reuse index and related term once for all members
@@ -35,10 +36,10 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
             var lastTerm = await AuditTrail.GetTermAsync(lastIndex, votingCancellationToken).ConfigureAwait(false);
 
             // start voting in parallel
-            var voters = StartVoting(lastIndex, lastTerm);
+            var voters = StartVoting(lastIndex, lastTerm, requests);
             var deadline = new VotingDeadline(votingCancellation, timeout, TimeProvider);
             await using (deadline.ConfigureAwait(false))
-                await EndVoting(voters, deadline).ConfigureAwait(false);
+                await EndVoting(voters, deadline, requests).ConfigureAwait(false);
         }
         catch (Exception e) when (!IsDisposingOrDisposed)
         {
@@ -49,16 +50,21 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         }
         finally
         {
+            requests?.Abandon();
+
             // the transition, if any, is already counted
             Activity?.Exit();
         }
     }
     
-    private IAsyncEnumerable<Task<(TMember, long, bool?)>> StartVoting(long lastIndex, long lastTerm)
+    private IAsyncEnumerable<Task<(TMember, long, bool?)>> StartVoting(long lastIndex, long lastTerm, ActivityTracker.Requests? requests)
         => Task.WhenEach(Members
             .TakeWhile(NotCanceled)
-            .Select(member => VoteAsync(member, lastIndex, lastTerm))
-        );
+            .Select(member => ActivityTracker.Requests.Start(
+                requests,
+                static args => args.Item1.VoteAsync(args.member, args.lastIndex, args.lastTerm),
+                (this, member, lastIndex, lastTerm)))
+            .ToArray());
 
     private bool NotCanceled(TMember _) => !votingCancellation.IsCancellationRequested;
 
@@ -82,7 +88,7 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         return (voter, currentTerm, result);
     }
 
-    private async Task EndVoting(IAsyncEnumerable<Task<(TMember, long, bool?)>> voters, VotingDeadline? deadline)
+    private async Task EndVoting(IAsyncEnumerable<Task<(TMember, long, bool?)>> voters, VotingDeadline? deadline, ActivityTracker.Requests? requests)
     {
         var votes = 0;
         var localMember = default(TMember);
@@ -90,8 +96,9 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         var enumerator = voters.GetAsyncEnumerator(votingCancellationToken);
         try
         {
-            while (await enumerator.MoveNextAsync().ConfigureAwait(false))
+            while (await ActivityTracker.Requests.WaitAsync(requests, enumerator.MoveNextAsync()).ConfigureAwait(false))
             {
+                requests?.Observe(enumerator.Current);
                 var (member, term, result) = await enumerator.Current.ConfigureAwait(false);
 
                 if (IsDisposingOrDisposed)

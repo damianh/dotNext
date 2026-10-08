@@ -79,7 +79,8 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
                 using (forced ? default : GCLatencyMode.SustainedLowLatency.Enable())
                 {
                     // process responses
-                    var (quorum, hasConsensus) = await ReplicateAsync(out var barrier).ConfigureAwait(false);
+                    var replication = ReplicateAsync(out var barrier, loop);
+                    var (quorum, hasConsensus) = await ActivityTracker.Loop.WaitAsync(loop, barrier, replication).ConfigureAwait(false);
                     if (GetCommitIndex(barrier, quorum, hasConsensus) is not { } commitIndex)
                         break;
 
@@ -181,10 +182,10 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
         removedMembers.Clear(); // help GC
     }
 
-    private ValueTask<ReplicationResult> ReplicateAsync(out ReplicationBarrier barrier)
+    private ValueTask<ReplicationResult> ReplicateAsync(out ReplicationBarrier barrier, ActivityTracker.Loop? loop)
     {
         barrier = RentBarrier();
-        var task = barrier.WaitAsync(runningReplications.Count, AuditTrail.LastEntryIndex);
+        var task = barrier.WaitAsync(runningReplications.Count, AuditTrail.LastEntryIndex, loop);
         StartReplication(barrier);
         return task;
     }

@@ -25,8 +25,7 @@ internal abstract class RefreshableState<TMember>(IRaftStateMachine<TMember> sta
     private void SuspendTracking()
     {
         suppressionEvent.Reset();
-        loop?.Wake();
-        refreshEvent.Set();
+        ActivityTracker.Loop.Set(loop, refreshEvent);
     }
 
     private void ResumeTracking() => suppressionEvent.Set();

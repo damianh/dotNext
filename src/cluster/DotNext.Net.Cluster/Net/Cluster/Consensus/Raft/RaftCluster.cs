@@ -1015,45 +1015,63 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
         var lastTerm = await AuditTrail.GetTermAsync(lastIndex, LifecycleToken).ConfigureAwait(false);
         var votes = 0;
 
-        // analyze responses
-        await foreach (var response in SendRequestsAsync(members.Values, currentTerm, lastIndex, lastTerm, LifecycleToken).ConfigureAwait(false))
+        // the pre-vote runs within the counted transition, it's not counted while it waits for the responses
+        var requests = Activity is { } activity ? new ActivityTracker.Requests(activity, LifecycleToken) : null;
+        try
         {
-            Debug.Assert(response.IsCompleted);
+            var responses = Task.WhenEach(members.Values
+                .Select(member => ActivityTracker.Requests.Start(
+                    requests,
+                    static args => args.member.PreVoteAsync(args.currentTerm, args.lastIndex, args.lastTerm, args.LifecycleToken),
+                    (member, currentTerm, lastIndex, lastTerm, LifecycleToken)))
+                .ToArray());
 
-            try
+            // analyze responses
+            var enumerator = responses.GetAsyncEnumerator();
+            await using (enumerator.ConfigureAwait(false))
             {
-                switch (response.GetAwaiter().GetResult().Value)
+                while (await ActivityTracker.Requests.WaitAsync(requests, enumerator.MoveNextAsync()).ConfigureAwait(false))
                 {
-                    case PreVoteResult.Accepted:
-                        votes++;
-                        break;
-                    case PreVoteResult.RejectedByFollower:
-                        votes--;
-                        break;
-                    case PreVoteResult.RejectedByLeader:
-                        votes = short.MinValue;
-                        break;
+                    var response = enumerator.Current;
+                    Debug.Assert(response.IsCompleted);
+                    requests?.Observe(response);
+
+                    try
+                    {
+                        switch (response.GetAwaiter().GetResult().Value)
+                        {
+                            case PreVoteResult.Accepted:
+                                votes++;
+                                break;
+                            case PreVoteResult.RejectedByFollower:
+                                votes--;
+                                break;
+                            case PreVoteResult.RejectedByLeader:
+                                votes = short.MinValue;
+                                break;
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return false;
+                    }
+                    catch (MemberUnavailableException)
+                    {
+                        votes -= 1;
+                    }
+                    finally
+                    {
+                        response.Dispose();
+                    }
                 }
             }
-            catch (OperationCanceledException)
-            {
-                return false;
-            }
-            catch (MemberUnavailableException)
-            {
-                votes -= 1;
-            }
-            finally
-            {
-                response.Dispose();
-            }
+        }
+        finally
+        {
+            requests?.Abandon();
         }
 
         return votes > 0;
-
-        static IAsyncEnumerable<Task<Result<PreVoteResult>>> SendRequestsAsync(IEnumerable<TMember> members, long currentTerm, long lastIndex,
-            long lastTerm, CancellationToken token)
-            => Task.WhenEach(members.Select(member => member.PreVoteAsync(currentTerm, lastIndex, lastTerm, token)));
     }
 
     /// <summary>

@@ -21,11 +21,14 @@ internal class ReplicationBarrier : IValueTaskSource<ReplicationResult>
     private ReplicationState counters;
     private Status status;
     private ManualResetValueTaskSourceCore<ReplicationResult> completion = new() { RunContinuationsAsynchronously = true };
+    private ActivityTracker.Loop? waiter;
 
-    public ValueTask<ReplicationResult> WaitAsync(int memberCount, long checkpointIndex)
+    // waiter is the loop that awaits the barrier, if activity tracking is enabled
+    public ValueTask<ReplicationResult> WaitAsync(int memberCount, long checkpointIndex, ActivityTracker.Loop? waiter = null)
     {
         Debug.Assert(memberCount > 0);
 
+        this.waiter = waiter;
         count = memberCount;
         counters = new(memberCount);
         writePos = 0;
@@ -94,7 +97,20 @@ internal class ReplicationBarrier : IValueTaskSource<ReplicationResult>
             }
         }
 
-        completion.SetResult(new(writtenCount, consensusReached));
+        var replicationResult = new ReplicationResult(writtenCount, consensusReached);
+        if (waiter is null)
+        {
+            completion.SetResult(replicationResult);
+        }
+        else
+        {
+            waiter.Signal(this, static args =>
+            {
+                args.Item1.completion.SetResult(args.Item2);
+                return true;
+            }, (this, replicationResult));
+        }
+
         return true;
 
         reused:

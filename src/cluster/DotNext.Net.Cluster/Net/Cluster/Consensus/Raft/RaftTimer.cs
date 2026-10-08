@@ -4,8 +4,7 @@ using Threading;
 
 internal static class RaftTimer
 {
-    // If loop is not null, the wait is not counted as activity once it is armed. The timeout counts as a wakeup,
-    // signal setters must call ActivityTracker.Loop.Wake() before setting the signal.
+    // If loop is not null, the wait is not counted as activity. Signal setters must use ActivityTracker.Loop.Set().
     internal static async ValueTask<bool> WaitAsync(
         AsyncAutoResetEvent source,
         TimeSpan timeout,
@@ -14,41 +13,31 @@ internal static class RaftTimer
         ActivityTracker.Loop? loop = null)
     {
         if (timeout == TimeSpan.Zero)
-        {
-            var signaled = await source.WaitAsync(timeout, token).ConfigureAwait(false);
-            if (signaled)
-                loop?.Consume();
-
-            return signaled;
-        }
+            return await source.WaitAsync(timeout, token).ConfigureAwait(false);
 
         using var timeoutSource = new CancellationTokenSource(timeout, timeProvider);
-        using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(token, timeoutSource.Token);
-        using var wakeup = loop is null
+        using var linkedSource = loop is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(token, timeoutSource.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(token);
+
+        // The timeout releases the wait as a signal, so the hop until the loop resumes is counted.
+        using var timeoutRegistration = loop is null
             ? default
-            : timeoutSource.Token.UnsafeRegister(static loop => ((ActivityTracker.Loop)loop!).Wake(), loop);
+            : timeoutSource.Token.UnsafeRegister(
+                static state =>
+                {
+                    var (loop, source, linkedSource) = ((ActivityTracker.Loop, AsyncAutoResetEvent, CancellationTokenSource))state!;
+                    loop.Signal(source, static linkedSource =>
+                    {
+                        linkedSource.Cancel();
+                        return true;
+                    }, linkedSource);
+                },
+                (loop, source, linkedSource));
 
         try
         {
-            var task = source.WaitAsync(linkedSource.Token);
-            if (loop is null || task.IsCompleted)
-            {
-                loop?.Consume();
-                await task.ConfigureAwait(false);
-            }
-            else
-            {
-                loop.Park();
-                try
-                {
-                    await task.ConfigureAwait(false);
-                }
-                finally
-                {
-                    loop.Resume();
-                }
-            }
-
+            await ActivityTracker.Loop.WaitAsync(loop, source, source.WaitAsync(linkedSource.Token)).ConfigureAwait(false);
             return true;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)

@@ -1105,10 +1105,10 @@ term, and so on. Only contended runs failed: Windows nightly runners and loaded 
 Reproduced with 4 parallel processes pinned to 8 cores running the InProcess namespace: 4 of 4 processes failed.
 
 Fix: the settle waits on signals, not time. `RaftCluster` has an internal `ActivityTracker Activity`, null in
-production, that counts each node's runnable work. That covers state transitions, follower and leader loops from
-wake-up to park, replication and voting rounds while they wait on the network, and `ReplicateAsync` appends.
-`SettleAsync` returns when every node that is up is idle or has a message pending in the network (the scheduler
-holds it). Deliveries are no longer awaited with a 200 ms cut-off; they are tracked with their target node. The RNG
+production, that counts each node's runnable work. That covers state transitions, follower, heartbeat and replication
+loops from wake-up to park, voting and pre-voting, and `ReplicateAsync` appends. A waiting unit is not counted; the
+signal, timer or response that releases it counts the hop until it resumes, and a held RPC lends its sender's count to
+the network until the response is delivered. `SettleAsync` returns when every node that is up is idle. Deliveries are no longer awaited with a 200 ms cut-off; they are tracked with their target node. The RNG
 draw order is unchanged, so a seed makes the same decisions; the oracles and the liveness check are unchanged.
 A node that never settles fails as `HARNESS` after 20 s rather than passing silently.
 

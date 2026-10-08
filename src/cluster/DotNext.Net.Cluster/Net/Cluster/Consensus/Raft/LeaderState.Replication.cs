@@ -35,8 +35,7 @@ internal partial class LeaderState<TMember>
             replicationTask = replicationQueue.WaitAsync(token);
 
             // resume heartbeat loop to force replication
-            loop?.Wake();
-            replicationEvent.Set();
+            ActivityTracker.Loop.Set(loop, replicationEvent);
         }
         catch (ObjectDisposedException e)
         {
@@ -51,8 +50,7 @@ internal partial class LeaderState<TMember>
     {
         try
         {
-            loop?.Wake();
-            replicationEvent.Set();
+            ActivityTracker.Loop.Set(loop, replicationEvent);
         }
         catch (ObjectDisposedException e)
         {

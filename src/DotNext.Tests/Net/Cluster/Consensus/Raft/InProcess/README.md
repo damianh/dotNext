@@ -371,11 +371,13 @@ and the git revision on every failure.
 
 **Settling between steps (#129).** The scheduler never waits on the wall clock. Each node is built with an internal
 `ActivityTracker` (`RaftCluster.Activity`, null in production) that counts its runnable work: state transitions,
-election and heartbeat loops between wake-up and park, replication and voting rounds, and `ReplicateAsync` appends,
-including their real log I/O. Deliveries are not awaited; they are tracked with their target node. `SettleAsync`
-returns when every node that is up is either idle (no activity and no running handler) or has a message pending in the
-network, which the scheduler holds. It waits on signals only: a tracker reaching zero, a new pending message, or a
-handler completing. Time therefore advances only when every node has caught up, however slow the machine is. Before
+election, heartbeat and replication loops between wake-up and park, voting and pre-voting, and `ReplicateAsync`
+appends, including their real log I/O. Work that waits is not counted, and whatever releases the wait (a signal, a
+timer, a response) counts the hop until the waiter resumes. A held Vote, PreVote, AppendEntries or InstallSnapshot
+lends its sender's count to the network until the response is delivered, so a node blocked on a held message is idle
+while its other work (log I/O, handlers) is still counted. Deliveries are not awaited; they are tracked with their
+target node. `SettleAsync` returns when every node that is up is idle (no activity and no running handler). It waits
+on signals only: a tracker reaching zero or a handler completing. Time therefore advances only when every node has caught up, however slow the machine is. Before
 #129 a 50 ms wall-clock heuristic decided when a step was quiet, so under CPU contention virtual time ran ahead of a new
 leader still persisting its no-op entry, and election timeouts fired in a loop (LIVENESS failures with terms climbing).
 A node that never settles fails the run as `HARNESS failure` after 20 s, with the busy nodes in the message.

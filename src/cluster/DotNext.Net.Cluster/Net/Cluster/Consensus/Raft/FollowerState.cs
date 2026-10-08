@@ -69,8 +69,7 @@ internal sealed class FollowerState<TMember> : RefreshableState<TMember>
 
     public override void Refresh()
     {
-        loop?.Wake();
-        refreshEvent.Set();
+        ActivityTracker.Loop.Set(loop, refreshEvent);
         refreshed = true;
         base.Refresh();
     }

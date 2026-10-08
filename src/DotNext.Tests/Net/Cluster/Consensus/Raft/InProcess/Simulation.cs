@@ -21,7 +21,8 @@ using StateMachine;
 /// a guarantee of replay; the trace is the record of what actually happened.
 /// Between steps the scheduler waits on signals, never on the wall clock: every node reports its runnable work through
 /// an <see cref="ActivityTracker"/> (thread-pool hops, log I/O, state transitions), and a step is settled when each node
-/// that is up is either idle or waits for a message the scheduler holds. Virtual time therefore never runs ahead of
+/// that is up is idle. A unit of work that waits for a response the scheduler holds is not counted until the response is
+/// delivered, see <see cref="InProcessNetwork"/>. Virtual time therefore never runs ahead of
 /// a node that is slow in real time, so a run is as valid on a contended machine as on an idle one.
 /// </remarks>
 internal sealed class Simulation : IAsyncDisposable
@@ -325,8 +326,7 @@ internal sealed class Simulation : IAsyncDisposable
         }
     }
 
-    // A handler may legitimately wait for something the scheduler holds, so a delivery is not awaited:
-    // the settle waits for it unless its target is blocked on a pending message.
+    // A delivery is not awaited, the settle waits for the handler.
     private void StartDelivery(PendingMessage message, Task delivery)
         => inFlight.Add((Describe(message), slots.First(s => s.Node.Id == message.TargetId).Node, delivery));
 
@@ -345,8 +345,8 @@ internal sealed class Simulation : IAsyncDisposable
         => $"{m.MessageType} node-{IndexOf(m.SourceId)}->node-{IndexOf(m.TargetId)}"
            + (m.LastEntryIndex >= 0L ? $" lastEntry={m.LastEntryIndex}" : string.Empty);
 
-    // Waits until every node that is up is idle or blocked on a message the scheduler holds. Each wait is released by
-    // a signal: a node becoming idle, a message becoming pending, or a handler completing. The guard only reports
+    // Waits until every node that is up is idle. Each wait is released by a signal: a node becoming idle (which includes
+    // a node that starts waiting for a held response), or a handler completing. The guard only reports
     // a node that never settles (e.g. a handler waiting for virtual time) as a harness failure.
     private async Task SettleAsync()
     {
@@ -355,7 +355,6 @@ internal sealed class Simulation : IAsyncDisposable
         {
             // capture the signals before the state they announce changes
             var activity = Volatile.Read(in activityChanged).Task;
-            var pendingChanged = network.PendingChanged;
             var deliveries = inFlight.Select(static f => f.Task).Where(static t => !t.IsCompleted).ToArray();
 
             if (Busy() is not { Count: > 0 } busy)
@@ -367,7 +366,7 @@ internal sealed class Simulation : IAsyncDisposable
                 if (remaining <= TimeSpan.Zero)
                     throw new TimeoutException();
 
-                await Task.WhenAny(deliveries.Append(activity).Append(pendingChanged)).WaitAsync(remaining, token);
+                await Task.WhenAny(deliveries.Append(activity)).WaitAsync(remaining, token);
             }
             catch (TimeoutException)
             {
@@ -376,16 +375,15 @@ internal sealed class Simulation : IAsyncDisposable
         }
     }
 
-    // Nodes that have runnable work and haven't sent a message the scheduler holds.
+    // Nodes that have runnable work.
     private List<string> Busy()
     {
-        var waiting = network.PendingMessages.Select(static m => m.SourceId).ToHashSet();
         var busy = new List<string>();
         foreach (var slot in slots.Where(static s => s.Up))
         {
             var activities = slot.Activity.Count;
             var handlers = inFlight.Count(f => ReferenceEquals(f.Target, slot.Node) && !f.Task.IsCompleted);
-            if ((activities > 0 || handlers > 0) && !waiting.Contains(slot.Node.Id))
+            if (activities > 0 || handlers > 0)
                 busy.Add($"node-{slot.Index} ({activities} activities, {handlers} handlers)");
         }
 

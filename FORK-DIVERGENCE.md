@@ -259,6 +259,35 @@ failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL
 
 ## Upstream sync log
 
+### 6.8.1 → 6.9.0 (upstream `f3d1be1b5`, 41 commits)
+Merge base `34ebb0cdb` (Patch 6.8.1). Upstream changed nothing in the WAL, the checkpoint format, `QueuedSynchronizer`
+or Raft replication, so no fork behaviour changed and "Behavioural differences" is unchanged.
+
+**Adopted as-is**
+* Core: `ReferenceCounted<T>`, `SkipNulls` for nullable value types, `Flatten` for `Optional<T>`, `Infer` delegate
+  type inference, static string interpolation extensions, the `SpanOwner` stack allocation threshold fix, and the
+  reflection and AOT test changes.
+* Threading: `CancellationTokenMultiplexer` fix (dotnet/dotNext#302). Disposing a pooled source now unregisters its
+  linked tokens. The fork had no fix of its own, and the WAL, `RaftCluster` and the transports use this type.
+  Also adopted: `AsyncEventHub.EventGroup` collection builder, and internal cleanup of `RandomAccessCache`,
+  `ArrayDataReference` and the linked cancellation token sources.
+* IO: `FileReader` and `FileWriter` default to a buffer of `Environment.SystemPageSize` instead of 4 KiB. On 4 KiB-page
+  hosts this changes nothing. On hosts with larger pages it affects the snapshot writer of `SimpleStateMachine`, but
+  not the WAL's pages or checkpoint.
+* Cluster: the custom-transport client uses the configured `RequestTimeout` (dotnet/dotNext#301). It used to use a
+  fixed 30 s. The fork had no fix of its own.
+* `Bench` solution configuration removed from `DotNext.slnx`. The fork's `DotNext.Benchmarks.DurableWrite` project was
+  kept in the flattened solution.
+* AI agent skills (`ai/plugins`, `.agents`, `.claude-plugin`), `AGENTS.md`, docs and the version bump to 6.9.0.
+
+**Adapted for the fork**
+* `AGENTS.md` gains a fork note, and its "Pull Requests" rule now names `fork` instead of `develop`: PRs target `fork`, and Raft/WAL changes must follow this file.
+* Upstream's new asynchronous tests (`AsyncEnumerableTests`, `ReferenceCountedTests`) were given `TestTimeouts`
+  timeouts, as the fork's convention requires (#130).
+
+**Superseded by the fork's design**
+* None.
+
 ### 6.7.1 → 6.8.1 (upstream `34ebb0cdb`, 69 commits)
 Merge base `d46d29859` (Release 6.7.1).
 

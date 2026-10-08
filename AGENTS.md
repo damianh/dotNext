@@ -7,7 +7,7 @@ Instructions for AI coding agents working on the .NEXT repository.
 > give every asynchronous test a timeout from `TestTimeouts`.
 
 ## Pull Requests
-Read [CONTRIBUTING.md](CONTRIBUTING.md) before making changes or opening a PR. It defines the rules for branches, labels, unit tests and backward compatibility. In particular, **all PRs must target the `develop` branch**.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before making changes or opening a PR. It defines the rules for branches, labels, unit tests and backward compatibility. In this fork, **all PRs must target the `fork` branch**; the `develop` target in CONTRIBUTING.md applies to upstream `dotnet/dotNext` only.
 
 ## Repository Layout
 - [Solution File](src/DotNext.slnx) - the solution. Libraries: `DotNext`, `DotNext.IO`, `DotNext.Threading`, `DotNext.Unsafe`, `DotNext.Metaprogramming`, `DotNext.MaintenanceServices`, `cluster/DotNext.Net.Cluster`, `cluster/DotNext.AspNetCore.Cluster`.

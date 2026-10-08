@@ -281,7 +281,7 @@ or Raft replication, so no fork behaviour changed and "Behavioural differences" 
 * AI agent skills (`ai/plugins`, `.agents`, `.claude-plugin`), `AGENTS.md`, docs and the version bump to 6.9.0.
 
 **Adapted for the fork**
-* `AGENTS.md` gains a fork note: PRs target `fork` rather than `develop`, and Raft/WAL changes must follow this file.
+* `AGENTS.md` gains a fork note, and its "Pull Requests" rule now names `fork` instead of `develop`: PRs target `fork`, and Raft/WAL changes must follow this file.
 * Upstream's new asynchronous tests (`AsyncEnumerableTests`, `ReferenceCountedTests`) were given `TestTimeouts`
   timeouts, as the fork's convention requires (#130).
 

@@ -16,8 +16,11 @@ namespace DotNext.Raft.FaultCampaign.Driver;
 internal sealed class Campaign : IDisposable
 {
     private const long MinFreeBytesAtStart = 2L << 30, MinFreeBytes = 1L << 30;
+
+    // The client number of the probe that writes to the isolated node of a partition episode, plus the episode number.
+    private const int ProbeClient = 1000;
     private static readonly TimeSpan StatusInterval = TimeSpan.FromMilliseconds(100), HistoryInterval = TimeSpan.FromMilliseconds(500);
-    private static readonly TimeSpan TerminateGrace = TimeSpan.FromSeconds(15), WarmupTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan TerminateGrace = TimeSpan.FromSeconds(15), WarmupTimeout = TimeSpan.FromSeconds(60), DrainGrace = TimeSpan.FromSeconds(5);
 
     private static readonly JsonSerializerOptions ReportJson = new(JsonSerializerDefaults.Web)
     {
@@ -35,6 +38,11 @@ internal sealed class Campaign : IDisposable
     private readonly LogClassifier classifier = new();
     private readonly NodeStatus?[] statuses;
     private readonly long[] claimOffsets;
+    private readonly PartitionNetwork network;
+    private readonly PartitionOracle partitions = new();
+
+    // Per node, the writes it acknowledged: the majority side of a partition must keep acknowledging writes.
+    private readonly long[] acknowledgedBy;
 
     // Acknowledgments not yet audited. An acknowledgment is added and counted atomically, under ackSync, so that a
     // checkpoint can take all the acknowledgments up to a count.
@@ -58,7 +66,7 @@ internal sealed class Campaign : IDisposable
     private Task? monitor;
     private long acknowledged, rejected, unknown;
 
-    private Campaign(CampaignOptions options, CampaignReport report, int[] raftPorts, int[] controlPorts, Stopwatch clock)
+    private Campaign(CampaignOptions options, CampaignReport report, int[] raftPorts, int[] listenPorts, int[] controlPorts, Stopwatch clock)
     {
         this.options = options;
         this.report = report;
@@ -67,7 +75,10 @@ internal sealed class Campaign : IDisposable
         snapshotFailures = Enumerable.Range(0, CampaignOptions.Nodes).Select(static _ => new Dictionary<Guid, int>()).ToArray();
         nodes = new NodeProcess[CampaignOptions.Nodes];
         for (var i = 0; i < nodes.Length; i++)
-            nodes[i] = new(options, i, raftPorts, controlPorts[i]);
+            nodes[i] = new(options, i, raftPorts, listenPorts[i], controlPorts[i]);
+
+        network = new(raftPorts, listenPorts, i => nodes[i].Pid);
+        acknowledgedBy = new long[nodes.Length];
 
         checker = new(nodes.Length);
         feed = new(checker, nodes.Length);
@@ -107,7 +118,7 @@ internal sealed class Campaign : IDisposable
                 Storage = "WriteAheadLog at library defaults (default MemoryManagementStrategy)",
                 LowerElectionTimeoutMs = NodeHost.LowerElectionTimeout,
                 UpperElectionTimeoutMs = NodeHost.UpperElectionTimeout,
-                RequestTimeoutSeconds = NodeHost.RequestTimeout.TotalSeconds,
+                RequestTimeoutSeconds = NodeHost.RequestTimeout(options.Transport).TotalSeconds,
                 ReplicateTimeoutSeconds = NodeHost.ReplicateTimeout.TotalSeconds,
             },
             Environment = EnvironmentInfo.Collect(options.OutputDirectory),
@@ -116,8 +127,8 @@ internal sealed class Campaign : IDisposable
         foreach (var episode in episodes)
             report.Episodes.Add(new() { Number = episode.Number, Fault = episode.Name, HoldMs = (int)episode.Hold.TotalMilliseconds });
 
-        var (raftPorts, controlPorts) = AllocatePorts(CampaignOptions.Nodes);
-        using var campaign = new Campaign(options, report, raftPorts, controlPorts, clock);
+        var (raftPorts, listenPorts, controlPorts) = AllocatePorts(CampaignOptions.Nodes);
+        using var campaign = new Campaign(options, report, raftPorts, listenPorts, controlPorts, clock);
         try
         {
             await campaign.ExecuteAsync(episodes).ConfigureAwait(false);
@@ -148,12 +159,13 @@ internal sealed class Campaign : IDisposable
         File.Delete(Path.Combine(output, "history.json"));
     }
 
-    private static (int[] Raft, int[] Control) AllocatePorts(int count)
+    // Raft: the member endpoints, where the proxies listen. Listen: where the nodes listen for Raft, behind the proxies.
+    private static (int[] Raft, int[] Listen, int[] Control) AllocatePorts(int count)
     {
         var listeners = new List<TcpListener>();
         try
         {
-            for (var i = 0; i < count * 2; i++)
+            for (var i = 0; i < count * 3; i++)
             {
                 var listener = new TcpListener(IPAddress.Loopback, 0);
                 listener.Start();
@@ -161,7 +173,7 @@ internal sealed class Campaign : IDisposable
             }
 
             var ports = listeners.Select(static l => ((IPEndPoint)l.LocalEndpoint).Port).ToArray();
-            return (ports[..count], ports[count..]);
+            return (ports[..count], ports[count..(count * 2)], ports[(count * 2)..]);
         }
         finally
         {
@@ -179,6 +191,7 @@ internal sealed class Campaign : IDisposable
         }
 
         Log($"transport {report.Transport}, seed {options.Seed}, injection {report.Injection}, schedule {string.Join(',', report.Schedule)}");
+        network.Start();
         for (var i = 0; i < nodes.Length; i++)
             nodes[i].Start(InjectionAtStart(i, first: true));
 
@@ -311,6 +324,9 @@ internal sealed class Campaign : IDisposable
 
         result.LeaderBefore = before.Id;
         result.TermBefore = before.Term;
+        if (episode.IsPartition)
+            return await PartitionAsync(episode, before, result).ConfigureAwait(false);
+
         int[] restart;
         switch (episode.Kind)
         {
@@ -373,6 +389,148 @@ internal sealed class Campaign : IDisposable
             result.TermAfter = after.Term;
         }
 
+        return true;
+    }
+
+    // Cuts every link of one node, heals, and waits for the cluster to recover. A leader or follower partition first
+    // waits for the majority side to have a leader (in a new term, if the leader was isolated) that acknowledges writes,
+    // then holds; a mid-election partition heals after its hold, whatever the majority side has done. While the node is
+    // cut, a probe client writes to it, and the partition oracle records every write sent to it.
+    private async Task<bool> PartitionAsync(Episode episode, NodeStatus before, EpisodeReport result)
+    {
+        var isolated = episode.Kind is FaultKind.FollowerPartition
+            ? Schedule.PickFollower(victims, nodes.Length, before.Id)
+            : before.Id;
+
+        int? leak = options.Injection is NodeInjection.PartitionLeak
+            ? Enumerable.Range(0, nodes.Length).First(i => i != isolated)
+            : null;
+
+        var strict = episode.Kind is not FaultKind.PartitionMidElection;
+        var majority = Enumerable.Range(0, nodes.Length).Where(i => i != isolated).ToArray();
+        result.Victims = [isolated];
+        var cutAt = clock.Elapsed;
+        result.CutPeers = partitions.Begin(episode.Number, isolated, strict, () => network.Isolate(isolated, leak));
+        Log($"episode {episode.Number}: node {isolated} cut from node(s) {string.Join(',', result.CutPeers)}");
+
+        var acksAtCut = MajorityAcknowledged();
+        using var stopProbe = new CancellationTokenSource();
+        clients.Add(ClientAsync(ProbeClient + episode.Number, stopProbe.Token, () => isolated));
+        try
+        {
+            if (episode.Kind is FaultKind.PartitionMidElection)
+            {
+                await WaitUntilAsync(TrackStepDown, episode.Hold).ConfigureAwait(false);
+            }
+            else
+            {
+                var majorityReady = await WaitUntilAsync(
+                    () => TrackStepDown() || (MajorityLeader() is not null && MajorityAcknowledged() - acksAtCut >= CampaignOptions.MinAcknowledgedAfterRecovery),
+                    options.RecoveryTimeout).ConfigureAwait(false);
+
+                if (HasPartitionViolation(episode, result))
+                    return false;
+
+                if (!majorityReady)
+                {
+                    result.Outcome = "liveness failure";
+                    report.LivenessFailure = $"episode {episode.Number} ({episode.Name}): within {options.RecoveryTimeout.TotalSeconds} s of " +
+                        $"cutting node {isolated}, the majority side did not elect a leader{(episode.Kind is FaultKind.LeaderPartition ? " in a new term" : "")} " +
+                        $"and acknowledge {CampaignOptions.MinAcknowledgedAfterRecovery} writes; {MajorityAcknowledged() - acksAtCut} acknowledged " +
+                        $"({DescribeStatuses()})";
+                    return false;
+                }
+
+                if (MajorityLeader() is { } majorityLeader)
+                {
+                    result.MajorityLeader = majorityLeader.Id;
+                    result.MajorityTerm = majorityLeader.Term;
+                }
+
+                await WaitUntilAsync(TrackStepDown, episode.Hold).ConfigureAwait(false);
+            }
+
+            if (HasPartitionViolation(episode, result))
+                return false;
+
+            result.AcknowledgedDuringPartition = MajorityAcknowledged() - acksAtCut;
+            result.NewLeaderAtHeal = leader is var current and >= 0 && current != isolated && statuses[current]?.Term > before.Term;
+        }
+        finally
+        {
+            // Heal only once every write recorded for the isolated node has its outcome: one completed after the heal
+            // could be acknowledged legitimately by the healed node.
+            await stopProbe.CancelAsync().ConfigureAwait(false);
+            var late = await partitions.EndAsync(network.Heal, NodeProcess.ControlTimeout + DrainGrace, bound.Token).ConfigureAwait(false);
+            if (late > 0)
+                Log($"episode {episode.Number}: {late} write(s) to node {isolated} had no outcome at the heal and are only counted");
+
+            result.PartitionSeconds = Math.Round((clock.Elapsed - cutAt).TotalSeconds, 3);
+        }
+
+        Log($"episode {episode.Number}: healed after {result.PartitionSeconds:F1} s");
+
+        // Recovery: every node answers, a leader is elected, the isolated leader no longer leads in its old term, and
+        // the cluster acknowledges new writes.
+        var started = clock.Elapsed;
+        var acksAtHeal = Interlocked.Read(in acknowledged);
+        var recovered = await WaitUntilAsync(
+            () => partitions.Violation is not null
+                  || (statuses.All(static s => s is not null) && leader >= 0
+                      && (episode.Kind is not FaultKind.LeaderPartition || statuses[isolated] is not { IsLeader: true } s || s.Term > before.Term)
+                      && Interlocked.Read(in acknowledged) - acksAtHeal >= CampaignOptions.MinAcknowledgedAfterRecovery),
+            options.RecoveryTimeout).ConfigureAwait(false);
+
+        if (HasPartitionViolation(episode, result))
+            return false;
+
+        if (!recovered)
+        {
+            result.Outcome = "liveness failure";
+            report.LivenessFailure = $"episode {episode.Number} ({episode.Name}): within {options.RecoveryTimeout.TotalSeconds} s of " +
+                $"healing the partition of node {isolated}, the cluster did not answer, elect a leader" +
+                $"{(episode.Kind is FaultKind.LeaderPartition ? ", step the old leader down" : "")} and acknowledge " +
+                $"{CampaignOptions.MinAcknowledgedAfterRecovery} writes; {Interlocked.Read(in acknowledged) - acksAtHeal} acknowledged " +
+                $"({DescribeStatuses()})";
+            return false;
+        }
+
+        result.RecoverySeconds = Math.Round((clock.Elapsed - started).TotalSeconds, 3);
+        if (await CurrentLeaderAsync().ConfigureAwait(false) is { } after)
+        {
+            result.LeaderAfter = after.Id;
+            result.TermAfter = after.Term;
+        }
+
+        return true;
+
+        long MajorityAcknowledged() => majority.Sum(i => Interlocked.Read(in acknowledgedBy[i]));
+
+        // A leader on the majority side; in a new term if the leader was isolated.
+        NodeStatus? MajorityLeader()
+            => majority.Select(i => Volatile.Read(in statuses[i]))
+                .Where(s => s is { IsLeader: true } && (episode.Kind is FaultKind.FollowerPartition || s.Term > before.Term))
+                .MaxBy(static s => s!.Term);
+
+        // Records when the isolated leader stops reporting that it leads; true stops the wait on a violation.
+        bool TrackStepDown()
+        {
+            if (result.StepDownSeconds is null && isolated == before.Id && statuses[isolated] is { IsLeader: false })
+                result.StepDownSeconds = Math.Round((clock.Elapsed - cutAt).TotalSeconds, 3);
+
+            return partitions.Violation is not null;
+        }
+    }
+
+    private bool HasPartitionViolation(Episode episode, EpisodeReport result)
+    {
+        if (partitions.Violation is not { } violation)
+            return false;
+
+        var name = $"episode {episode.Number} ({episode.Name})";
+        result.Outcome = "safety violation";
+        report.Violation = ViolationReport.Create(name, violation);
+        Log($"{name}: safety violation ({violation.Oracle})");
         return true;
     }
 
@@ -476,6 +634,10 @@ internal sealed class Campaign : IDisposable
             checker.CheckFinal(histories);
             if (checker.Violation is null && RecoveryAudit.Check(checker.Acknowledged, histories) is { } durability)
                 checker.Report(durability);
+
+            partitions.Check(histories);
+            if (checker.Violation is null && partitions.Violation is { } minority)
+                checker.Report(minority);
 
             if (result is not null)
             {
@@ -635,8 +797,9 @@ internal sealed class Campaign : IDisposable
         }
     }
 
-    // drain stops the client after its request in flight; the campaign's stop token aborts it.
-    private async Task ClientAsync(int client, CancellationToken drain)
+    // drain stops the client after its request in flight; the campaign's stop token aborts it. The client writes to the
+    // leader, or to the node that pick returns.
+    private async Task ClientAsync(int client, CancellationToken drain, Func<int>? pick = null)
     {
         var token = stop.Token;
         var payload = new Payload(options.PayloadSize);
@@ -646,7 +809,7 @@ internal sealed class Campaign : IDisposable
         {
             try
             {
-                var target = leader;
+                var target = pick?.Invoke() ?? leader;
                 if (target < 0)
                 {
                     await Task.Delay(20, token).ConfigureAwait(false);
@@ -657,13 +820,17 @@ internal sealed class Campaign : IDisposable
                 // write only after the outcome of the previous one is known or can no longer change.
                 var key = new WriteKey(WriteKey.ClosedLoop, client, ++seq);
                 var submitted = Interlocked.Read(in acknowledged);
-                switch (await nodes[target].WriteAsync(payload.Write(buffer, key), token).ConfigureAwait(false))
+                await partitions.OnSubmittingAsync(target, key, token).ConfigureAwait(false);
+                var outcome = await nodes[target].WriteAsync(payload.Write(buffer, key), token).ConfigureAwait(false);
+                partitions.OnOutcome(key, outcome);
+                switch (outcome)
                 {
                     case WriteOutcome.Acknowledged:
                         lock (ackSync)
                         {
                             pendingAcks.Add((target, key));
                             Interlocked.Increment(ref acknowledged);
+                            Interlocked.Increment(ref acknowledgedBy[target]);
                             if (submitted > ackBarrier)
                                 Volatile.Write(ref ackBarrier, submitted);
                         }
@@ -763,7 +930,11 @@ internal sealed class Campaign : IDisposable
             }
         }
 
-        if (report.Violation is null && checker.Violation is { } violation)
+        report.Proxy = network.Statistics;
+        foreach (var episode in report.Episodes.Where(static e => e.CutPeers is not null))
+            episode.MinorityWrites = partitions.Count(episode.Number);
+
+        if (report.Violation is null && (checker.Violation ?? partitions.Violation) is { } violation)
             report.Violation = ViolationReport.Create("shutdown", violation);
 
         // A run passes only if the final checkpoint audited every acknowledged write.
@@ -836,6 +1007,8 @@ internal sealed class Campaign : IDisposable
     {
         foreach (var node in nodes)
             node.Dispose();
+
+        network.Dispose();
 
         feedLock.Dispose();
         stop.Dispose();

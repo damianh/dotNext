@@ -1989,10 +1989,11 @@ operator fixes storage and calls `ResignAsync` or restarts the leader.
 
 ## Real-process fault campaign, #118 stage 3
 
-Part of #118, first PR of stage 3: a smoke campaign, not a burn-in. The tool is
+Part of #118, stage 3: a smoke campaign, not a burn-in. The tool is
 [`src/DotNext.Raft.FaultCampaign`](src/DotNext.Raft.FaultCampaign/README.md). It runs a 3-node cluster as three
-separate OS processes on loopback, over HTTP or over TCP, kills and restarts them under a closed-loop write load, and
-checks the stage 2 oracles after each fault. It closes the "process kill" and "real transports between processes" blind
+separate OS processes on loopback, over HTTP or over TCP, kills and restarts them, and partitions one node away from the
+other two and heals it, under a closed-loop write load, and checks the stage 2 oracles after each fault. The partition
+episodes came in a second PR; see "Partition and heal" below. It closes the "process kill" and "real transports between processes" blind
 spots of stage 1 and stage 2. Test-only; no production code changed. Linux only, HTTP and TCP only, and the default
 `MemoryManagementStrategy` only (user-directed scope).
 
@@ -2001,15 +2002,17 @@ spots of stage 1 and stage 2. Test-only; no production code changed. Linux only,
 ```bash
 dotnet build src/DotNext.Raft.FaultCampaign -c Release
 cd src/DotNext.Raft.FaultCampaign
-./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport http --seed 1 --out /tmp/fc/http   # about 45 s
+./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport http --seed 1 --out /tmp/fc/http   # about 65 s
 ./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport tcp  --seed 1 --out /tmp/fc/tcp
 ./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport http --inject drop-applied --episodes leader-kill --out /tmp/fc/drop        # exit 3
 ./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport tcp  --inject volatile-storage --episodes cluster-kill --out /tmp/fc/vol    # exit 3
+./bin/Release/net10.0/DotNext.Raft.FaultCampaign run --transport http --inject partition-leak --episodes leader-partition --out /tmp/fc/leak  # exit 3
 ```
 
 CI: `.github/workflows/raft-fault-campaign.yml` on `ubuntu-24.04`, nightly (seed = run number), on `workflow_dispatch`
 (seed input), and on pull requests that touch Raft, the WAL, the shared oracles or the tool (seed 1). One job per
-transport, 25 minutes, `--max-duration 8` minutes for the campaign and 3 for each injection. Reports, histories, node
+transport, 30 minutes, `--max-duration 8` minutes for the campaign and 3 for each of the three injections (a 10-minute
+step). Reports, histories, node
 logs and leader claims are always uploaded; the node data directories are kept and uploaded on any failure.
 
 **Process under test.** `RaftNode` itself has no write, status or history endpoint, and its state machine cannot
@@ -2017,8 +2020,10 @@ carry the history the oracles need, so the tool runs its own test-only host (`No
 hosting: `JoinCluster` on a slim `WebApplication` (HTTP) or `RaftCluster.TcpConfiguration` (TCP), static in-memory
 membership of three voters, `WriteAheadLog` at its library defaults (`SharedMemory`, `FlushInterval = 0`), and the
 stage 2 `HistoryStateMachine` (snapshot every 50 entries; the snapshot carries the whole applied history). Deviations
-from RaftNode: election timeout 1000-2000 ms and request timeout 3 s instead of 150-300 ms, as in stage 2, because every
-append is persisted before it completes and a 150 ms timeout churns leadership on a slow disk without any fault; a
+from RaftNode: election timeout 1000-2000 ms instead of 150-300 ms, as in stage 2, because every append is persisted
+before it completes and a 150 ms timeout churns leadership on a slow disk without any fault; request timeout 3 s over
+HTTP, as in stage 2, and the library default (the lower election timeout, 1 s) over TCP, because of #146 (below); the
+node listens on a private port and advertises the port of its proxy in the driver; a
 separate loopback control port (`/write` through `ReplicateAsync` with a 10 s timeout, `/status`, `/history`); JSON
 console logging; a leader-claim journal outside the data directory; no peer authentication (loopback only).
 
@@ -2059,8 +2064,8 @@ caught by apply order (`node 0 skipped index 100, which node 1 applied as 'm0-c2
 starts every node from an empty data directory on every launch, so the cluster kill loses acknowledged writes: caught by
 committed-prefix agreement (`index 2 is applied as (term 1, 'm0-c3-s1') on node 0 but as (term 1, 'm0-c2-s41') on
 node 0`; the same node, before and after its restart). CI requires exit 3 with a named oracle for both, on both
-transports. `FaultCampaignHarnessTests` (34 tests) covers the history feed across restarts and snapshot installs, the
-recovery audit, the signal classifier, the schedule and the command line.
+transports. `FaultCampaignHarnessTests` (41 tests) covers the history feed across restarts and snapshot installs, the
+recovery audit, the signal classifier, the schedule, the command line, the partition proxy and the partition oracle.
 
 **Results** (2026-10-08, AMD Ryzen 7 PRO 8700GE x16, 64 GiB, NixOS 26.11, ext4 on dm-crypt, .NET 10.0.12 workstation
 concurrent GC). Seeds 1-7 on both transports passed: 14 runs, 98 episodes, 36-48 s each, 447-569 acknowledged and
@@ -2073,13 +2078,121 @@ TCP: 74010 96-156, 74015 11-12); no unclassified or unexpected signal, no unexpe
 bug. It found one harness race, fixed before these results: restarting a node disposed the previous `Process` object
 while the status monitor still read it, the monitor died, and the stale statuses were reported as a liveness failure.
 
-**Residual blind spots.** One machine and loopback; no latency, loss or partitions. Kills land at arbitrary points, not
-deliberately mid-append or mid-snapshot. SIGKILL does not lose the page cache, so this says nothing about power loss.
-The schedule is short (7 faults, about 45 s) and fixed; elections are 1-2 s, not RaftNode's 150-300 ms. No membership
+**Partition and heal.** Three more episodes, after the seven above, on both transports (so a seed keeps the victims
+and hold times of its first seven episodes):
+
+- `leader-partition` cuts the leader from both followers. The majority must elect a leader in a new term and
+  acknowledge 20 writes within 30 s of the cut (else exit 4); the driver holds 0.5-4 s more and heals. After the heal,
+  the old leader must no longer lead in its old term.
+- `follower-partition` cuts a follower under load. The majority must acknowledge 20 writes; hold, heal, and the
+  follower must catch up.
+- `partition-mid-election` cuts the leader and heals after 1-3 s, whatever the majority has done.
+
+Recovery after each heal is the usual one: within 30 s, every node answers, a leader exists and 20 new writes are
+acknowledged. The checkpoint then requires every node to agree on the committed prefix.
+
+*Proxy.* Partitioning is a userspace TCP proxy in the driver, one per node, on loopback (`Driver/PartitionNetwork.cs`).
+No `iptables`, `tc`, network namespaces or privileges (user-directed). Each node listens on a private port and
+advertises its proxy port as its endpoint: `publicEndPoint` over HTTP, `TcpConfiguration.PublicEndPoint` over TCP. Both
+transports identify the local member by that public endpoint, so the static member list holds the proxy ports and no
+production change is needed. Every Raft connection to a node passes through its proxy. The proxy attributes each
+connection to the node that opened it, though connections use ephemeral source ports. It finds the inode of the client
+socket in `/proc/net/tcp`, then the node process whose `/proc/<pid>/fd` holds it. Isolating node `n` cuts both
+directions of every connection between `n` and each peer: the proxy of `n` drops the bytes of its peers' connections,
+and each peer's proxy drops the bytes of `n`'s connections. Connections stay open, so a request across the cut times
+out, as in a real split; a close or reset doesn't cross the cut either. A connection that cannot be attributed is
+treated as cut while any link is cut. Healing resets the connections that dropped bytes or a close. Client and status traffic uses the control ports and is not proxied.
+
+*Oracles.* While a node is cut, a probe client writes to it every 20 ms, and the regular clients follow whichever node
+reports that it leads. The partition oracle (`Driver/PartitionOracle.cs`) records every write sent to the isolated node.
+The cut happens under the oracle's lock, so a write is recorded if and only if it is submitted after the cut. Before
+the heal, new writes to the isolated node wait for it and are not recorded, and the heal waits until every recorded
+write has its outcome. The isolated node bounds a write at 10 s, below the driver's 20 s client timeout, so it handles
+and answers every recorded write while it is still cut. A recorded write still without an outcome after 25 s is only
+counted.
+In a leader or follower partition, the majority has committed in a newer term before the heal. The isolated node then
+can never commit what it appended while cut, and it is not elected until it has the newer entries, which replace
+those. So:
+
+- *minority acknowledgment* (exit 3): the isolated node acknowledged a write it received while cut;
+- *minority write applied* (exit 3): any node, at any later checkpoint, has applied such a write.
+
+Every write acknowledged during the partition therefore came from the majority side, and the stage 2 oracles require
+each of them on every node after the heal. Election safety covers the terms of both sides through the claim journals.
+`partition-mid-election` may heal before the majority has committed in a new term, and then the old leader may still
+legitimately commit its entries. There, the writes sent to the old leader are only counted.
+
+*Teeth.* `--inject partition-leak` leaves the link between the isolated leader and one follower up. The "isolated"
+leader keeps a majority and acknowledges writes, which is caught as a minority acknowledgment. For example: `node 0
+acknowledged m0-c1001-s1, which it received after it was isolated in episode 1` (HTTP), and the same for node 2 over
+TCP. CI requires exit 3 with that oracle on both transports, next to the two existing injections.
+
+*Signals.* The classifier is unchanged: a partition needed no new expected signal. Requests across the cut log 74010 or
+75001, which are already expected. The majority leader logs Warning 74044 `SlowMember` ("too far behind the leader")
+for the cut follower while its replication queue is full. 74044 is not in the #26 table, so it is reported as
+unclassified, which does not fail the run. The approved guardrail, which accepts partition-explained signals only from
+the isolated node and the peers it lost, during the partition, was therefore not needed and not implemented.
+
+*Finding: #146.* With the request timeout of 3 s inherited from stage 2, the first TCP leader partition failed with exit
+4. The majority never elected a leader: the terms rose to 6 in 30 s. Over TCP, `RequestTimeout` also bounds vote and
+pre-vote requests. `CandidateState.EndVoting` and `RaftCluster.PreVoteAsync` wait for every member's response, and do
+not stop on a majority. So the request to the silent member outlives the candidate's election deadline (1-2 s), and the
+candidate falls back to follower while holding a majority of votes. A crashed member does not trigger this, because its
+connections are refused immediately. HTTP votes use `RpcTimeout`, which defaults to 1 s. Filed as #146 with a red test
+on branch `dh/tcp-silent-peer-election-red` (commit `6b7a926`), and not fixed here. The campaign now runs TCP at the
+library default `RequestTimeout`, the lower election timeout, which is not exposed. Deployments that raise the TCP
+`RequestTimeout` to or above the election timeout are exposed.
+
+*Results* (2026-10-09, same machine as above). Seeds 1-3, both transports, full schedule: 6 runs, all pass, 59-69 s
+each. Leader partitions:
+
+- the old leader stopped reporting that it led after 1.0-1.1 s;
+- the majority elected a leader in a new term and acknowledged 52-160 writes during the partition;
+- the old leader acknowledged 0 of 338-505 writes sent to it: all rejected except 1 unknown per episode, the probe's
+  write in flight when it stepped down;
+- recovery took 0.7-1.1 s after the heal.
+
+Follower partitions:
+
+- the isolated follower acknowledged 0 of 87-128 writes;
+- the majority acknowledged 36-76 writes;
+- recovery took 0.7-1.0 s.
+
+Mid-election partitions lasted 1.1-2.3 s. No new leader was in place at the heal, and recovery took 1.4-2.5 s.
+
+Proxy: 128-160 connections per run, 0-1 unattributed, and 4-9 reset at heal. Signals: the expected ones, plus 26-71
+unclassified 74044 per run. No unexpected signal and no unexpected exit.
+
+The `partition-leak`, `drop-applied` and `volatile-storage` injections exit 3 on both transports. The campaign found one
+library bug, #146, and no safety violation; CI later found a second, #148 (below).
+
+Review then found a race in the proxy at heal: a connection that had dropped bytes could forward again before it was
+reset. It is fixed, and a connection that lost bytes now never forwards. After the fix, seed 4 passed on both
+transports, and `partition-leak` still exited 3. A second review round found three more gaps, now closed. The oracle
+window opened just after the cut and closed just before the heal. A close or reset crossed the cut. A short send could
+truncate a stream. After those fixes, seeds 5 and 6 passed on both transports, and `partition-leak` still exited 3. A third round found
+that the heal did not wait for the writes in flight to the isolated node, so a write recorded before the heal could
+complete after it and be acknowledged legitimately, a false minority acknowledgment. The heal now waits for their
+outcomes (above). A leader partition therefore lasts about 10 s, the isolated leader's write timeout. Seeds 1 and 5 then
+passed on both transports, and `partition-leak` still exited 3.
+
+*Finding: #148.* CI's HTTP smoke run on the review fixes failed with exit 4 in episode 7, `cluster-kill`, an existing
+episode unrelated to partitions. Node 2 aborted on every restart with `InvalidDataException: Data page file
+'.../wal/data/198' has length 0, but the configured chunk size is 4096`. `AnonymousPage.FlushAsync` creates the page
+file and sets its length in two steps, and a SIGKILL between them leaves a zero-length page. The fork's page-size
+validation then fails closed on every start, so the node cannot rejoin. Filed as #148 with a red test on branch
+`dh/wal-zero-length-page-red` (commit `8098d1e96`), and not fixed here. The failure is intermittent: it needs a kill in
+that window.
+
+**Residual blind spots.** One machine and loopback. No latency, loss or jitter. Partitions are symmetric only, isolate
+one node, and last seconds. No asymmetric or one-way partitions, and none that split while a node is down. The proxy
+drops bytes but never delays or reorders them. Kills land at arbitrary points, not deliberately mid-append or
+mid-snapshot. SIGKILL does not lose the page cache, so this says nothing about power loss. The schedule is short and
+fixed (10 faults, about 65 s). Elections take 1-2 s, not RaftNode's 150-300 ms. No membership
 changes, so a wiped node cannot rejoin (a voter that loses its log can violate safety; it must be removed and re-added).
 No TLS, UDP, Windows, other memory strategies, SIGSTOP or slow-disk faults, and no resource-accumulation tracking.
 
-**Follow-ups** (not in this PR): network partition and heal; membership churn, including re-adding a wiped node; long
+**Follow-ups** (not in this PR): #146; #148; asymmetric, one-way and longer partitions, and latency, loss or jitter; membership churn, including re-adding a wiped node; long
 burn-in campaigns; resource accumulation (handles, memory, WAL files) over many restarts; power-loss testing; SIGSTOP
 pauses; TLS; other memory strategies.
 
@@ -2098,8 +2211,9 @@ deployment-policy verification. The durable-write load baselines (#118 stage 2)
 check the history and durability oracles under load on one machine; they do not
 cover power loss, process kill or real networks. The real-process smoke campaign
 (#118 stage 3) adds process kill and restart of separate node processes over
-HTTP and TCP on loopback; it does not cover power loss, partitions, membership
-churn or long runs.
+HTTP and TCP on loopback, and symmetric partition and heal of one node through a
+loopback proxy; it does not cover power loss, asymmetric partitions, latency or
+loss, membership churn or long runs.
 
 The cache-configuration probe used `System.Runtime.Caching` 10.0.0.5, while the
 built test output contains 10.0.0.11. Its results challenge the blanket claim of

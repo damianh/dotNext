@@ -36,7 +36,8 @@ internal sealed class CampaignOptions
             Seed = line.GetInt32("seed", 1),
             Episodes = episodes,
             Injection = line.GetChoice("inject", NodeInjection.None,
-                ("none", NodeInjection.None), ("drop-applied", NodeInjection.DropApplied), ("volatile-storage", NodeInjection.VolatileStorage)),
+                ("none", NodeInjection.None), ("drop-applied", NodeInjection.DropApplied), ("volatile-storage", NodeInjection.VolatileStorage),
+                ("partition-leak", NodeInjection.PartitionLeak)),
             SnapshotInterval = line.GetInt32("snapshot-interval", 50, 10, 10_000),
             PayloadSize = line.GetInt32("payload", 256, WriteKey.HeaderSize, 64 * 1024),
             Clients = line.GetInt32("clients", 4, 1, 64),
@@ -56,6 +57,7 @@ internal sealed class CampaignOptions
     {
         NodeInjection.DropApplied => "drop-applied",
         NodeInjection.VolatileStorage => "volatile-storage",
+        NodeInjection.PartitionLeak => "partition-leak",
         _ => "none",
     };
 }

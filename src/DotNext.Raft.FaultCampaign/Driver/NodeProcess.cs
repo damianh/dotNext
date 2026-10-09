@@ -19,15 +19,19 @@ internal sealed partial class NodeProcess : IDisposable
     private readonly CampaignOptions options;
     private readonly HttpClient control;
     private readonly int[] raftPorts;
+    private readonly int listenPort;
     private readonly List<Process> exited = [];
     private Process? process;
     private bool expectedExit;
     private int incarnations;
 
-    internal NodeProcess(CampaignOptions options, int id, int[] raftPorts, int controlPort)
+    /// <param name="raftPorts">The member endpoints: the proxy ports of the nodes.</param>
+    /// <param name="listenPort">The port this node listens on: the upstream of its proxy.</param>
+    internal NodeProcess(CampaignOptions options, int id, int[] raftPorts, int listenPort, int controlPort)
     {
         this.options = options;
         this.raftPorts = raftPorts;
+        this.listenPort = listenPort;
         Id = id;
         ControlPort = controlPort;
         DataDirectory = Path.Combine(options.OutputDirectory, "data", $"node{id}");
@@ -36,10 +40,12 @@ internal sealed partial class NodeProcess : IDisposable
         {
             BaseAddress = new($"http://127.0.0.1:{controlPort}/", UriKind.Absolute),
 
-            // Longer than NodeHost.ReplicateTimeout, so a live node always answers a write with its outcome.
-            Timeout = TimeSpan.FromSeconds(20),
+            Timeout = ControlTimeout,
         };
     }
+
+    // Longer than NodeHost.ReplicateTimeout, so a live node always answers a write with its outcome.
+    internal static readonly TimeSpan ControlTimeout = TimeSpan.FromSeconds(20);
 
     internal int Id { get; }
 
@@ -86,6 +92,7 @@ internal sealed partial class NodeProcess : IDisposable
         Add(start, "--transport", options.Transport is Transport.Http ? "http" : "tcp");
         Add(start, "--id", Id.ToString(CultureInfo.InvariantCulture));
         Add(start, "--peers", string.Join(',', raftPorts));
+        Add(start, "--listen-port", listenPort.ToString(CultureInfo.InvariantCulture));
         Add(start, "--control-port", ControlPort.ToString(CultureInfo.InvariantCulture));
         Add(start, "--data", DataDirectory);
         Add(start, "--claims", ClaimsFile);
@@ -251,11 +258,4 @@ internal sealed partial class NodeProcess : IDisposable
 
     [LibraryImport("libc", EntryPoint = "kill", SetLastError = true)]
     private static partial int Kill(int pid, int signal);
-}
-
-internal enum WriteOutcome
-{
-    Acknowledged,
-    Rejected,
-    Unknown,
 }

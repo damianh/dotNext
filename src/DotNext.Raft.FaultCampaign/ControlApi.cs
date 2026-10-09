@@ -11,7 +11,8 @@ internal enum Transport
 }
 
 /// <summary>
-/// A test-only failure that a node injects into itself, to show that the campaign's oracles catch it.
+/// A test-only failure, to show that the campaign's oracles catch it. A node injects the first two into itself; the
+/// driver's proxies inject the last one.
 /// </summary>
 internal enum NodeInjection
 {
@@ -22,6 +23,9 @@ internal enum NodeInjection
 
     // The node deletes its data directory every time it starts, so it forgets its log, term and vote.
     VolatileStorage,
+
+    // A partition leaks: isolating a node leaves its link to one peer intact, so the "isolated" node keeps a majority.
+    PartitionLeak,
 }
 
 /// <summary>
@@ -55,6 +59,13 @@ internal static class ControlApi
 
         return new(index, term, mode < 0L ? null : new WriteKey(checked((byte)mode), checked((int)client), seq));
     }
+}
+
+internal enum WriteOutcome
+{
+    Acknowledged,
+    Rejected,
+    Unknown,
 }
 
 internal sealed class NodeStatus

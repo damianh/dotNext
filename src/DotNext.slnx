@@ -18,6 +18,7 @@
     <Project Path="DotNext.Benchmarks.DurableWrite/DotNext.Benchmarks.DurableWrite.csproj"/>
     <Project Path="DotNext.Benchmarks.WAL/DotNext.Benchmarks.WAL.csproj"/>
     <Project Path="DotNext.Benchmarks/DotNext.Benchmarks.csproj"/>
+    <Project Path="DotNext.Raft.FaultCampaign/DotNext.Raft.FaultCampaign.csproj"/>
     <Project Path="DotNext.Tests/DotNext.Tests.csproj"/>
   </Folder>
   <Folder Name="/Solution Items/">

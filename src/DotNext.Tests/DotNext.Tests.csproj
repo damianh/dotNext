@@ -57,5 +57,8 @@
   <ItemGroup>
     <!-- The online oracles of the durable-write load tool, tested by DurableWriteOracleTests. -->
     <Compile Include="..\DotNext.Benchmarks.DurableWrite\Oracles\*.cs" Link="Net\Cluster\Consensus\Raft\InProcess\DurableWrite\%(Filename)%(Extension)" />
+
+    <!-- The driver pieces of the real-process fault campaign, tested by FaultCampaignHarnessTests. -->
+    <Compile Include="..\DotNext.Raft.FaultCampaign\CommandLine.cs;..\DotNext.Raft.FaultCampaign\ControlApi.cs;..\DotNext.Raft.FaultCampaign\Driver\HistoryFeed.cs;..\DotNext.Raft.FaultCampaign\Driver\LogClassifier.cs;..\DotNext.Raft.FaultCampaign\Driver\Schedule.cs" Link="Net\Cluster\Consensus\Raft\InProcess\FaultCampaign\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

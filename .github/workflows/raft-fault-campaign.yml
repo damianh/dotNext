@@ -1,0 +1,167 @@
+name: Raft fault campaign
+
+# The real-process fault-injection smoke campaign (#118 stage 3): src/DotNext.Raft.FaultCampaign, see its README.md
+# and RAFT-REVIEW.md, "Real-process fault campaign, #118 stage 3".
+# A 3-node cluster runs as separate processes over HTTP and over TCP on loopback. The campaign kills and restarts the
+# leader and followers (SIGKILL and SIGTERM), forces a snapshot catch-up and kills the whole cluster, and checks the
+# oracles after each fault. Each injected failure must then be caught (exit code 3).
+# - nightly and pull requests that touch Raft, the WAL or the tool: seed = run number (nightly) or 1 (pull request);
+# - workflow_dispatch: choose the seed.
+# Reports, node logs, histories and leader claims are always uploaded; node data directories are kept on failure.
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  pull_request:
+    branches: [fork]
+    paths:
+      - .github/workflows/raft-fault-campaign.yml
+      - src/DotNext.Raft.FaultCampaign/**
+      - src/DotNext.Benchmarks.DurableWrite/HistoryStateMachine.cs
+      - src/DotNext.Benchmarks.DurableWrite/Oracles/**
+      - src/DotNext.Benchmarks.DurableWrite/LatencyHistogram.cs
+      - src/DotNext.Benchmarks.DurableWrite/Payload.cs
+      - src/DotNext.Benchmarks.DurableWrite/EnvironmentInfo.cs
+      - src/DotNext.Tests/Net/Cluster/Consensus/Raft/InProcess/SimulationHistory.cs
+      - src/cluster/**
+      - src/DotNext.IO/**
+      - src/DotNext.Threading/**
+      - src/DotNext/**
+      - src/DotNext.Unsafe/**
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Seed that picks the victims and hold times (positive integer)
+        required: true
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_NOLOGO: 'true'
+  PROJECT: src/DotNext.Raft.FaultCampaign/DotNext.Raft.FaultCampaign.csproj
+  TOOL: src/DotNext.Raft.FaultCampaign/bin/Release/net10.0/DotNext.Raft.FaultCampaign.dll
+  RESULTS_DIR: TestResults/fault-campaign
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.transport }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [http, tcp]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build "$PROJECT" --configuration Release
+
+      - name: Seed
+        id: seed
+        env:
+          IN_SEED: ${{ inputs.seed }}
+          EVENT: ${{ github.event_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          case "$EVENT" in
+            workflow_dispatch) seed="$IN_SEED" ;;
+            schedule) seed="$RUN_NUMBER" ;;
+            *) seed=1 ;;
+          esac
+          [[ "$seed" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "::error::seed must be a positive integer"; exit 1; }
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+
+      - name: Campaign
+        timeout-minutes: 12
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+          SEED: ${{ steps.seed.outputs.seed }}
+        run: |
+          set -o pipefail
+          mkdir -p "$RESULTS_DIR"
+          dotnet "$TOOL" run --transport "$TRANSPORT" --seed "$SEED" --max-duration 8 \
+            --out "$RESULTS_DIR/$TRANSPORT-smoke" 2>&1 | tee "$RESULTS_DIR/$TRANSPORT-smoke.log"
+
+      # Each injected failure must be reported by a named oracle, with exit code 3.
+      - name: Injected failures are caught
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          check() {
+            local inject="$1" episodes="$2" expected="$3" code=0 out="$RESULTS_DIR/$TRANSPORT-inject-$1"
+            dotnet "$TOOL" run --transport "$TRANSPORT" --inject "$inject" --episodes "$episodes" --max-duration 3 \
+              --out "$out" > "$out.log" 2>&1 || code=$?
+            tail -n 3 "$out.log"
+            local oracle
+            oracle=$(jq -r '.violation.oracle // "none"' "$out/report.json" 2>/dev/null || echo "no report")
+            if [ "$code" -ne 3 ] || ! grep -qxE "$expected" <<< "$oracle"; then
+              echo "::error title=Oracle missed an injected failure::--inject $inject exited with $code and oracle '$oracle'; expected exit 3 and oracle matching '$expected'"
+              return 1
+            fi
+            echo "| \`$inject\` | $episodes | $oracle | $(jq -r '.violation.message' "$out/report.json" | cut -c1-200) |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          {
+            echo "### Injected failures ($TRANSPORT)"
+            echo ""
+            echo "| Injection | Episodes | Oracle | Report |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RESULTS_DIR"
+          failed=0
+          check drop-applied leader-kill 'apply order|committed-prefix agreement' || failed=1
+          check volatile-storage cluster-kill 'durability|committed-prefix agreement|acknowledged writes|election safety|apply order' || failed=1
+          exit $failed
+
+      - name: Summarize
+        if: ${{ always() && hashFiles(format('TestResults/fault-campaign/{0}-smoke/report.json', matrix.transport)) != '' }}
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          report="$RESULTS_DIR/$TRANSPORT-smoke/report.json"
+          {
+            echo "### Fault campaign ($TRANSPORT)"
+            echo ""
+            jq -r '"Seed \(.seed), revision `\(.environment.revision)`, \(.environment.os), \(.environment.cpuModel) x\(.environment.processorCount), \(.environment.fileSystem). **\(.verdict)** (exit code \(.exitCode)); \(.workload.acknowledged) acknowledged, \(.workload.unknown) unknown."' "$report"
+            echo ""
+            echo "| # | Fault | Hold (ms) | Victims | Leader before, after | Recovery (s) | Snapshots installed | Outcome |"
+            echo "|---|---|---|---|---|---|---|---|"
+            jq -r '.episodes[] | "| \(.number) | \(.fault) | \(.holdMs) | \(.victims | map(tostring) | join(",")) | \(.leaderBefore // "-"), \(.leaderAfter // "-") | \(.recoverySeconds // "-") | \(.snapshotsInstalled // "-") | \(.outcome) |"' "$report"
+            jq -r 'select(.violation != null) | "\nViolation (\(.violation.oracle)): \(.violation.message)"' "$report"
+            jq -r 'select(.livenessFailure != null) | "\nLiveness: \(.livenessFailure)"' "$report"
+            jq -r 'select(.incomplete != null) | "\nIncomplete: \(.incomplete)"' "$report"
+            jq -r 'select(.error != null) | "\nError: \(.error)"' "$report"
+            echo ""
+            echo "Signals: expected $(jq -c '.signals.expected' "$report"), unclassified $(jq -c '.signals.unclassified' "$report"), unexpected $(jq -c '.signals.unexpected' "$report")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Reports, histories, node logs and leader claims; the node data directories are kept by the tool on failure.
+      - name: Upload artifacts
+        if: ${{ always() && hashFiles('TestResults/fault-campaign/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: raft-fault-campaign-${{ matrix.transport }}-${{ github.run_attempt }}
+          path: TestResults/fault-campaign/
+          if-no-files-found: error
+          retention-days: 14

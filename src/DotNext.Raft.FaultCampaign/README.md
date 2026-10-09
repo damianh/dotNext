@@ -113,10 +113,10 @@ from any peer, therefore passes through the proxy of `d`. The proxy finds which 
 `/proc/net/tcp` (the inode of the client socket) and `/proc/<pid>/fd` (the node process that owns it); the nodes run as
 the same user, so no privileges are needed. Isolating node `n` cuts the links `n`-`p` for both peers `p`: the proxy of
 `n` drops the bytes of connections from `p`, and the proxy of `p` drops those of connections from `n`, in both
-directions. Connections stay open, so a request across the cut times out as it does when a real network splits; new
-connections are accepted and dropped the same way. A connection whose source cannot be attributed is treated as cut
+directions. Connections stay open, so a request across the cut times out as it does when a real network splits, and a
+close or reset doesn't cross the cut either; new connections are accepted and dropped the same way. A connection whose source cannot be attributed is treated as cut
 while any link is cut (`proxy.unattributedConnections` in the report; 0-1 per run so far). Healing restores every
-link and resets the connections that dropped bytes, since their streams lost data. Client writes and status polls go to
+link and resets the connections that dropped bytes or a close, since their streams lost data. Client writes and status polls go to
 the control port and are not proxied. Nothing outside the campaign's own ports changes: no `iptables`, `tc` or network
 namespaces.
 **Recovery.** After the restart or the heal, within `--recovery-timeout`: every node answers `/status`, a leader
@@ -140,7 +140,8 @@ checkpoint audits every acknowledged write, so `history.json` of a passing run h
 **Partition oracles** (`Driver/PartitionOracle.cs`). While a node is cut, a probe client keeps writing to it (it
 retries every 20 ms, so it inflates the rejected count of `workload`) and the four clients write to whichever node
 reports that it leads. Every write sent to the isolated node is recorded with its outcome (`minorityWrites` in the
-episode report). In a leader or follower partition the majority elects a leader in a higher term, if needed, and
+episode report); the cut and the heal happen under the oracle's lock, so a write is recorded if and only if it is
+submitted while the node is cut. In a leader or follower partition the majority elects a leader in a higher term, if needed, and
 commits in it before the heal, so the isolated node can never commit a write it received while cut: its uncommitted
 entries must be discarded. Hence:
 
@@ -180,7 +181,7 @@ unclassified and does not fail the run.
 CI (`.github/workflows/raft-fault-campaign.yml`) runs the three injections on both transports and requires exit 3 with
 a named oracle. `FaultCampaignHarnessTests` in `DotNext.Tests` covers the history feed, the recovery audit, the signal
 classifier, the schedule, the command line, the partition proxy (link mask, `/proc/net/tcp` parsing, and a loopback
-connection that is dropped while cut and reset at heal) and the partition oracle.
+connection whose bytes or close are dropped while cut and reset at heal) and the partition oracle.
 
 ## Bounds
 

@@ -2064,7 +2064,7 @@ caught by apply order (`node 0 skipped index 100, which node 1 applied as 'm0-c2
 starts every node from an empty data directory on every launch, so the cluster kill loses acknowledged writes: caught by
 committed-prefix agreement (`index 2 is applied as (term 1, 'm0-c3-s1') on node 0 but as (term 1, 'm0-c2-s41') on
 node 0`; the same node, before and after its restart). CI requires exit 3 with a named oracle for both, on both
-transports. `FaultCampaignHarnessTests` (39 tests) covers the history feed across restarts and snapshot installs, the
+transports. `FaultCampaignHarnessTests` (40 tests) covers the history feed across restarts and snapshot installs, the
 recovery audit, the signal classifier, the schedule, the command line, the partition proxy and the partition oracle.
 
 **Results** (2026-10-08, AMD Ryzen 7 PRO 8700GE x16, 64 GiB, NixOS 26.11, ext4 on dm-crypt, .NET 10.0.12 workstation
@@ -2100,11 +2100,12 @@ connection to the node that opened it, though connections use ephemeral source p
 socket in `/proc/net/tcp`, then the node process whose `/proc/<pid>/fd` holds it. Isolating node `n` cuts both
 directions of every connection between `n` and each peer: the proxy of `n` drops the bytes of its peers' connections,
 and each peer's proxy drops the bytes of `n`'s connections. Connections stay open, so a request across the cut times
-out, as in a real split. A connection that cannot be attributed is treated as cut while any link is cut. Healing resets
-the connections that dropped bytes. Client and status traffic uses the control ports and is not proxied.
+out, as in a real split; a close or reset doesn't cross the cut either. A connection that cannot be attributed is
+treated as cut while any link is cut. Healing resets the connections that dropped bytes or a close. Client and status traffic uses the control ports and is not proxied.
 
 *Oracles.* While a node is cut, a probe client writes to it every 20 ms, and the regular clients follow whichever node
 reports that it leads. The partition oracle (`Driver/PartitionOracle.cs`) records every write sent to the isolated node.
+The cut and the heal happen under the oracle's lock, so a write is recorded if and only if it is submitted while the node is cut.
 In a leader or follower partition, the majority has committed in a newer term before the heal. The isolated node then
 can never commit what it appended while cut, and it is not elected until it has the newer entries, which replace
 those. So:
@@ -2163,7 +2164,9 @@ library bug, #146, and no safety violation.
 
 Review then found a race in the proxy at heal: a connection that had dropped bytes could forward again before it was
 reset. It is fixed, and a connection that lost bytes now never forwards. After the fix, seed 4 passed on both
-transports, and `partition-leak` still exited 3.
+transports, and `partition-leak` still exited 3. A second review round found three more gaps, now closed. The oracle
+window opened just after the cut and closed just before the heal. A close or reset crossed the cut. A short send could
+truncate a stream. After those fixes, seeds 5 and 6 passed on both transports, and `partition-leak` still exited 3.
 
 **Residual blind spots.** One machine and loopback. No latency, loss or jitter. Partitions are symmetric only, isolate
 one node, and last seconds. No asymmetric or one-way partitions, and none that split while a node is down. The proxy

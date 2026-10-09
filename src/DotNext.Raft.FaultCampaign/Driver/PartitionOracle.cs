@@ -27,21 +27,30 @@ internal sealed class PartitionOracle
     internal SafetyViolationException? Violation => Volatile.Read(in violation);
 
     /// <summary>
-    /// Starts recording the writes sent to <paramref name="isolated"/>. Call after its links are cut.
+    /// Cuts the links of <paramref name="isolated"/> and starts recording the writes sent to it, atomically with respect
+    /// to <see cref="OnSubmitting"/>: a write is recorded if and only if it is submitted after the cut.
     /// </summary>
-    internal void Begin(int episode, int isolated, bool strict)
+    internal T Begin<T>(int episode, int isolated, bool strict, Func<T> cut)
     {
         lock (sync)
+        {
+            var result = cut();
             active = new(episode, isolated, strict);
+            return result;
+        }
     }
 
     /// <summary>
-    /// Stops recording. Call before the network heals.
+    /// Stops recording and heals the network, atomically with respect to <see cref="OnSubmitting"/>: a write is
+    /// recorded if and only if it is submitted before the heal.
     /// </summary>
-    internal void End()
+    internal void End(Action heal)
     {
         lock (sync)
+        {
             active = null;
+            heal();
+        }
     }
 
     /// <summary>

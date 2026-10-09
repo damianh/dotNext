@@ -295,24 +295,61 @@ public sealed class FaultCampaignHarnessTests : Test
         Equal(0L, statistics.UnattributedConnections);
         Equal(1L, statistics.DroppedBytes);
         Equal(1L, statistics.ResetAtHeal);
+    }
 
-        static int FreePort()
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ProxyHoldsACloseAcrossTheCutUntilHeal()
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var upstream = new TcpListener(IPAddress.Loopback, 0);
+        upstream.Start();
+        var upstreamPort = ((IPEndPoint)upstream.LocalEndpoint).Port;
+        int[] proxyPorts = [FreePort(), FreePort()];
+
+        using var network = new PartitionNetwork(proxyPorts, [FreePort(), upstreamPort], static n => n is 0 ? Environment.ProcessId : null);
+        network.Start();
+
+        using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, proxyPorts[1]), token);
+        using var server = await upstream.AcceptSocketAsync(token);
+        var buffer = new byte[16];
+
+        network.Isolate(0);
+        client.Shutdown(SocketShutdown.Send);
+        using (var quiet = CancellationTokenSource.CreateLinkedTokenSource(token))
         {
-            using var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            return ((IPEndPoint)listener.LocalEndpoint).Port;
+            quiet.CancelAfter(500);
+            await ThrowsAnyAsync<OperationCanceledException>(async () => await server.ReceiveAsync(buffer, quiet.Token));
         }
+
+        network.Heal();
+        var reset = await Record.ExceptionAsync(async () =>
+        {
+            while (await server.ReceiveAsync(buffer, token) > 0)
+            {
+            }
+        });
+
+        Equal(SocketError.ConnectionReset, IsType<SocketException>(reset).SocketErrorCode);
+        Equal(1L, network.Statistics.ResetAtHeal);
+    }
+
+    private static int FreePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     [Fact]
     public static void IsolatedNodeMustNotAcknowledgeOrApplyWritesInAStrictEpisode()
     {
         var oracle = new PartitionOracle();
-        oracle.Begin(1, isolated: 0, strict: true);
+        oracle.Begin(1, isolated: 0, strict: true, static () => 0);
         oracle.OnSubmitting(0, Key(0, 1));
         oracle.OnSubmitting(1, Key(1, 1));
         oracle.OnSubmitting(0, Key(0, 2));
-        oracle.End();
+        oracle.End(static () => { });
         oracle.OnSubmitting(0, Key(0, 3));
 
         oracle.OnOutcome(Key(0, 1), WriteOutcome.Rejected);
@@ -332,7 +369,7 @@ public sealed class FaultCampaignHarnessTests : Test
         Contains("on node 1", oracle.Violation?.Message, StringComparison.Ordinal);
 
         oracle = new PartitionOracle();
-        oracle.Begin(2, isolated: 2, strict: true);
+        oracle.Begin(2, isolated: 2, strict: true, static () => 0);
         oracle.OnSubmitting(2, Key(4, 1));
         oracle.OnOutcome(Key(4, 1), WriteOutcome.Acknowledged);
         Equal(PartitionOracle.MinorityAcknowledgment, oracle.Violation?.Oracle);
@@ -343,9 +380,9 @@ public sealed class FaultCampaignHarnessTests : Test
     {
         // The partition heals before the majority commits in a new term: the old leader may still commit them.
         var oracle = new PartitionOracle();
-        oracle.Begin(3, isolated: 1, strict: false);
+        oracle.Begin(3, isolated: 1, strict: false, static () => 0);
         oracle.OnSubmitting(1, Key(0, 1));
-        oracle.End();
+        oracle.End(static () => { });
         oracle.OnOutcome(Key(0, 1), WriteOutcome.Acknowledged);
         oracle.Check([Log(Key(0, 1))]);
 

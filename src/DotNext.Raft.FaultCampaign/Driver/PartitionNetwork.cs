@@ -11,9 +11,10 @@ namespace DotNext.Raft.FaultCampaign.Driver;
 /// </summary>
 /// <remarks>
 /// A cut link drops the bytes in both directions of every connection between its two nodes and keeps the connections
-/// open, so a request across the cut times out as it does when a real network splits. When the network heals, the
-/// connections that dropped bytes are reset: their streams lost data, so they never forward again. New connections across a cut are accepted and
-/// then dropped the same way. Only the campaign's own ports are involved; nothing outside the process changes.
+/// open, so a request across the cut times out as it does when a real network splits; a close or reset during the cut
+/// doesn't cross it either. When the network heals, the connections that dropped bytes or a close are reset: their
+/// streams lost data, so they never forward again. New connections across a cut are accepted and then dropped the same
+/// way. Only the campaign's own ports are involved; nothing outside the process changes.
 /// </remarks>
 internal sealed class PartitionNetwork : IDisposable
 {
@@ -67,7 +68,7 @@ internal sealed class PartitionNetwork : IDisposable
     /// </summary>
     internal void Heal()
     {
-        Volatile.Write(ref cut, 0L);
+        Interlocked.Exchange(ref cut, 0L);
         foreach (var proxy in proxies)
             proxy.ResetDropped();
     }
@@ -220,22 +221,34 @@ internal sealed class LinkProxy(PartitionNetwork network, int node, int listenPo
         {
             while (true)
             {
-                var count = await from.ReceiveAsync(buffer, SocketFlags.None).ConfigureAwait(false);
-                if (count is 0)
+                int count;
+                try
                 {
-                    to.Shutdown(SocketShutdown.Send);
-                    break;
+                    count = await from.ReceiveAsync(buffer, SocketFlags.None).ConfigureAwait(false);
+                }
+                catch (Exception e) when (e is SocketException or ObjectDisposedException or IOException)
+                {
+                    count = -1;
                 }
 
-                // A stream that lost bytes never forwards again, whichever order the heal and this pump run in:
-                // once the link is no longer cut, it is reset.
-                var isCut = network.IsCut(source, destination);
-                if (isCut || connection.Dropped)
+                // A stream that lost bytes never forwards again, whichever order the heal and this pump run in: once the
+                // link is no longer cut, it is reset. A chunk received intact before the heal but checked after it is
+                // forwarded late, as TCP retransmits it when a real network heals; nothing crosses while the link is cut.
+                if (network.IsCut(source, destination) || connection.Dropped)
                 {
-                    connection.Dropped = true;
-                    Interlocked.Add(ref droppedBytes, count);
-                    if (isCut)
-                        continue;
+                    connection.MarkDropped();
+                    if (count > 0)
+                        Interlocked.Add(ref droppedBytes, count);
+
+                    if (network.IsCut(source, destination))
+                    {
+                        if (count > 0)
+                            continue;
+
+                        // A close or reset doesn't cross the cut either: the other end stays open until the heal resets it.
+                        await connection.Closed.ConfigureAwait(false);
+                        break;
+                    }
 
                     if (connection.Abort())
                         Interlocked.Increment(ref resetAtHeal);
@@ -243,7 +256,20 @@ internal sealed class LinkProxy(PartitionNetwork network, int node, int listenPo
                     break;
                 }
 
-                await to.SendAsync(buffer.AsMemory(0, count), SocketFlags.None).ConfigureAwait(false);
+                if (count < 0)
+                {
+                    connection.Abort();
+                    break;
+                }
+
+                if (count is 0)
+                {
+                    to.Shutdown(SocketShutdown.Send);
+                    break;
+                }
+
+                for (var sent = 0; sent < count;)
+                    sent += await to.SendAsync(buffer.AsMemory(sent, count - sent), SocketFlags.None).ConfigureAwait(false);
             }
         }
         catch (Exception e) when (e is SocketException or ObjectDisposedException or IOException)
@@ -299,27 +325,36 @@ internal sealed class LinkProxy(PartitionNetwork network, int node, int listenPo
 
     private sealed class Connection(Socket client, Socket upstream)
     {
-        private int closed;
+        private readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int state;
+        private int dropped;
 
         // Bytes were dropped while a link was cut: the stream lost data and is reset when the network heals.
-        internal volatile bool Dropped;
+        internal bool Dropped => Volatile.Read(in dropped) is not 0;
+
+        // A full fence: either the pump sees the heal, or the heal sees this flag and resets the connection.
+        internal void MarkDropped() => Interlocked.Exchange(ref dropped, 1);
+
+        internal Task Closed => closed.Task;
 
         internal bool Abort()
         {
-            if (Interlocked.Exchange(ref closed, 1) is not 0)
+            if (Interlocked.Exchange(ref state, 1) is not 0)
                 return false;
 
             LinkProxy.Abort(client);
             LinkProxy.Abort(upstream);
+            closed.TrySetResult();
             return true;
         }
 
         internal void Close()
         {
-            if (Interlocked.Exchange(ref closed, 1) is 0)
+            if (Interlocked.Exchange(ref state, 1) is 0)
             {
                 client.Dispose();
                 upstream.Dispose();
+                closed.TrySetResult();
             }
         }
     }

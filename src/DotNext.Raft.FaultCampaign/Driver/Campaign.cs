@@ -410,8 +410,7 @@ internal sealed class Campaign : IDisposable
         var majority = Enumerable.Range(0, nodes.Length).Where(i => i != isolated).ToArray();
         result.Victims = [isolated];
         var cutAt = clock.Elapsed;
-        result.CutPeers = network.Isolate(isolated, leak);
-        partitions.Begin(episode.Number, isolated, strict);
+        result.CutPeers = partitions.Begin(episode.Number, isolated, strict, () => network.Isolate(isolated, leak));
         Log($"episode {episode.Number}: node {isolated} cut from node(s) {string.Join(',', result.CutPeers)}");
 
         var acksAtCut = MajorityAcknowledged();
@@ -459,9 +458,8 @@ internal sealed class Campaign : IDisposable
         }
         finally
         {
-            partitions.End();
             await stopProbe.CancelAsync().ConfigureAwait(false);
-            network.Heal();
+            partitions.End(network.Heal);
             result.PartitionSeconds = Math.Round((clock.Elapsed - cutAt).TotalSeconds, 3);
         }
 

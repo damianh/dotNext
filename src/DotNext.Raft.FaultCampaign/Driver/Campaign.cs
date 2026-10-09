@@ -20,7 +20,7 @@ internal sealed class Campaign : IDisposable
     // The client number of the probe that writes to the isolated node of a partition episode, plus the episode number.
     private const int ProbeClient = 1000;
     private static readonly TimeSpan StatusInterval = TimeSpan.FromMilliseconds(100), HistoryInterval = TimeSpan.FromMilliseconds(500);
-    private static readonly TimeSpan TerminateGrace = TimeSpan.FromSeconds(15), WarmupTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan TerminateGrace = TimeSpan.FromSeconds(15), WarmupTimeout = TimeSpan.FromSeconds(60), DrainGrace = TimeSpan.FromSeconds(5);
 
     private static readonly JsonSerializerOptions ReportJson = new(JsonSerializerDefaults.Web)
     {
@@ -458,8 +458,13 @@ internal sealed class Campaign : IDisposable
         }
         finally
         {
+            // Heal only once every write recorded for the isolated node has its outcome: one completed after the heal
+            // could be acknowledged legitimately by the healed node.
             await stopProbe.CancelAsync().ConfigureAwait(false);
-            partitions.End(network.Heal);
+            var late = await partitions.EndAsync(network.Heal, NodeProcess.ControlTimeout + DrainGrace, stop.Token).ConfigureAwait(false);
+            if (late > 0)
+                Log($"episode {episode.Number}: {late} write(s) to node {isolated} had no outcome at the heal and are only counted");
+
             result.PartitionSeconds = Math.Round((clock.Elapsed - cutAt).TotalSeconds, 3);
         }
 
@@ -815,7 +820,7 @@ internal sealed class Campaign : IDisposable
                 // write only after the outcome of the previous one is known or can no longer change.
                 var key = new WriteKey(WriteKey.ClosedLoop, client, ++seq);
                 var submitted = Interlocked.Read(in acknowledged);
-                partitions.OnSubmitting(target, key);
+                await partitions.OnSubmittingAsync(target, key, token).ConfigureAwait(false);
                 var outcome = await nodes[target].WriteAsync(payload.Write(buffer, key), token).ConfigureAwait(false);
                 partitions.OnOutcome(key, outcome);
                 switch (outcome)

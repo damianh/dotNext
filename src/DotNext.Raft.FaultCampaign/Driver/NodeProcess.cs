@@ -40,10 +40,12 @@ internal sealed partial class NodeProcess : IDisposable
         {
             BaseAddress = new($"http://127.0.0.1:{controlPort}/", UriKind.Absolute),
 
-            // Longer than NodeHost.ReplicateTimeout, so a live node always answers a write with its outcome.
-            Timeout = TimeSpan.FromSeconds(20),
+            Timeout = ControlTimeout,
         };
     }
+
+    // Longer than NodeHost.ReplicateTimeout, so a live node always answers a write with its outcome.
+    internal static readonly TimeSpan ControlTimeout = TimeSpan.FromSeconds(20);
 
     internal int Id { get; }
 

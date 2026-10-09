@@ -24,11 +24,16 @@ internal sealed class PartitionOracle
     private Window? active;
     private SafetyViolationException? violation;
 
+    // The recorded writes without an outcome; drained completes when there are none; healed is the gate that new
+    // writes to the isolated node wait at while the partition ends.
+    private int pending;
+    private TaskCompletionSource? drained, healed;
+
     internal SafetyViolationException? Violation => Volatile.Read(in violation);
 
     /// <summary>
     /// Cuts the links of <paramref name="isolated"/> and starts recording the writes sent to it, atomically with respect
-    /// to <see cref="OnSubmitting"/>: a write is recorded if and only if it is submitted after the cut.
+    /// to <see cref="OnSubmittingAsync"/>: a write is recorded if and only if it is submitted after the cut.
     /// </summary>
     internal T Begin<T>(int episode, int isolated, bool strict, Func<T> cut)
     {
@@ -41,28 +46,79 @@ internal sealed class PartitionOracle
     }
 
     /// <summary>
-    /// Stops recording and heals the network, atomically with respect to <see cref="OnSubmitting"/>: a write is
-    /// recorded if and only if it is submitted before the heal.
+    /// Heals the network once every recorded write has its outcome, so that each of them was received, handled and
+    /// answered by the isolated node while it was cut. Meanwhile, new writes to the isolated node wait for the heal and
+    /// are not recorded. A write still without an outcome after <paramref name="timeout"/> is only counted.
     /// </summary>
-    internal void End(Action heal)
+    /// <returns>The number of writes still without an outcome at the heal.</returns>
+    internal async Task<int> EndAsync(Action heal, TimeSpan timeout, CancellationToken token)
     {
+        Task drain;
         lock (sync)
         {
+            healed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (pending is 0)
+                drained.SetResult();
+
+            drain = drained.Task;
+        }
+
+        try
+        {
+            await drain.WaitAsync(timeout, token).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is TimeoutException or OperationCanceledException)
+        {
+            // heal anyway
+        }
+
+        lock (sync)
+        {
+            var late = 0;
+            foreach (var write in writes.Values)
+            {
+                if (write.Pending)
+                {
+                    write.Pending = false;
+                    write.Strict = false;
+                    late++;
+                }
+            }
+
+            pending = 0;
             active = null;
             heal();
+            healed.SetResult();
+            healed = null;
+            drained = null;
+            return late;
         }
     }
 
     /// <summary>
-    /// Records a write that a client is about to send to <paramref name="target"/>.
+    /// Records a write that a client is about to send to <paramref name="target"/>. While the partition is ending, a
+    /// write to the isolated node waits for the heal and is not recorded.
     /// </summary>
-    internal void OnSubmitting(int target, WriteKey key)
+    internal ValueTask OnSubmittingAsync(int target, WriteKey key, CancellationToken token)
     {
+        Task gate;
         lock (sync)
         {
-            if (active is { } window && window.Isolated == target)
-                writes[key] = new(window.Episode, target, window.Strict);
+            if (active is not { } window || window.Isolated != target)
+                return ValueTask.CompletedTask;
+
+            if (healed is null)
+            {
+                writes[key] = new(window.Episode, target, window.Strict) { Pending = true };
+                pending++;
+                return ValueTask.CompletedTask;
+            }
+
+            gate = healed.Task;
         }
+
+        return new(gate.WaitAsync(token));
     }
 
     internal void OnOutcome(WriteKey key, WriteOutcome outcome)
@@ -73,6 +129,13 @@ internal sealed class PartitionOracle
                 return;
 
             write.Outcome = outcome;
+            if (write.Pending)
+            {
+                write.Pending = false;
+                if (--pending is 0)
+                    drained?.TrySetResult();
+            }
+
             if (outcome is WriteOutcome.Acknowledged && write.Strict)
             {
                 Report(new(MinorityAcknowledgment,
@@ -130,7 +193,8 @@ internal sealed class PartitionOracle
     {
         internal int Episode => episode;
         internal int Node => node;
-        internal bool Strict => strict;
+        internal bool Strict { get; set; } = strict;
+        internal bool Pending { get; set; }
         internal WriteOutcome? Outcome { get; set; }
     }
 }

@@ -140,8 +140,10 @@ checkpoint audits every acknowledged write, so `history.json` of a passing run h
 **Partition oracles** (`Driver/PartitionOracle.cs`). While a node is cut, a probe client keeps writing to it (it
 retries every 20 ms, so it inflates the rejected count of `workload`) and the four clients write to whichever node
 reports that it leads. Every write sent to the isolated node is recorded with its outcome (`minorityWrites` in the
-episode report); the cut and the heal happen under the oracle's lock, so a write is recorded if and only if it is
-submitted while the node is cut. In a leader or follower partition the majority elects a leader in a higher term, if needed, and
+episode report); the cut happens under the oracle's lock, so a write is recorded if and only if it is submitted after
+the cut. Before the heal, new writes to the isolated node wait for it and are not recorded, and the heal waits until
+every recorded write has its outcome (the node bounds a write at 10 s, the driver's client at 20 s), so the isolated
+node answers every recorded write while still cut; one without an outcome after 25 s is only counted. In a leader or follower partition the majority elects a leader in a higher term, if needed, and
 commits in it before the heal, so the isolated node can never commit a write it received while cut: its uncommitted
 entries must be discarded. Hence:
 

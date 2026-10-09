@@ -2064,7 +2064,7 @@ caught by apply order (`node 0 skipped index 100, which node 1 applied as 'm0-c2
 starts every node from an empty data directory on every launch, so the cluster kill loses acknowledged writes: caught by
 committed-prefix agreement (`index 2 is applied as (term 1, 'm0-c3-s1') on node 0 but as (term 1, 'm0-c2-s41') on
 node 0`; the same node, before and after its restart). CI requires exit 3 with a named oracle for both, on both
-transports. `FaultCampaignHarnessTests` (40 tests) covers the history feed across restarts and snapshot installs, the
+transports. `FaultCampaignHarnessTests` (41 tests) covers the history feed across restarts and snapshot installs, the
 recovery audit, the signal classifier, the schedule, the command line, the partition proxy and the partition oracle.
 
 **Results** (2026-10-08, AMD Ryzen 7 PRO 8700GE x16, 64 GiB, NixOS 26.11, ext4 on dm-crypt, .NET 10.0.12 workstation
@@ -2105,7 +2105,11 @@ treated as cut while any link is cut. Healing resets the connections that droppe
 
 *Oracles.* While a node is cut, a probe client writes to it every 20 ms, and the regular clients follow whichever node
 reports that it leads. The partition oracle (`Driver/PartitionOracle.cs`) records every write sent to the isolated node.
-The cut and the heal happen under the oracle's lock, so a write is recorded if and only if it is submitted while the node is cut.
+The cut happens under the oracle's lock, so a write is recorded if and only if it is submitted after the cut. Before
+the heal, new writes to the isolated node wait for it and are not recorded, and the heal waits until every recorded
+write has its outcome. The isolated node bounds a write at 10 s, below the driver's 20 s client timeout, so it handles
+and answers every recorded write while it is still cut. A recorded write still without an outcome after 25 s is only
+counted.
 In a leader or follower partition, the majority has committed in a newer term before the heal. The isolated node then
 can never commit what it appended while cut, and it is not elected until it has the newer entries, which replace
 those. So:
@@ -2160,13 +2164,25 @@ Proxy: 128-160 connections per run, 0-1 unattributed, and 4-9 reset at heal. Sig
 unclassified 74044 per run. No unexpected signal and no unexpected exit.
 
 The `partition-leak`, `drop-applied` and `volatile-storage` injections exit 3 on both transports. The campaign found one
-library bug, #146, and no safety violation.
+library bug, #146, and no safety violation; CI later found a second, #148 (below).
 
 Review then found a race in the proxy at heal: a connection that had dropped bytes could forward again before it was
 reset. It is fixed, and a connection that lost bytes now never forwards. After the fix, seed 4 passed on both
 transports, and `partition-leak` still exited 3. A second review round found three more gaps, now closed. The oracle
 window opened just after the cut and closed just before the heal. A close or reset crossed the cut. A short send could
-truncate a stream. After those fixes, seeds 5 and 6 passed on both transports, and `partition-leak` still exited 3.
+truncate a stream. After those fixes, seeds 5 and 6 passed on both transports, and `partition-leak` still exited 3. A third round found
+that the heal did not wait for the writes in flight to the isolated node, so a write recorded before the heal could
+complete after it and be acknowledged legitimately, a false minority acknowledgment. The heal now waits for their
+outcomes (above). A leader partition therefore lasts about 10 s, the isolated leader's write timeout. Seeds 1 and 5 then
+passed on both transports, and `partition-leak` still exited 3.
+
+*Finding: #148.* CI's HTTP smoke run on the review fixes failed with exit 4 in episode 7, `cluster-kill`, an existing
+episode unrelated to partitions. Node 2 aborted on every restart with `InvalidDataException: Data page file
+'.../wal/data/198' has length 0, but the configured chunk size is 4096`. `AnonymousPage.FlushAsync` creates the page
+file and sets its length in two steps, and a SIGKILL between them leaves a zero-length page. The fork's page-size
+validation then fails closed on every start, so the node cannot rejoin. Filed as #148 with a red test on branch
+`dh/wal-zero-length-page-red` (commit `8098d1e96`), and not fixed here. The failure is intermittent: it needs a kill in
+that window.
 
 **Residual blind spots.** One machine and loopback. No latency, loss or jitter. Partitions are symmetric only, isolate
 one node, and last seconds. No asymmetric or one-way partitions, and none that split while a node is down. The proxy
@@ -2176,7 +2192,7 @@ fixed (10 faults, about 65 s). Elections take 1-2 s, not RaftNode's 150-300 ms. 
 changes, so a wiped node cannot rejoin (a voter that loses its log can violate safety; it must be removed and re-added).
 No TLS, UDP, Windows, other memory strategies, SIGSTOP or slow-disk faults, and no resource-accumulation tracking.
 
-**Follow-ups** (not in this PR): #146; asymmetric, one-way and longer partitions, and latency, loss or jitter; membership churn, including re-adding a wiped node; long
+**Follow-ups** (not in this PR): #146; #148; asymmetric, one-way and longer partitions, and latency, loss or jitter; membership churn, including re-adding a wiped node; long
 burn-in campaigns; resource accumulation (handles, memory, WAL files) over many restarts; power-loss testing; SIGSTOP
 pauses; TLS; other memory strategies.
 

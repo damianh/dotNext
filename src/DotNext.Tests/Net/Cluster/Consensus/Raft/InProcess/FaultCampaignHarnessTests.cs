@@ -341,19 +341,20 @@ public sealed class FaultCampaignHarnessTests : Test
         return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
-    [Fact]
-    public static void IsolatedNodeMustNotAcknowledgeOrApplyWritesInAStrictEpisode()
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task IsolatedNodeMustNotAcknowledgeOrApplyWritesInAStrictEpisode()
     {
         var oracle = new PartitionOracle();
         oracle.Begin(1, isolated: 0, strict: true, static () => 0);
-        oracle.OnSubmitting(0, Key(0, 1));
-        oracle.OnSubmitting(1, Key(1, 1));
-        oracle.OnSubmitting(0, Key(0, 2));
-        oracle.End(static () => { });
-        oracle.OnSubmitting(0, Key(0, 3));
-
+        await oracle.OnSubmittingAsync(0, Key(0, 1), TestToken);
+        await oracle.OnSubmittingAsync(1, Key(1, 1), TestToken);
+        await oracle.OnSubmittingAsync(0, Key(0, 2), TestToken);
         oracle.OnOutcome(Key(0, 1), WriteOutcome.Rejected);
         oracle.OnOutcome(Key(1, 1), WriteOutcome.Acknowledged);
+        oracle.OnOutcome(Key(0, 2), WriteOutcome.Unknown);
+        Equal(0, await oracle.EndAsync(static () => { }, DefaultTimeout, TestToken));
+        await oracle.OnSubmittingAsync(0, Key(0, 3), TestToken);
+
         oracle.OnOutcome(Key(0, 3), WriteOutcome.Acknowledged);
         oracle.Check([Log(Key(1, 1), Key(0, 3))]);
         Null(oracle.Violation);
@@ -370,23 +371,57 @@ public sealed class FaultCampaignHarnessTests : Test
 
         oracle = new PartitionOracle();
         oracle.Begin(2, isolated: 2, strict: true, static () => 0);
-        oracle.OnSubmitting(2, Key(4, 1));
+        await oracle.OnSubmittingAsync(2, Key(4, 1), TestToken);
         oracle.OnOutcome(Key(4, 1), WriteOutcome.Acknowledged);
         Equal(PartitionOracle.MinorityAcknowledgment, oracle.Violation?.Oracle);
     }
 
-    [Fact]
-    public static void WritesToTheIsolatedNodeAreOnlyCountedInANonStrictEpisode()
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task WritesToTheIsolatedNodeAreOnlyCountedInANonStrictEpisode()
     {
         // The partition heals before the majority commits in a new term: the old leader may still commit them.
         var oracle = new PartitionOracle();
         oracle.Begin(3, isolated: 1, strict: false, static () => 0);
-        oracle.OnSubmitting(1, Key(0, 1));
-        oracle.End(static () => { });
+        await oracle.OnSubmittingAsync(1, Key(0, 1), TestToken);
         oracle.OnOutcome(Key(0, 1), WriteOutcome.Acknowledged);
+        Equal(0, await oracle.EndAsync(static () => { }, DefaultTimeout, TestToken));
         oracle.Check([Log(Key(0, 1))]);
 
         Null(oracle.Violation);
         Equal(1, oracle.Count(3).Acknowledged);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task HealWaitsForTheOutcomeOfEveryRecordedWrite()
+    {
+        var oracle = new PartitionOracle();
+        oracle.Begin(4, isolated: 0, strict: true, static () => 0);
+        await oracle.OnSubmittingAsync(0, Key(0, 1), TestToken);
+
+        var healed = 0;
+        var end = oracle.EndAsync(() => healed++, DefaultTimeout, TestToken);
+        await Task.Delay(50, TestToken);
+        False(end.IsCompleted);
+
+        // A new write to the isolated node waits for the heal and is not recorded.
+        var gated = oracle.OnSubmittingAsync(0, Key(0, 2), TestToken).AsTask();
+        False(gated.IsCompleted);
+
+        oracle.OnOutcome(Key(0, 1), WriteOutcome.Unknown);
+        Equal(0, await end.WaitAsync(DefaultTimeout, TestToken));
+        Equal(1, healed);
+        await gated.WaitAsync(DefaultTimeout, TestToken);
+        oracle.OnOutcome(Key(0, 2), WriteOutcome.Acknowledged);
+        Null(oracle.Violation);
+        Equal(1, oracle.Count(4).Sent);
+
+        // A write with no outcome within the bound is only counted: the healed node may acknowledge it.
+        oracle.Begin(5, isolated: 1, strict: true, static () => 0);
+        await oracle.OnSubmittingAsync(1, Key(1, 1), TestToken);
+        Equal(1, await oracle.EndAsync(static () => { }, TimeSpan.FromMilliseconds(50), TestToken));
+        oracle.OnOutcome(Key(1, 1), WriteOutcome.Acknowledged);
+        oracle.Check([Log(Key(1, 1))]);
+        Null(oracle.Violation);
+        Equal(1, oracle.Count(5).Acknowledged);
     }
 }

@@ -461,7 +461,7 @@ internal sealed class Campaign : IDisposable
             // Heal only once every write recorded for the isolated node has its outcome: one completed after the heal
             // could be acknowledged legitimately by the healed node.
             await stopProbe.CancelAsync().ConfigureAwait(false);
-            var late = await partitions.EndAsync(network.Heal, NodeProcess.ControlTimeout + DrainGrace, stop.Token).ConfigureAwait(false);
+            var late = await partitions.EndAsync(network.Heal, NodeProcess.ControlTimeout + DrainGrace, bound.Token).ConfigureAwait(false);
             if (late > 0)
                 Log($"episode {episode.Number}: {late} write(s) to node {isolated} had no outcome at the heal and are only counted");
 

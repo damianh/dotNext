@@ -55,7 +55,8 @@ When several apply, the first in the order 1, 3, 4, 6, 5 wins.
 filesystem, runtime, revision), per-episode results (victims, leader and term before and after, recovery time,
 commit index at the checkpoint, snapshots installed), per-node incarnations and unexpected exits, classified log
 signals with examples, and the verdict. `<out>/history.json`: every node's applied history at the end (key, index,
-term) and every acknowledged write. `<out>/logs/node<i>.<incarnation>.log`: one JSON log line per event.
+term) and every acknowledged write; one that no checkpoint audited, because the run stopped first, has no `index`.
+`<out>/logs/node<i>.<incarnation>.log`: one JSON log line per event.
 `<out>/claims/node<i>.log`: the terms in which each node became leader, across incarnations. `<out>/data`: the WAL and
 state machine directories, deleted after a passing run unless `--keep-data true`.
 
@@ -113,7 +114,8 @@ down, restarting or being terminated), 74015 `ReplicationFailed` (log mismatch a
 EventId 0 request failures. Unexpected (exit 6): 74028, 74030, 74031, 74032, 74035, 74037, 74048,
 74049, HTTP 75002, any Critical, `IntegrityException`, `HashMismatchException`, `MissingPageException`, a terminal WAL
 failure, an unhandled exception, a node exit the driver did not cause, or a failed background snapshot reported in a node's
-status (`snapshotFailures` in `report.json`). Any other Warning or Error is reported as
+status (`snapshotFailures` in `report.json`). A write that fails with an unexpected exception on a live node is logged as
+Critical; during a SIGTERM stop it is a Warning. Any other Warning or Error is reported as
 unclassified and does not fail the run.
 
 ## Oracle teeth

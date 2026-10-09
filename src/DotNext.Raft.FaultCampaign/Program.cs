@@ -15,6 +15,13 @@ catch (UsageException e)
 {
     return Usage(e.Message);
 }
+catch (Exception e) when (args is ["run", ..])
+{
+    // A failure outside the campaign's own handler (output preparation, report writing) may leave no report.json. A
+    // node crash stays unhandled: the driver classifies the runtime's "Unhandled exception" line.
+    Console.Error.WriteLine($"harness error: {e}");
+    return 1;
+}
 
 static int Usage(string? error)
 {

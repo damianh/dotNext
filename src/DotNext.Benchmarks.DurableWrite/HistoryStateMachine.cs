@@ -79,6 +79,16 @@ internal sealed class HistoryStateMachine : SimpleStateMachine
         }
     }
 
+    // The history and the number of restores that produced it, read atomically: a restore replaces both under the lock.
+    internal IReadOnlyList<AppliedEntry> GetHistory(out int restores)
+    {
+        lock (sync)
+        {
+            restores = this.restores;
+            return entries.ToArray();
+        }
+    }
+
     internal static WriteKey? ReadKey(in LogEntry entry)
     {
         if (entry.IsConfiguration || !entry.TryGetPayload(out var payload) || payload.Length < WriteKey.HeaderSize)
@@ -231,9 +241,8 @@ internal sealed class HistoryStateMachine : SimpleStateMachine
             held = null;
             sinceSnapshot = 0L;
             checker?.OnRestored(node, restored);
+            Interlocked.Increment(ref restores);
         }
-
-        Interlocked.Increment(ref restores);
     }
 
     protected override void OnSnapshotFailed(Exception failure)

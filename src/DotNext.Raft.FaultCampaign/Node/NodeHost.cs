@@ -229,9 +229,12 @@ internal sealed class NodeState(NodeOptions options, HistoryStateMachine stateMa
         }
         catch (Exception e)
         {
-            // Not expected from a live leader; the message goes to the log, where the driver classifies it.
+            // Once SIGTERM stops the host, the cluster and the log are stopped and disposed under the write, for example
+            // with ObjectDisposedException: the outcome is unknown and the Warning is reported as unclassified. From a live
+            // node the exception is not expected, and the driver fails the run on a Critical line (exit 6).
+            var stopping = context.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested;
             context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("FaultCampaign.Node")
-                .LogWarning(e, "The write failed with an unexpected exception");
+                .Log(stopping ? LogLevel.Warning : LogLevel.Critical, e, "The write failed with an unexpected exception");
             status = ControlApi.Unknown;
         }
 
@@ -272,18 +275,10 @@ internal sealed class NodeState(NodeOptions options, HistoryStateMachine stateMa
     }
 
     // ?from=n&incarnation=g&epoch=e: the entries from position n if the incarnation and epoch still match, otherwise
-    // the whole history. The epoch is read before and after the history so that a page never mixes two epochs.
+    // the whole history. The history and its epoch are read atomically, so a page never mixes two epochs.
     private IResult GetHistory(int? from, Guid? incarnation, int? epoch)
     {
-        IReadOnlyList<AppliedEntry> history;
-        int current;
-        do
-        {
-            current = stateMachine.Restores;
-            history = stateMachine.History;
-        }
-        while (current != stateMachine.Restores);
-
+        var history = stateMachine.GetHistory(out var current);
         var start = incarnation == this.incarnation && epoch == current ? int.Clamp(from ?? 0, 0, history.Count) : 0;
         var entries = new long[history.Count - start][];
         for (var i = 0; i < entries.Length; i++)

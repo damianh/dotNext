@@ -401,13 +401,13 @@ internal sealed class Campaign : IDisposable
     /// <returns><see langword="false"/> if the run must stop.</returns>
     private async Task<bool> CheckpointAsync(string name, EpisodeReport? result, bool final = false)
     {
-        // The cutoff: every acknowledgment counted so far is checked here, the later ones at the next checkpoint.
-        List<(int Node, WriteKey Key)> acks;
+        // The cutoff: every acknowledgment counted so far is checked here, the later ones at the next checkpoint. The
+        // batch stays pending until it reaches the checker, so that history.json of a failed checkpoint still holds it.
+        int batch;
         long mark;
         lock (ackSync)
         {
-            acks = [.. pendingAcks];
-            pendingAcks.Clear();
+            batch = pendingAcks.Count;
             mark = Interlocked.Read(in acknowledged);
         }
 
@@ -462,6 +462,13 @@ internal sealed class Campaign : IDisposable
             }
 
             ReadClaims();
+            List<(int Node, WriteKey Key)> acks;
+            lock (ackSync)
+            {
+                acks = pendingAcks[..batch];
+                pendingAcks.RemoveRange(0, batch);
+            }
+
             foreach (var (node, key) in acks)
                 checker.OnAcknowledged(node, key);
 
@@ -760,9 +767,11 @@ internal sealed class Campaign : IDisposable
             report.Violation = ViolationReport.Create("shutdown", violation);
 
         // A run passes only if the final checkpoint audited every acknowledged write.
-        int unaudited;
+        (int Node, WriteKey Key)[] pending;
         lock (ackSync)
-            unaudited = pendingAcks.Count;
+            pending = [.. pendingAcks];
+
+        var unaudited = pending.Length;
 
         if (unaudited > 0 && report is { Error: null, Violation: null, LivenessFailure: null, Incomplete: null } && !HasUnexpectedSignals())
             report.Error = $"{unaudited} acknowledged writes were not audited";
@@ -780,7 +789,9 @@ internal sealed class Campaign : IDisposable
         WriteJson("report.json", report);
         WriteJson("history.json", new
         {
-            acknowledged = checker.Acknowledged.Select(static a => new { key = a.Key.ToString(), node = a.Node, index = a.Index }),
+            // An acknowledgment that no checkpoint audited (the run stopped first) has no index field.
+            acknowledged = checker.Acknowledged.Select(static a => new { key = a.Key.ToString(), node = a.Node, index = (long?)a.Index })
+                .Concat(pending.Select(static a => new { key = a.Key.ToString(), node = a.Node, index = (long?)null })),
             nodes = Enumerable.Range(0, nodes.Length).Select(i => new
             {
                 id = i,

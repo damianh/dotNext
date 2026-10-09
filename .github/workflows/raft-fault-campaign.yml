@@ -3,8 +3,9 @@ name: Raft fault campaign
 # The real-process fault-injection smoke campaign (#118 stage 3): src/DotNext.Raft.FaultCampaign, see its README.md
 # and RAFT-REVIEW.md, "Real-process fault campaign, #118 stage 3".
 # A 3-node cluster runs as separate processes over HTTP and over TCP on loopback. The campaign kills and restarts the
-# leader and followers (SIGKILL and SIGTERM), forces a snapshot catch-up and kills the whole cluster, and checks the
-# oracles after each fault. Each injected failure must then be caught (exit code 3).
+# leader and followers (SIGKILL and SIGTERM), forces a snapshot catch-up, kills the whole cluster, partitions the leader
+# and a follower away from the majority and heals them (a userspace TCP proxy on loopback; no privileges, no OS-wide
+# network change), and checks the oracles after each fault. Each injected failure must then be caught (exit code 3).
 # - nightly and pull requests that touch Raft, the WAL or the tool: seed = run number (nightly) or 1 (pull request);
 # - workflow_dispatch: choose the seed.
 # Reports, node logs, histories and leader claims are always uploaded; node data directories are kept on failure.
@@ -57,7 +58,7 @@ jobs:
   smoke:
     name: Smoke (${{ matrix.transport }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -105,7 +106,7 @@ jobs:
       # Each injected failure must be reported by a named oracle, with exit code 3.
       - name: Injected failures are caught
         if: ${{ !cancelled() }}
-        timeout-minutes: 6
+        timeout-minutes: 10
         env:
           TRANSPORT: ${{ matrix.transport }}
         run: |
@@ -132,6 +133,7 @@ jobs:
           failed=0
           check drop-applied leader-kill 'apply order|committed-prefix agreement' || failed=1
           check volatile-storage cluster-kill 'durability|committed-prefix agreement|acknowledged writes|election safety|apply order' || failed=1
+          check partition-leak leader-partition 'minority acknowledgment|minority write applied' || failed=1
           exit $failed
 
       - name: Summarize
@@ -148,6 +150,11 @@ jobs:
             echo "| # | Fault | Hold (ms) | Victims | Leader before, after | Recovery (s) | Snapshots installed | Outcome |"
             echo "|---|---|---|---|---|---|---|---|"
             jq -r '.episodes[] | "| \(.number) | \(.fault) | \(.holdMs) | \(.victims | map(tostring) | join(",")) | \(.leaderBefore // "-"), \(.leaderAfter // "-") | \(.recoverySeconds // "-") | \(.snapshotsInstalled // "-") | \(.outcome) |"' "$report"
+            echo ""
+            echo "| # | Partition | Isolated, cut from | Majority leader (term) | Acknowledged during | To isolated node: sent, acknowledged, rejected, unknown | Step-down (s) | Partition (s) |"
+            echo "|---|---|---|---|---|---|---|---|"
+            jq -r '.episodes[] | select(.cutPeers != null) | "| \(.number) | \(.fault) | \(.victims | map(tostring) | join(",")), \(.cutPeers | map(tostring) | join(",")) | \(.majorityLeader // "-") (\(.majorityTerm // "-")) | \(.acknowledgedDuringPartition // "-") | \(.minorityWrites.sent // "-"), \(.minorityWrites.acknowledged // "-"), \(.minorityWrites.rejected // "-"), \(.minorityWrites.unknown // "-") | \(.stepDownSeconds // "-") | \(.partitionSeconds // "-") |"' "$report"
+            jq -r 'select(.proxy != null) | "\nProxy: \(.proxy.connections) connections, \(.proxy.unattributedConnections) unattributed, \(.proxy.droppedBytes) bytes dropped, \(.proxy.resetAtHeal) reset at heal."' "$report"
             jq -r 'select(.violation != null) | "\nViolation (\(.violation.oracle)): \(.violation.message)"' "$report"
             jq -r 'select(.livenessFailure != null) | "\nLiveness: \(.livenessFailure)"' "$report"
             jq -r 'select(.incomplete != null) | "\nIncomplete: \(.incomplete)"' "$report"

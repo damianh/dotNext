@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using DotNext.Benchmarks.DurableWrite.Oracles;
 using DotNext.Raft.FaultCampaign;
 using DotNext.Raft.FaultCampaign.Driver;
@@ -6,7 +8,8 @@ namespace DotNext.Net.Cluster.Consensus.Raft.InProcess;
 
 /// <summary>
 /// The driver pieces of the real-process fault campaign (<c>src/DotNext.Raft.FaultCampaign</c>): how the history
-/// polled from a node process reaches the oracles, the recovery oracle, the log classification, and the schedule. The
+/// polled from a node process reaches the oracles, the recovery oracle, the log classification, the schedule, and the
+/// partition proxy and its oracle. The
 /// campaign's <c>--inject</c> modes show that the oracles catch a failure in a running cluster.
 /// </summary>
 public sealed class FaultCampaignHarnessTests : Test
@@ -201,5 +204,152 @@ public sealed class FaultCampaignHarnessTests : Test
     {
         Equal(1.5D, new CommandLine(["--max-duration", "1.5"]).GetDouble("max-duration", 10D, 0.5D, 240D));
         Equal(10D, new CommandLine([]).GetDouble("max-duration", 10D, 0.5D, 240D));
+    }
+
+    [Fact]
+    public static void IsolationCutsBothDirectionsOfEveryLinkOfTheNode()
+    {
+        using var network = new PartitionNetwork([1, 2, 3], [4, 5, 6], static _ => null);
+        False(network.IsCut(0, 1));
+        False(network.IsCut(-1, 1));
+
+        Equal(new[] { 0, 2 }, network.Isolate(1));
+        True(network.IsCut(1, 0));
+        True(network.IsCut(0, 1));
+        True(network.IsCut(2, 1));
+        True(network.IsCut(1, 2));
+        False(network.IsCut(0, 2));
+        False(network.IsCut(2, 0));
+
+        // A connection whose source is unknown never crosses a partition.
+        True(network.IsCut(-1, 0));
+
+        // The partition-leak injection leaves one link of the isolated node up.
+        Equal(new[] { 2 }, network.Isolate(0, leak: 1));
+        False(network.IsCut(0, 1));
+        True(network.IsCut(2, 0));
+
+        network.Heal();
+        False(network.IsCut(1, 0));
+        False(network.IsCut(-1, 0));
+    }
+
+    [Fact]
+    public static void SocketInodeIsFoundByLocalAndRemotePort()
+    {
+        string[] table =
+        [
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+            "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0000000000000000 100 0 0 10 0",
+            "   1: 0100007F:C350 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 22222 1 0000000000000000 20 4 30 10 -1",
+            "   2: 0100007F:C351 0100007F:1F90 06 00000000:00000000 03:00000000 00000000     0        0 0 3 0000000000000000",
+        ];
+
+        Equal(22222L, SocketOwner.FindInode(table, 0xC350, 0x1F90));
+
+        // A socket in TIME_WAIT has no inode and no owner.
+        Null(SocketOwner.FindInode(table, 0xC351, 0x1F90));
+        Null(SocketOwner.FindInode(table, 0x1F90, 0xC350));
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ProxyDropsTrafficAcrossTheCutAndResetsTheConnectionAtHeal()
+    {
+        var token = TestContext.Current.CancellationToken;
+        using var upstream = new TcpListener(IPAddress.Loopback, 0);
+        upstream.Start();
+        var upstreamPort = ((IPEndPoint)upstream.LocalEndpoint).Port;
+        int[] proxyPorts = [FreePort(), FreePort()];
+
+        // This process plays node 0, the client; node 1 is the server behind its proxy.
+        using var network = new PartitionNetwork(proxyPorts, [FreePort(), upstreamPort], static n => n is 0 ? Environment.ProcessId : null);
+        network.Start();
+
+        using var client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        await client.ConnectAsync(new IPEndPoint(IPAddress.Loopback, proxyPorts[1]), token);
+        using var server = await upstream.AcceptSocketAsync(token);
+        var buffer = new byte[16];
+
+        await client.SendAsync("a"u8.ToArray(), token);
+        Equal(1, await server.ReceiveAsync(buffer, token));
+
+        network.Isolate(0);
+        await client.SendAsync("b"u8.ToArray(), token);
+        using (var quiet = CancellationTokenSource.CreateLinkedTokenSource(token))
+        {
+            quiet.CancelAfter(500);
+            await ThrowsAnyAsync<OperationCanceledException>(async () => await server.ReceiveAsync(buffer, quiet.Token));
+        }
+
+        network.Heal();
+        var reset = await Record.ExceptionAsync(async () =>
+        {
+            while (await client.ReceiveAsync(buffer, token) > 0)
+            {
+            }
+        });
+
+        Equal(SocketError.ConnectionReset, IsType<SocketException>(reset).SocketErrorCode);
+        var statistics = network.Statistics;
+        Equal(1L, statistics.Connections);
+        Equal(0L, statistics.UnattributedConnections);
+        Equal(1L, statistics.DroppedBytes);
+        Equal(1L, statistics.ResetAtHeal);
+
+        static int FreePort()
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            return ((IPEndPoint)listener.LocalEndpoint).Port;
+        }
+    }
+
+    [Fact]
+    public static void IsolatedNodeMustNotAcknowledgeOrApplyWritesInAStrictEpisode()
+    {
+        var oracle = new PartitionOracle();
+        oracle.Begin(1, isolated: 0, strict: true);
+        oracle.OnSubmitting(0, Key(0, 1));
+        oracle.OnSubmitting(1, Key(1, 1));
+        oracle.OnSubmitting(0, Key(0, 2));
+        oracle.End();
+        oracle.OnSubmitting(0, Key(0, 3));
+
+        oracle.OnOutcome(Key(0, 1), WriteOutcome.Rejected);
+        oracle.OnOutcome(Key(1, 1), WriteOutcome.Acknowledged);
+        oracle.OnOutcome(Key(0, 3), WriteOutcome.Acknowledged);
+        oracle.Check([Log(Key(1, 1), Key(0, 3))]);
+        Null(oracle.Violation);
+
+        var counts = oracle.Count(1);
+        Equal(2, counts.Sent);
+        Equal(1, counts.Rejected);
+        Equal(1, counts.Unknown);
+        Equal(0, counts.Acknowledged);
+
+        oracle.Check([Log(Key(1, 1)), Log(Key(1, 1), Key(0, 2))]);
+        Equal(PartitionOracle.MinorityWriteApplied, oracle.Violation?.Oracle);
+        Contains("on node 1", oracle.Violation?.Message, StringComparison.Ordinal);
+
+        oracle = new PartitionOracle();
+        oracle.Begin(2, isolated: 2, strict: true);
+        oracle.OnSubmitting(2, Key(4, 1));
+        oracle.OnOutcome(Key(4, 1), WriteOutcome.Acknowledged);
+        Equal(PartitionOracle.MinorityAcknowledgment, oracle.Violation?.Oracle);
+    }
+
+    [Fact]
+    public static void WritesToTheIsolatedNodeAreOnlyCountedInANonStrictEpisode()
+    {
+        // The partition heals before the majority commits in a new term: the old leader may still commit them.
+        var oracle = new PartitionOracle();
+        oracle.Begin(3, isolated: 1, strict: false);
+        oracle.OnSubmitting(1, Key(0, 1));
+        oracle.End();
+        oracle.OnOutcome(Key(0, 1), WriteOutcome.Acknowledged);
+        oracle.Check([Log(Key(0, 1))]);
+
+        Null(oracle.Violation);
+        Equal(1, oracle.Count(3).Acknowledged);
     }
 }

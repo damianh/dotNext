@@ -20,6 +20,9 @@ internal sealed class CampaignReport
     public WorkloadReport Workload { get; } = new();
     public List<NodeReport> Nodes { get; } = [];
     public SignalReport Signals { get; } = new();
+
+    // The proxies in front of the nodes' Raft ports, through which every peer connection passes.
+    public ProxyStatistics? Proxy { get; set; }
     public ViolationReport? Violation { get; set; }
     public string? LivenessFailure { get; set; }
 
@@ -66,6 +69,20 @@ internal sealed class EpisodeReport
     public long? VictimLastEntryIndex { get; set; }
     public long? LeaderSnapshotIndexAtRestart { get; set; }
     public int? SnapshotsInstalled { get; set; }
+
+    // Partition episodes only. CutPeers: the peers that lost contact with the isolated node (the victim). MajorityLeader
+    // and MajorityTerm: the leader of the majority side before the hold. StepDownSeconds: from the cut until the
+    // isolated leader stopped reporting that it leads, if it did before the heal. NewLeaderAtHeal: the majority side had
+    // a leader in a new term when the partition healed. MinorityWrites: the writes sent to the isolated node while it
+    // was cut, by outcome.
+    public int[]? CutPeers { get; set; }
+    public int? MajorityLeader { get; set; }
+    public long? MajorityTerm { get; set; }
+    public long? AcknowledgedDuringPartition { get; set; }
+    public double? StepDownSeconds { get; set; }
+    public bool? NewLeaderAtHeal { get; set; }
+    public double? PartitionSeconds { get; set; }
+    public MinorityWriteCounts? MinorityWrites { get; set; }
     public int? LeaderAfter { get; set; }
     public long? TermAfter { get; set; }
     public double? RecoverySeconds { get; set; }

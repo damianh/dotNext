@@ -37,7 +37,7 @@ static int Usage(string? error)
           --out <dir>               the artifact directory: report, history, node logs, data (default ./fault-campaign)
           --seed <n>                the seed that picks victims and hold times (default 1)
           --episodes <list>         a comma-separated subset of the schedule, in schedule order (default: all)
-          --inject none|drop-applied|volatile-storage
+          --inject none|drop-applied|volatile-storage|partition-leak
                                     a test-only failure that the oracles must catch (exit code 3)
           --snapshot-interval <n>   entries between state machine snapshots (default 50)
           --payload <bytes>         the write size (default 256)

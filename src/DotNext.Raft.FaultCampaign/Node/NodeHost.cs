@@ -16,14 +16,24 @@ namespace DotNext.Raft.FaultCampaign.Node;
 /// write-ahead log at its library defaults and the durable-write tool's <see cref="HistoryStateMachine"/>.
 /// </summary>
 /// <remarks>
-/// The election and request timeouts are those of the durable-write tool (#118 stage 2), not RaftNode's 150-300 ms:
+/// The election timeout and the HTTP request timeout are those of the durable-write tool (#118 stage 2), not RaftNode's 150-300 ms:
 /// every append is persisted before it completes, so a 150 ms election timeout would be shorter than the
 /// persist latency of a slow runner's disk and elections would churn without any injected fault.
+/// The node listens on a private port and advertises the port of its proxy in the driver as its public endpoint (the
+/// <c>publicEndPoint</c> setting over HTTP, <c>PublicEndPoint</c> over TCP), so every peer reaches it through the proxy.
 /// </remarks>
 internal static class NodeHost
 {
     internal const int LowerElectionTimeout = 1000, UpperElectionTimeout = 2000;
-    internal static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(3);
+
+    // Over TCP this one timeout also bounds vote and pre-vote requests, and a vote round waits for every member (#146),
+    // so it stays at the library default, the lower election timeout. Otherwise a silent (partitioned) member would
+    // stall every election of the majority. HTTP votes use its separate RpcTimeout (default: upper election timeout / 2).
+    internal static TimeSpan RequestTimeout(Transport transport) => transport switch
+    {
+        Transport.Http => TimeSpan.FromSeconds(3),
+        _ => TimeSpan.FromMilliseconds(LowerElectionTimeout),
+    };
 
     // A write that has not completed by then is reported as unknown. The driver's own timeout is longer, so it always
     // gets an outcome from a live node, and a closed-loop client never has two writes in flight.
@@ -61,7 +71,7 @@ internal static class NodeHost
             { "partitioning", "false" },
             { "lowerElectionTimeout", LowerElectionTimeout.ToString() },
             { "upperElectionTimeout", UpperElectionTimeout.ToString() },
-            { "requestTimeout", RequestTimeout.ToString() },
+            { "requestTimeout", RequestTimeout(Transport.Http).ToString() },
             { "publicEndPoint", HttpEndPoint(options.RaftPorts[options.Id]).ToString() },
             { "coldStart", "false" },
         };
@@ -70,7 +80,7 @@ internal static class NodeHost
         builder.Configuration.AddInMemoryCollection(configuration);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
-            kestrel.Listen(IPAddress.Loopback, options.RaftPorts[options.Id]);
+            kestrel.Listen(IPAddress.Loopback, options.ListenPort);
             kestrel.Listen(IPAddress.Loopback, options.ControlPort);
         });
 
@@ -108,12 +118,13 @@ internal static class NodeHost
         var app = builder.Build();
         await using var appScope = app.ConfigureAwait(false);
 
-        var configuration = new RaftCluster.TcpConfiguration(new IPEndPoint(IPAddress.Loopback, options.RaftPorts[options.Id]))
+        var configuration = new RaftCluster.TcpConfiguration(new IPEndPoint(IPAddress.Loopback, options.ListenPort))
         {
+            PublicEndPoint = new IPEndPoint(IPAddress.Loopback, options.RaftPorts[options.Id]),
             ColdStart = false,
             LowerElectionTimeout = LowerElectionTimeout,
             UpperElectionTimeout = UpperElectionTimeout,
-            RequestTimeout = RequestTimeout,
+            RequestTimeout = RequestTimeout(Transport.Tcp),
             ConfigurationStorage = null, // in-memory static configuration, as in RaftNode
             LoggerFactory = app.Services.GetRequiredService<ILoggerFactory>(),
         };
@@ -299,7 +310,11 @@ internal sealed class NodeOptions
 {
     internal required Transport Transport { get; init; }
     internal required int Id { get; init; }
+    // The member endpoints, the same on every node. The driver's proxy of each node listens on its port.
     internal required int[] RaftPorts { get; init; }
+
+    // The port this node listens on for Raft: the upstream of its proxy.
+    internal required int ListenPort { get; init; }
     internal required int ControlPort { get; init; }
     internal required string DataDirectory { get; init; }
     internal required string ClaimsFile { get; init; }
@@ -315,6 +330,7 @@ internal sealed class NodeOptions
             Transport = line.GetChoice("transport", Transport.Http, ("http", Transport.Http), ("tcp", Transport.Tcp)),
             RaftPorts = ports,
             Id = line.GetInt32("id", -1, 0, ports.Length - 1),
+            ListenPort = line.GetInt32("listen-port", 0, 1, ushort.MaxValue),
             ControlPort = line.GetInt32("control-port", 0, 1, ushort.MaxValue),
             DataDirectory = Path.GetFullPath(line.Require("data")),
             ClaimsFile = Path.GetFullPath(line.Require("claims")),
@@ -324,8 +340,8 @@ internal sealed class NodeOptions
         };
 
         line.RequireAllRead();
-        if (result.Id < 0 || result.ControlPort is 0)
-            throw new UsageException("options --id and --control-port are required");
+        if (result.Id < 0 || result.ControlPort is 0 || result.ListenPort is 0)
+            throw new UsageException("options --id, --listen-port and --control-port are required");
 
         Debug.Assert(result.RaftPorts.Length > 0);
         return result;

@@ -29,6 +29,7 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
     private async Task VoteAsync(TimeSpan timeout)
     {
         var requests = Activity is { } activity ? new ActivityTracker.Requests(activity, votingCancellationToken) : null;
+        var voters = Array.Empty<Task<(TMember, long, bool?)>>();
         try
         {
             // Perf: reuse index and related term once for all members
@@ -36,10 +37,11 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
             var lastTerm = await AuditTrail.GetTermAsync(lastIndex, votingCancellationToken).ConfigureAwait(false);
 
             // start voting in parallel
-            var voters = StartVoting(lastIndex, lastTerm, requests);
+            var members = Members.ToArray();
+            voters = StartVoting(members, lastIndex, lastTerm, requests);
             var deadline = new VotingDeadline(votingCancellation, timeout, TimeProvider);
             await using (deadline.ConfigureAwait(false))
-                await EndVoting(voters, deadline, requests).ConfigureAwait(false);
+                await EndVoting(Task.WhenEach(voters), new(members.Length), deadline, requests).ConfigureAwait(false);
         }
         catch (Exception e) when (!IsDisposingOrDisposed)
         {
@@ -52,19 +54,22 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         {
             requests?.Abandon();
 
+            // the outstanding requests are canceled with the candidate state
+            VotingState.IgnoreRemaining(voters);
+
             // the transition, if any, is already counted
             Activity?.Exit();
         }
     }
     
-    private IAsyncEnumerable<Task<(TMember, long, bool?)>> StartVoting(long lastIndex, long lastTerm, ActivityTracker.Requests? requests)
-        => Task.WhenEach(Members
+    private Task<(TMember, long, bool?)>[] StartVoting(TMember[] members, long lastIndex, long lastTerm, ActivityTracker.Requests? requests)
+        => members
             .TakeWhile(NotCanceled)
             .Select(member => ActivityTracker.Requests.Start(
                 requests,
                 static args => args.Item1.VoteAsync(args.member, args.lastIndex, args.lastTerm),
                 (this, member, lastIndex, lastTerm)))
-            .ToArray());
+            .ToArray();
 
     private bool NotCanceled(TMember _) => !votingCancellation.IsCancellationRequested;
 
@@ -88,9 +93,9 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
         return (voter, currentTerm, result);
     }
 
-    private async Task EndVoting(IAsyncEnumerable<Task<(TMember, long, bool?)>> voters, VotingDeadline? deadline, ActivityTracker.Requests? requests)
+    // The votes are counted over the members the voting started with, the configuration of the term.
+    private async Task EndVoting(IAsyncEnumerable<Task<(TMember, long, bool?)>> voters, VotingState votes, VotingDeadline? deadline, ActivityTracker.Requests? requests)
     {
-        var votes = 0;
         var localMember = default(TMember);
 
         var enumerator = voters.GetAsyncEnumerator(votingCancellationToken);
@@ -115,20 +120,24 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
                 {
                     case true:
                         Logger.VoteGranted(member.EndPoint);
-                        votes += 1;
+                        votes.Grant();
                         break;
                     case false:
                         Logger.VoteRejected(member.EndPoint);
-                        votes -= 1;
+                        votes.Deny();
                         break;
                     default:
                         Logger.MemberUnavailable(member.EndPoint);
-                        votes -= 1;
+                        votes.Deny();
                         break;
                 }
 
                 if (!member.IsRemote)
                     localMember = member;
+
+                // #146: the remaining responses cannot change the outcome, don't wait for a silent member
+                if (votes.IsLost || (votes.IsWon && localMember is not null))
+                    break;
             }
         }
         catch (OperationCanceledException)
@@ -143,8 +152,9 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
             await enumerator.DisposeAsync().ConfigureAwait(false);
         }
 
-        Logger.VotingCompleted(votes, Term);
-        if (deadline?.TryStop() is false || !TryReset() || votes <= 0 || localMember is null)
+        Logger.VotingCompleted(votes.Weight, Term);
+        // #146: don't reset the source, its registrations cancel the outstanding requests with the candidate state
+        if (deadline?.TryStop() is false || votingCancellationToken.IsCancellationRequested || !votes.IsWon || localMember is null)
         {
             MoveToFollowerState(randomizeTimeout: true); // no clear consensus
         }
@@ -155,21 +165,6 @@ internal sealed class CandidateState<TMember> : RaftState<TMember>
                 localMember,
                 await AuditTrail.AppendAsync(new EmptyLogEntry { Term = Term }, votingCancellationToken).ConfigureAwait(false));
         }
-    }
-
-    private bool TryReset()
-    {
-        bool result;
-        try
-        {
-            result = votingCancellation.TryReset();
-        }
-        catch (ObjectDisposedException)
-        {
-            result = false;
-        }
-
-        return result;
     }
 
     private sealed class VotingDeadline : IAsyncDisposable

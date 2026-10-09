@@ -272,7 +272,7 @@ internal sealed partial class LeaderState<TMember> : ConsensusState<TMember>
 
     private static long GetCommitIndex(Span<long> indices, int memberCount)
     {
-        var majority = memberCount / 2 + 1;
+        var majority = ReplicationState.GetMajority(memberCount);
         Debug.Assert(indices.Length >= majority);
 
         indices.Sort();

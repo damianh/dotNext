@@ -78,8 +78,9 @@ signals is the node itself and its log survives the driver.
   completes, and a short election timeout churns leadership on a slow runner disk without any fault;
 - request timeout 3 s over HTTP, as in the stage 2 tool (vote requests use HTTP's `RpcTimeout`, by default 1 s). Over
   TCP it is the library default, the lower election timeout (1 s): over TCP the request timeout also bounds vote
-  requests, and a vote round waits for every member, so with 3 s a silent member stalls every election of the majority
-  ([#146](https://github.com/damianh/dotNext/issues/146), found by the partition episodes);
+  requests, and a vote round used to wait for every member, so with 3 s a silent member stalled every election of the
+  majority ([#146](https://github.com/damianh/dotNext/issues/146), found by the partition episodes; since fixed, rounds
+  are decided on a majority, and the setting is kept);
 - the node listens on a private port and advertises the port of its proxy in the driver (`publicEndPoint` over HTTP,
   `TcpConfiguration.PublicEndPoint` over TCP), and the member list holds the proxy ports (see "Partitions");
 - a separate loopback control port with `POST /write` (`ReplicateAsync`, 10 s timeout; 200 acknowledged, 409 rejected

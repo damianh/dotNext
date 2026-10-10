@@ -36,8 +36,8 @@ partial class WriteAheadLog
             var handle = default(SafeFileHandle);
             try
             {
+                CreateFileIfNeeded(fileName);
                 handle = OpenDirect(fileName, forWriting: true);
-                EnsureFileSize(handle);
 
                 // Unbuffered I/O requires the file offset, the transfer length, and the buffer
                 // address to be aligned to the filesystem block size. The buffer address is
@@ -65,14 +65,14 @@ partial class WriteAheadLog
         {
             const int O_RDONLY = 0;
             const int O_WRONLY = 1;
-            const int O_CREAT = 0x40;
             const int O_DSYNC = 0x1000; // as defined for x86, x86_64, arm, arm64, and riscv
             const int O_DIRECT = 0x4000; // as defined for x86, x86_64, arm, arm64, and riscv
 
             // O_DSYNC matches the durability guarantee FileOptions.WriteThrough provides
             // on the buffered path (verified to map to O_SYNC on Linux); without it, O_DIRECT
             // alone only bypasses the page cache and doesn't force the write to be durable.
-            var flags = O_DIRECT | (forWriting ? O_WRONLY | O_CREAT | O_DSYNC : O_RDONLY);
+            // No O_CREAT: page files are created at full size by CreateFileIfNeeded (#148).
+            var flags = O_DIRECT | (forWriting ? O_WRONLY | O_DSYNC : O_RDONLY);
             const int mode = 0x1B6; // 0o666, subject to umask
 
             var byteCount = Encoding.UTF8.GetByteCount(path) + 1;

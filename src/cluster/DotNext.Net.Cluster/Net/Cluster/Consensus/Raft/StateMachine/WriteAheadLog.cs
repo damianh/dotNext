@@ -76,7 +76,8 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
     /// <param name="configuration">The configuration of the write-ahead log.</param>
     /// <param name="stateMachine">The state machine.</param>
     /// <exception cref="InvalidDataException">
-    /// An existing data page file does not match the configured chunk size.
+    /// An existing data page file does not match the configured chunk size, an existing metadata page file does not
+    /// match the metadata page size, or an empty page file lies within the durable state.
     /// </exception>
     /// <exception cref="IntegrityException">
     /// The term/vote file is nonempty but shorter than a record.
@@ -101,7 +102,9 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         var rootPath = new DirectoryInfo(configuration.Location);
         rootPath.CreateIfNeeded();
         dataLocation = rootPath.GetSubdirectory(PagedBufferWriter.LocationPrefix);
-        PageManager.ValidatePageSize(dataLocation, configuration.ChunkSize);
+        metadataLocation = rootPath.GetSubdirectory(MetadataPageManager.LocationPrefix);
+        PageManager.ValidatePageSize(dataLocation, configuration.ChunkSize, "Data", "configured chunk size");
+        PageManager.ValidatePageSize(metadataLocation, Page.MinSize, "Metadata", "metadata page size");
 
         context = new(DictionaryConcurrencyLevel, configuration.ConcurrencyLevel);
         lockManager = new()
@@ -150,10 +153,20 @@ public partial class WriteAheadLog : Disposable, IAsyncDisposable, IPersistentSt
         
         // page management
         {
-            metadataLocation = rootPath.GetSubdirectory(MetadataPageManager.LocationPrefix);
             metadataLocation.CreateIfNeeded();
 
             dataLocation.CreateIfNeeded();
+
+            // A legacy store records no write position; only an empty one is known to refer to no data.
+            var durableDataEnd = version is CheckpointVersion2 || durableState.LastIndex is 0L
+                ? durableState.WritePosition
+                : ulong.MaxValue;
+            PageManager.RemoveIncompletePages(dataLocation, configuration.ChunkSize, durableDataEnd, "Data");
+            PageManager.RemoveIncompletePages(metadataLocation, Page.MinSize,
+                MetadataPageManager.GetEndOfRecords(
+                    long.Max(durableState.LastIndex, long.Max(durableState.Checkpoint, durableState.SnapshotIndex)),
+                    hash?.HashLengthInBytes ?? 0, Page.MinSize),
+                "Metadata");
 
             // Metadata pages always have a fixed size for portability across hosts with different OS page sizes
             PageManager m, d;

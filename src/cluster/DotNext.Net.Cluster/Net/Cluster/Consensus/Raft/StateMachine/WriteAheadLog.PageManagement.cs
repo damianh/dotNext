@@ -52,19 +52,60 @@ partial class WriteAheadLog
                 .Select(static pageIndex => pageIndex.GetValueOrDefault())
                 .ToArray();
 
-        public static void ValidatePageSize(DirectoryInfo location, int pageSize)
+        // Rejects every page file whose length is neither the page size nor zero. An empty page is checked against
+        // the durable state by RemoveIncompletePages (#148).
+        public static void ValidatePageSize(DirectoryInfo location, int pageSize, string kind, string sizeName)
         {
             if (!location.Exists)
                 return;
 
             foreach (var file in location.EnumerateFiles())
             {
-                if (uint.TryParse(file.Name, provider: null, out _) && file.Length != pageSize)
+                if (uint.TryParse(file.Name, provider: null, out _) && file.Length != pageSize && file.Length is not 0L)
                 {
                     throw new InvalidDataException(
-                        $"Data page file '{file.FullName}' has length {file.Length}, but the configured chunk size is {pageSize}.");
+                        $"{kind} page file '{file.FullName}' has length {file.Length}, but the {sizeName} is {pageSize}.");
                 }
             }
+        }
+
+        // A crash while a page file was created can leave a temporary file, or, with fork builds before #148,
+        // an empty page file. The temporary files are removed. An empty page that lies entirely at or after
+        // durableEnd holds nothing that durable state refers to, so it is deleted: it then is created again at
+        // full size on its first write, as a page that was never written. An empty page before durableEnd is data
+        // loss and is rejected.
+        public static void RemoveIncompletePages(DirectoryInfo location, int pageSize, ulong durableEnd, string kind)
+        {
+            var removed = false;
+            foreach (var file in location.EnumerateFiles())
+            {
+                if (Page.IsTemporaryFile(file.Name))
+                {
+                    try
+                    {
+                        file.Delete();
+                        removed = true;
+                    }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+                    {
+                        // Temporary files are never read as pages, so a stale one is harmless and is retried on the next open.
+                    }
+                }
+                else if (uint.TryParse(file.Name, provider: null, out var pageIndex) && file.Length is 0L)
+                {
+                    if ((ulong)pageIndex * (uint)pageSize < durableEnd)
+                    {
+                        throw new InvalidDataException(
+                            $"{kind} page file '{file.FullName}' is empty, but the durable WAL state may refer to it.");
+                    }
+
+                    file.Delete();
+                    removed = true;
+                }
+            }
+
+            if (removed)
+                Checkpoint.FlushDirectory(location);
         }
         
         protected static int GetPages(DirectoryInfo location, out ReadOnlySpan<uint> pages)

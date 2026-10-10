@@ -29,6 +29,13 @@ upstream sync is merged.
   configuration entries keep their own cycle. The buffer of an entry that formats itself (from `Options.Allocator` or
   supplied by the entry) is released on the thread pool, possibly after the append completes.
   See [WAL group commit (#125)](RAFT-REVIEW.md#wal-group-commit-125).
+* **New WAL pages are created atomically, and unreferenced empty pages are tolerated** (#148). A page file is sized
+  under `<page>.<random>.tmp` in `data/` or `metadata/`, flushed, and renamed into place without replacement, then
+  the directory is flushed. On open, stale page temporary files are deleted, and so is an empty page that lies
+  entirely beyond the durable write position (data) or the last durable record (metadata); such pages were left by
+  a crash in older builds. An empty page that durable state refers to still fails closed. Metadata page files are
+  now validated too: a length other than 4 KiB (or an unreferenced 0) throws `InvalidDataException`. See
+  [Zero-length WAL pages after a crash (#148)](RAFT-REVIEW.md#zero-length-wal-pages-after-a-crash-148).
 
 ### Replication
 * **An accepted empty heartbeat counts toward commitment when its preceding entry has the leader's term** (#125).
@@ -256,6 +263,7 @@ unchanged. The leader is not stepped down for this; it steps down only on quorum
 | `SimpleStateMachine.OnSnapshotFailed(Exception)` (protected virtual) | absent | **added** (default: no-op): reports a failed background snapshot that was dropped instead of poisoning the state machine (#75) |
 | `WriteAheadLog` constructor, existing `state` file of 1 to 36 bytes | zeroes the record: the node silently restarts at term 0 with no vote | **throws `IntegrityException`** naming the file; length 0 is still initialized and 37 or more is unchanged (#83) |
 | `PersistentClusterConfigurationStorage`, existing file shorter than 8 bytes | may allocate a negative buffer on load or read an incomplete version on save | **throws `IntegrityException`** without changing the file (#106) |
+| `WriteAheadLog` constructor, existing data or metadata page file with an unexpected length | not validated: an empty or short page is extended when it is next opened for writing | **throws `InvalidDataException`** unless the page is empty and no durable state refers to it, in which case it is deleted; metadata pages must be 4 KiB. Before #148 the fork also rejected an unreferenced empty data page left by a crash, and did not validate metadata pages |
 
 ## Fork-only fixes
 All of these are described in [RAFT-REVIEW.md](RAFT-REVIEW.md). Pull requests are in `damianh/dotNext`:
@@ -269,7 +277,7 @@ configuration barriers), #59 (leader lease timing), #66 (read barrier spin after
 #51 (unavailable-member leadership-loss logging), #73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
 #106 (durable applied cluster configuration baseline), #26 (candidate voting supervision), #115 (leader local read
 failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL cleanup barrier fairness), #146
-(majority-decided elections).
+(majority-decided elections), #148 (atomic WAL page creation).
 
 ## Upstream sync log
 

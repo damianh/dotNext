@@ -17,6 +17,11 @@ internal static partial class DurableFile
         => Publish(temporaryPath, destinationPath, FlushDirectory);
 
     internal static void Publish(string temporaryPath, string destinationPath, Action<DirectoryInfo> flushDirectory)
+        => Publish(temporaryPath, destinationPath, flushDirectory, overwrite: true);
+
+    // Without overwrite, publication fails if the destination already exists. On Unix, .NET checks for the
+    // destination before rename(2), so this relies on the callers serializing the creation of a file.
+    internal static void Publish(string temporaryPath, string destinationPath, Action<DirectoryInfo> flushDirectory, bool overwrite)
     {
         ArgumentNullException.ThrowIfNull(flushDirectory);
 
@@ -33,12 +38,12 @@ internal static partial class DurableFile
         if (OperatingSystem.IsWindows())
         {
             // MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-            if (!MoveFile(temporaryPath, destinationPath, 0x1U | 0x8U))
+            if (!MoveFile(temporaryPath, destinationPath, (overwrite ? 0x1U : 0U) | 0x8U))
                 throw NativeIOException("Cannot publish the WAL file.");
         }
         else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD())
         {
-            File.Move(temporaryPath, destinationPath, overwrite: true);
+            File.Move(temporaryPath, destinationPath, overwrite);
         }
         else
         {

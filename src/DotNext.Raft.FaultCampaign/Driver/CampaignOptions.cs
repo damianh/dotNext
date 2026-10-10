@@ -1,3 +1,5 @@
+using DotNext.Benchmarks.DurableWrite.Oracles;
+
 namespace DotNext.Raft.FaultCampaign.Driver;
 
 internal sealed class CampaignOptions
@@ -18,6 +20,8 @@ internal sealed class CampaignOptions
     internal required TimeSpan RecoveryTimeout { get; init; }
     internal required TimeSpan MaxDuration { get; init; }
     internal required bool KeepData { get; init; }
+    internal int Cycles { get; init; } = 1;
+    internal int MaxWrites { get; init; } = 200_000;
 
     // Past index 100, where the drop-applied injection starts, and past a few snapshots.
     internal long WarmupEntries => long.Max(150L, 3L * SnapshotInterval);
@@ -44,6 +48,8 @@ internal sealed class CampaignOptions
             RecoveryTimeout = TimeSpan.FromSeconds(line.GetInt32("recovery-timeout", 30, 5, 600)),
             MaxDuration = TimeSpan.FromMinutes(line.GetDouble("max-duration", 10D, 0.5D, 240D)),
             KeepData = line.GetChoice("keep-data", false, ("true", true), ("false", false)),
+            Cycles = line.GetInt32("cycles", 1, 1, 1000),
+            MaxWrites = line.GetInt32("max-writes", 200_000, 1, 1_000_000),
         };
 
         line.RequireAllRead();

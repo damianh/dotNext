@@ -240,6 +240,20 @@ internal sealed partial class NodeProcess : IDisposable
         }
     }
 
+    internal async Task<ResourceUsage?> GetResourcesAsync(CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        try
+        {
+            return await control.GetFromJsonAsync<ResourceUsage>(ControlApi.Resources, ControlApi.Json, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException && !token.IsCancellationRequested)
+        {
+            return null;
+        }
+    }
+
     public void Dispose()
     {
         if (process is { HasExited: false } p)

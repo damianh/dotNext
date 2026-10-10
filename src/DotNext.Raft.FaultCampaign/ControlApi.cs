@@ -36,6 +36,7 @@ internal static class ControlApi
     internal const string Write = "/write";
     internal const string Status = "/status";
     internal const string History = "/history";
+    internal const string Resources = "/resources";
 
     // The write outcome, as an HTTP status code.
     internal const int Acknowledged = 200;

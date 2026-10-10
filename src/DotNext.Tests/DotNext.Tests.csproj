@@ -60,5 +60,6 @@
 
     <!-- The driver pieces of the real-process fault campaign, tested by FaultCampaignHarnessTests. -->
     <Compile Include="..\DotNext.Raft.FaultCampaign\CommandLine.cs;..\DotNext.Raft.FaultCampaign\ControlApi.cs;..\DotNext.Raft.FaultCampaign\Driver\HistoryFeed.cs;..\DotNext.Raft.FaultCampaign\Driver\LogClassifier.cs;..\DotNext.Raft.FaultCampaign\Driver\PartitionNetwork.cs;..\DotNext.Raft.FaultCampaign\Driver\PartitionOracle.cs;..\DotNext.Raft.FaultCampaign\Driver\Schedule.cs" Link="Net\Cluster\Consensus\Raft\InProcess\FaultCampaign\%(Filename)%(Extension)" />
+    <Compile Include="..\DotNext.Raft.FaultCampaign\ResourceUsage.cs;..\DotNext.Raft.FaultCampaign\Driver\CampaignOptions.cs" Link="Net\Cluster\Consensus\Raft\InProcess\FaultCampaign\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

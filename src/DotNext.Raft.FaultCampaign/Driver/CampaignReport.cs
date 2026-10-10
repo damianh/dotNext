@@ -20,6 +20,7 @@ internal sealed class CampaignReport
     public WorkloadReport Workload { get; } = new();
     public List<NodeReport> Nodes { get; } = [];
     public SignalReport Signals { get; } = new();
+    public List<ResourceSample> Resources { get; } = [];
 
     // The proxies in front of the nodes' Raft ports, through which every peer connection passes.
     public ProxyStatistics? Proxy { get; set; }
@@ -43,6 +44,8 @@ internal sealed class CampaignBounds
     public required int Clients { get; init; }
     public required int PayloadBytes { get; init; }
     public required int SnapshotInterval { get; init; }
+    public int Cycles { get; init; }
+    public int MaxWrites { get; init; }
 }
 
 internal sealed class NodeSettings
@@ -60,6 +63,7 @@ internal sealed class EpisodeReport
     public required int Number { get; init; }
     public required string Fault { get; init; }
     public required int HoldMs { get; init; }
+    public int Cycle { get; init; }
     public int? LeaderBefore { get; set; }
     public long? TermBefore { get; set; }
     public int[] Victims { get; set; } = [];
@@ -91,8 +95,34 @@ internal sealed class EpisodeReport
     public string Outcome { get; set; } = "not run";
 }
 
+internal sealed class ResourceSample
+{
+    public required string Checkpoint { get; init; }
+    public required double ElapsedSeconds { get; init; }
+    public required long Acknowledged { get; init; }
+    public required long FreeDiskBytes { get; init; }
+    public required ResourceUsage Driver { get; init; }
+    public required NodeResourceSample[] Nodes { get; init; }
+    public required ProxyStatistics Proxy { get; init; }
+    public required int RunningClientTasks { get; init; }
+}
+
+internal sealed class NodeResourceSample
+{
+    public required int Id { get; init; }
+    public required int Incarnation { get; init; }
+    public required long LastEntryIndex { get; init; }
+    public required long CommitIndex { get; init; }
+    public required long AppliedIndex { get; init; }
+    public required long SnapshotIndex { get; init; }
+    public required ResourceUsage Usage { get; init; }
+    public long UncommittedEntries => long.Max(0L, LastEntryIndex - CommitIndex);
+    public long UnappliedEntries => long.Max(0L, CommitIndex - AppliedIndex);
+}
+
 internal sealed class WorkloadReport
 {
+    public long Submitted { get; set; }
     public long Acknowledged { get; set; }
     public long Rejected { get; set; }
     public long Unknown { get; set; }

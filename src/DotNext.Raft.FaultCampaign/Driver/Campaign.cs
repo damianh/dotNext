@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -64,7 +65,7 @@ internal sealed class Campaign : IDisposable
     private readonly List<Task> clients = [];
     private volatile int leader = -1;
     private Task? monitor;
-    private long acknowledged, rejected, unknown;
+    private long acknowledged, rejected, unknown, submittedWrites;
 
     private Campaign(CampaignOptions options, CampaignReport report, int[] raftPorts, int[] listenPorts, int[] controlPorts, Stopwatch clock)
     {
@@ -92,7 +93,7 @@ internal sealed class Campaign : IDisposable
         var clock = Stopwatch.StartNew();
         var options = CampaignOptions.Parse(args.Span);
         PrepareOutput(options.OutputDirectory);
-        var episodes = Schedule.Create(options.Seed, options.Episodes);
+        var episodes = Schedule.Create(options.Seed, options.Episodes, options.Cycles);
         var report = new CampaignReport
         {
             StartedUtc = DateTimeOffset.UtcNow,
@@ -111,6 +112,8 @@ internal sealed class Campaign : IDisposable
                 Clients = options.Clients,
                 PayloadBytes = options.PayloadSize,
                 SnapshotInterval = options.SnapshotInterval,
+                Cycles = options.Cycles,
+                MaxWrites = options.MaxWrites,
             },
             NodeSettings = new()
             {
@@ -124,11 +127,29 @@ internal sealed class Campaign : IDisposable
             Environment = EnvironmentInfo.Collect(options.OutputDirectory),
         };
 
+        var episodesPerCycle = episodes.Length / options.Cycles;
         foreach (var episode in episodes)
-            report.Episodes.Add(new() { Number = episode.Number, Fault = episode.Name, HoldMs = (int)episode.Hold.TotalMilliseconds });
+            report.Episodes.Add(new()
+            {
+                Number = episode.Number,
+                Cycle = ((episode.Number - 1) / episodesPerCycle) + 1,
+                Fault = episode.Name,
+                HoldMs = (int)episode.Hold.TotalMilliseconds,
+            });
 
         var (raftPorts, listenPorts, controlPorts) = AllocatePorts(CampaignOptions.Nodes);
         using var campaign = new Campaign(options, report, raftPorts, listenPorts, controlPorts, clock);
+        using var terminate = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+        {
+            context.Cancel = true;
+            campaign.Cancel("SIGTERM");
+        });
+        ConsoleCancelEventHandler interrupt = (_, e) =>
+        {
+            e.Cancel = true;
+            campaign.Cancel("Ctrl+C");
+        };
+        Console.CancelKeyPress += interrupt;
         try
         {
             await campaign.ExecuteAsync(episodes).ConfigureAwait(false);
@@ -137,6 +158,10 @@ internal sealed class Campaign : IDisposable
         {
             report.Error = e.ToString();
             Console.Error.WriteLine($"harness error: {e}");
+        }
+        finally
+        {
+            Console.CancelKeyPress -= interrupt;
         }
 
         return campaign.Finish();
@@ -157,6 +182,7 @@ internal sealed class Campaign : IDisposable
 
         File.Delete(Path.Combine(output, "report.json"));
         File.Delete(Path.Combine(output, "history.json"));
+        File.Delete(Path.Combine(output, "resources.jsonl"));
     }
 
     // Raft: the member endpoints, where the proxies listen. Listen: where the nodes listen for Raft, behind the proxies.
@@ -243,7 +269,7 @@ internal sealed class Campaign : IDisposable
                 var result = report.Episodes[episode.Number - 1];
                 if (bound.IsCancellationRequested)
                 {
-                    report.Incomplete = $"the run reached its bound of {options.MaxDuration.TotalMinutes} min before episode {episode.Number}";
+                    report.Incomplete ??= $"the run reached its bound of {options.MaxDuration.TotalMinutes} min before episode {episode.Number}";
                     return;
                 }
 
@@ -275,7 +301,7 @@ internal sealed class Campaign : IDisposable
 
             phase = "the final checkpoint";
             if (await FinalCheckpointAsync().ConfigureAwait(false) && bound.IsCancellationRequested)
-                report.Incomplete = $"the run passed the final checkpoint after its bound of {options.MaxDuration.TotalMinutes} min";
+                report.Incomplete ??= $"the run passed the final checkpoint after its bound of {options.MaxDuration.TotalMinutes} min";
         }
         catch (OperationCanceledException) when (bound.IsCancellationRequested)
         {
@@ -283,7 +309,7 @@ internal sealed class Campaign : IDisposable
             if (current is not null)
                 current.Outcome = "incomplete";
 
-            report.Incomplete = $"the run reached its bound of {options.MaxDuration.TotalMinutes} min during {phase}";
+            report.Incomplete ??= $"the run reached its bound of {options.MaxDuration.TotalMinutes} min during {phase}";
         }
     }
 
@@ -675,8 +701,65 @@ internal sealed class Campaign : IDisposable
             return false;
         }
 
+        if (!await SampleResourcesAsync(name).ConfigureAwait(false))
+        {
+            if (result is not null)
+                result.Outcome = "liveness failure";
+
+            return false;
+        }
+
         Log($"{name}: oracles passed at commit index {target}, {checker.Acknowledged.Count} acknowledged writes checked");
         return true;
+    }
+
+    private async Task<bool> SampleResourcesAsync(string checkpoint)
+    {
+        var samples = new NodeResourceSample[nodes.Length];
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            var status = await nodes[i].GetStatusAsync(bound.Token).ConfigureAwait(false);
+            var usage = await nodes[i].GetResourcesAsync(bound.Token).ConfigureAwait(false);
+            if (status is null || usage is null || status.Pid != usage.Pid)
+            {
+                report.LivenessFailure = $"{checkpoint}: node {i} did not return a resource sample for its current process";
+                return false;
+            }
+
+            samples[i] = new()
+            {
+                Id = i,
+                Incarnation = nodes[i].Incarnations,
+                LastEntryIndex = status.LastEntryIndex,
+                CommitIndex = status.CommitIndex,
+                AppliedIndex = status.AppliedIndex,
+                SnapshotIndex = status.SnapshotIndex,
+                Usage = usage,
+            };
+        }
+
+        var sample = new ResourceSample
+        {
+            Checkpoint = checkpoint,
+            ElapsedSeconds = clock.Elapsed.TotalSeconds,
+            Acknowledged = Interlocked.Read(in acknowledged),
+            FreeDiskBytes = EnvironmentInfo.GetFreeBytes(options.OutputDirectory)
+                ?? throw new IOException("the output volume's free space could not be measured"),
+            Driver = ResourceUsage.Capture(),
+            Nodes = samples,
+            Proxy = network.Statistics,
+            RunningClientTasks = clients.Count(static t => !t.IsCompleted),
+        };
+        report.Resources.Add(sample);
+        File.AppendAllText(Path.Combine(options.OutputDirectory, "resources.jsonl"),
+            JsonSerializer.Serialize(sample, ControlApi.Json) + "\n");
+        return true;
+    }
+
+    private void Cancel(string reason)
+    {
+        report.Incomplete ??= $"the run was stopped: {reason}";
+        bound.Cancel();
     }
 
     // A failed background snapshot is dropped and logged by HistoryStateMachine only through Trace, which the
@@ -710,6 +793,8 @@ internal sealed class Campaign : IDisposable
             try
             {
                 await PollStatusAsync(token).ConfigureAwait(false);
+                if (EnvironmentInfo.GetFreeBytes(options.OutputDirectory) < MinFreeBytes)
+                    Cancel("less than 1 GiB free in the output directory");
                 if (clock.Elapsed - lastIngest >= HistoryInterval && await feedLock.WaitAsync(0, token).ConfigureAwait(false))
                 {
                     lastIngest = clock.Elapsed;
@@ -819,6 +904,12 @@ internal sealed class Campaign : IDisposable
                 // A new sequence number for every attempt: the oracle requires a closed-loop client to send its next
                 // write only after the outcome of the previous one is known or can no longer change.
                 var key = new WriteKey(WriteKey.ClosedLoop, client, ++seq);
+                if (Interlocked.Increment(ref submittedWrites) > options.MaxWrites)
+                {
+                    Cancel($"the submitted-write bound of {options.MaxWrites} was reached");
+                    break;
+                }
+
                 var submitted = Interlocked.Read(in acknowledged);
                 await partitions.OnSubmittingAsync(target, key, token).ConfigureAwait(false);
                 var outcome = await nodes[target].WriteAsync(payload.Write(buffer, key), token).ConfigureAwait(false);
@@ -894,6 +985,7 @@ internal sealed class Campaign : IDisposable
     private int Finish()
     {
         report.FinishedUtc = DateTimeOffset.UtcNow;
+        report.Workload.Submitted = long.Min(Interlocked.Read(in submittedWrites), options.MaxWrites);
         report.Workload.Acknowledged = Interlocked.Read(in acknowledged);
         report.Workload.Rejected = Interlocked.Read(in rejected);
         report.Workload.Unknown = Interlocked.Read(in unknown);

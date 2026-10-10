@@ -1,6 +1,6 @@
 # Raft fault campaign (#118 stage 3)
 
-A real-process fault-injection smoke campaign for the fork's Raft implementation. A 3-node cluster runs as three
+A real-process fault-injection smoke and bounded burn-in campaign for the fork's Raft implementation. A 3-node cluster runs as three
 separate OS processes on loopback, over the HTTP or the TCP transport. The campaign kills and restarts nodes, and
 partitions one node away from the other two and heals it, under a closed-loop write load, and checks safety, durability
 and liveness oracles after each fault. Background, results and
@@ -27,6 +27,8 @@ same interleaving (real processes and real time).
 | `--transport http\|tcp` | `http` | the Raft transport |
 | `--out <dir>` | `./fault-campaign` | the artifact directory; its `logs`, `data` and `claims` subdirectories are recreated |
 | `--seed <n>` | 1 | victims and hold times |
+| `--cycles <n>` | 1 | repeat the selected schedule 1-1000 times, without resetting the cluster or oracles |
+| `--max-writes <n>` | 200000 | admit at most this many write attempts (including probes and the final barrier); 1-1000000, exhausting it before completion is incomplete (exit 5) |
 | `--episodes <list>` | all | a comma-separated subset of the schedule, in schedule order |
 | `--inject none\|drop-applied\|volatile-storage\|partition-leak` | `none` | a test-only failure the oracles must catch |
 | `--snapshot-interval <n>` | 50 | entries between state machine snapshots |
@@ -190,5 +192,64 @@ connection whose bytes or close are dropped while cut and reset at heal) and the
 
 Loopback only; no privileges, no OS-wide network or disk changes, no cache dropping. Partitions are made by the
 driver's own proxies on the campaign's ports. The run stops at
-`--max-duration`. It needs 2 GiB free in `--out` to start and stops below 1 GiB. Nodes are stopped when the driver
-exits normally; if the driver itself is killed, its nodes may outlive it (CI runners clean up at the end of the job).
+`--max-duration` or `--max-writes`. It needs 2 GiB free in `--out` to start and checks free space during the workload
+and before each episode, stopping below 1 GiB. These are workload bounds, not a disk quota; use a scratch directory
+on a volume with headroom. Ctrl+C or SIGTERM stops the run as incomplete (exit 5), stops the nodes and writes the
+failure artifacts. If the driver itself is SIGKILLed, its nodes may outlive it (CI runners clean up at job end).
+
+## Bounded burn-in
+
+```bash
+# From the repository root, after the Release build. The output path must be a dedicated scratch directory.
+dotnet src/DotNext.Raft.FaultCampaign/bin/Release/net10.0/DotNext.Raft.FaultCampaign.dll run \
+  --transport tcp --seed 7 --cycles 30 --max-duration 60 --max-writes 200000 \
+  --out TestResults/burn-in/tcp
+# Repeat with --transport http and a different output directory.
+```
+
+Run campaigns sequentially on a host. The existing ephemeral-port allocation releases its reservations before node
+startup; simultaneous campaigns can collide with one another's listeners or outgoing connections. Such a collision
+is reported as a harness failure/unexpected node exit, never a pass.
+
+Warmup runs once. All cycles share the same data directories, client sequence numbers, leader claims, history feed
+and oracles. The seed's random stream continues across cycles, preserving the original smoke schedule as cycle 1.
+The full schedule includes a whole-cluster kill in each cycle, so this exercises repeated recovery, not an hour of
+uninterrupted process uptime. Every episode still requires recovery, snapshot installation where specified, and a
+history checkpoint; the final checkpoint still audits every acknowledgment. A run passes only after **all** requested
+cycles finish. Reaching a bound is incomplete, never success.
+
+**Resource samples.** At warmup, after every passing episode and at the final checkpoint, `report.json.resources`
+records elapsed time, acknowledged load, free disk space, driver and per-node resource use, incarnation, log/commit/
+apply/snapshot indices, uncommitted and unapplied entry counts, running driver client tasks, and proxy statistics.
+The same samples are appended as one JSON object per line to `resources.jsonl`, so completed samples survive even
+if the driver is killed before writing its final report. Each process reports RSS, managed and last-GC heap bytes,
+GC counts, CPU time, OS threads, open file and socket descriptors, and thread-pool threads, pending and completed
+work items. These counters reset at process restart; compare only within the reported PID/incarnation. Proxy
+`connections` counts all accepted connections; `activeConnections` counts connected, currently served Raft streams,
+not connections still being attributed or connected to their upstream.
+
+Per-node storage samples count WAL logical bytes, data and metadata pages, published snapshot files/bytes and temporary
+files/bytes (including WAL page and snapshot temporaries). Sampling is non-atomic while load, compaction and publication
+continue: files/descriptors that disappear during sampling are counted explicitly. Logical file lengths are **not**
+allocated blocks, physical writes or write amplification. Pages reclaimed between checkpoints can be compared against
+snapshot and applied indices; one checkpoint is not evidence of a stuck cleaner.
+
+**Retention contract.** The node and driver retain the entire applied and acknowledged history; each snapshot carries
+that history. Snapshot size and managed memory therefore grow with applied entries even when compaction correctly
+reclaims WAL pages. The driver also retains incarnation records, process objects and classified signals until shutdown.
+Temporary files may be present during a sample. There are no universal memory/latency limits, no resource-stability
+verdict and no forced GC or quiescence between checkpoints. Compare matched workload, history length, compaction
+boundary and incarnation before choosing a regression budget. This instrumentation observes client tasks and pool
+work items, **not every live managed Task**, and sockets include listeners and control connections.
+
+**CI.** `.github/workflows/raft-burn-in.yml` is `workflow_dispatch` only; no new scheduled or PR job. Its Linux HTTP
+and TCP jobs default to 30 full cycles, seed 1, with a fixed 60-minute/200000-attempt run budget, 65-minute campaign
+step and 80-minute job timeout (at most 160 runner-minutes across the two jobs). Dispatch accepts 1-100 cycles.
+It also requires the `volatile-storage` mutation to fail with exit 3 and a named oracle in repeat mode. Existing
+smoke CI retains all three mutation checks. All available reports, resource samples, histories, logs and claims
+are uploaded for 14 days; failed/incomplete runs retain WAL directories. Successful runs remove node data unless
+`--keep-data true`. Cancellation requests are handled by the driver; a hard CI kill can still leave partial artifacts.
+
+**Blind spots.** Linux/default memory strategy and loopback HTTP/TCP only; no Windows, membership churn or wiped-node
+re-add, asymmetric partitions, I/O failures, power-loss testing or stable-resource proof. SIGKILL is not power loss:
+the same OS page cache, filesystem and device remain. Long runs can expose bugs but do not prove Raft safety.

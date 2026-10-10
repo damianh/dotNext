@@ -20,6 +20,7 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
     private readonly ClusterMemberId id;
     private readonly EndPoint[] membership;
     private readonly bool startFollower;
+    private readonly bool aggressiveLeaderStickiness;
     private readonly LeaseOptions lease;
     private bool registered;
 
@@ -33,14 +34,16 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
         TimeSpan electionTimeout,
         bool startFollower = true,
         LeaseOptions lease = null,
-        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null)
-        : base(new Configuration(electionTimeout, lease))
+        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null,
+        bool aggressiveLeaderStickiness = false)
+        : base(new Configuration(electionTimeout, lease, aggressiveLeaderStickiness))
     {
         FailureDetectorFactory = failureDetectorFactory;
         this.network = network;
         TimeProvider = timeProvider;
         this.membership = membership.ToArray();
         this.startFollower = startFollower;
+        this.aggressiveLeaderStickiness = aggressiveLeaderStickiness;
         this.lease = lease;
         EndPoint = new DnsEndPoint(name, 0);
         id = ClusterMemberId.FromEndPoint(EndPoint);
@@ -107,7 +110,8 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
             ElectionTimeout,
             startFollower,
             lease,
-            FailureDetectorFactory)
+            FailureDetectorFactory,
+            aggressiveLeaderStickiness)
         {
             Activity = Activity,
         };
@@ -178,7 +182,7 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
     /// </summary>
     internal sealed record LeaseOptions(double ClockDriftBound = 1D);
 
-    private sealed class Configuration(TimeSpan electionTimeout, LeaseOptions lease) : IClusterMemberConfiguration
+    private sealed class Configuration(TimeSpan electionTimeout, LeaseOptions lease, bool aggressiveLeaderStickiness) : IClusterMemberConfiguration
     {
         public double HeartbeatThreshold => 0.5D;
 
@@ -189,6 +193,8 @@ internal class InProcessCluster : RaftCluster<InProcessClusterMember>, ILocalMem
         };
 
         public bool Standby => false;
+
+        public bool AggressiveLeaderStickiness => aggressiveLeaderStickiness;
 
         public double ClockDriftBound => lease?.ClockDriftBound ?? 1D;
 

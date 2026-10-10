@@ -2210,8 +2210,10 @@ above). HTTP votes use the shorter `RpcTimeout`, and a crashed member refuses co
 with, and stop as soon as the outcome is decided. They are won once accepted pre-votes, or granted votes, reach
 `ReplicationState.GetMajority(count)` (`(count >>> 1) + 1`). This is the full-configuration majority of finding #3,
 now the single definition shared with `LeaderState.GetCommitIndex` and the replication quorum, so a 4-member
-cluster still needs 3. They are lost once the members that have not denied cannot reach it (a rejection, an
-unavailable member, or an error all deny). A pre-vote rejected by a leader ends the round at once, as before it
+cluster still needs 3. They are lost once the members that have not denied cannot reach it (a rejection or
+`MemberUnavailableException` counts as a denial). Other vote exceptions retain the #116 supervision path (74048
+`VotingFailed` and follower recovery); other pre-vote exceptions retain the transition failure path.
+A pre-vote rejected by a leader ends the round at once, as before it
 forced a loss. The local member still has to vote for the candidate to lead. Higher-term handling is unchanged:
 a response read before the decision steps the candidate down to that term; a later one is ignored, and the leader
 learns the term from its first replication response. After the decision, outstanding vote requests are cancelled
@@ -2226,7 +2228,8 @@ validation) were not taken.
 **Tests.** `SilentPeerElectionTests` (TCP, three real nodes, the third accepts connections and never answers) elects
 a leader with `RequestTimeout` of 500 ms and 3 s; the 3 s case failed before. `MajorityElectionTests` (in-process,
 held messages): a leader is elected while one vote is outstanding, which is then cancelled, and a late pre-vote has
-no effect; the pre-vote and the vote stop once a majority is impossible (5 members, 3 denied, the fourth request
+no effect; a leader rejection ends the pre-vote round while other members remain silent; the pre-vote and the vote
+stop once a majority is impossible (5 members, 3 denied, the fourth request
 still pending); a 4-member cluster with 2 of 4 votes elects no leader and with 3 of 4 does; a higher-term vote
 response that arrives after the decision does not stop the transition, and the leader steps down to that term on
 its first replication round. All are red without the fix. `InProcessClusterFixture.ElectAsync` and `CommitIndexTests`

@@ -69,6 +69,40 @@ public sealed class MajorityElectionTests : RaftTest
     }
 
     [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task PreVoteStopsWhenLeaderRejectsWhileMembersAreSilent()
+    {
+        var candidateClock = new ManualTimeProvider();
+        await using var cluster = new InProcessClusterFixture(
+            5,
+            clockFactory: (member, clock) => member is 1 ? candidateClock : clock,
+            aggressiveLeaderStickiness: true);
+        await cluster.StartLeaderAsync();
+        var candidate = cluster.Nodes[1];
+        var logger = new EventLogger();
+        candidate.CapturedLogger = logger;
+        foreach (var node in cluster.Nodes.Where(node => !object.ReferenceEquals(node, candidate)))
+            cluster.Network.Hold(candidate.EndPoint, node.EndPoint);
+
+        // Only the candidate's clock advances; the leader remains active and rejects its pre-vote.
+        candidate.StartElectionTimer();
+        candidateClock.Advance(ElectionTimeout);
+        var rejection = await cluster.Network.WaitForMessageAsync(
+            candidate.EndPoint, cluster.Leader.EndPoint, RaftMessageType.PreVote, TestToken)
+            .WaitAsync(DefaultTimeout, TestToken);
+        var pending = await cluster.Network.WaitForMessageAsync(
+            candidate.EndPoint, cluster.Nodes[2].EndPoint, RaftMessageType.PreVote, TestToken)
+            .WaitAsync(DefaultTimeout, TestToken);
+        await cluster.Network.DeliverAsync(rejection);
+        Equal(PreVoteResult.RejectedByLeader, (await IsType<Task<Result<PreVoteResult>>>(rejection.Completion)).Value);
+
+        Equal(1L, (await logger.WaitAsync(0, nameof(DowngradedToFollowerState))).Term);
+        Equal(1L, candidate.Term);
+        False(pending.Completion.IsCompleted);
+        DoesNotContain(cluster.Network.PendingMessages,
+            message => message.SourceId == candidate.Id && message.MessageType is RaftMessageType.Vote);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
     public static async Task CandidateStepsDownWhenMajorityIsImpossible()
     {
         await using var cluster = new InProcessClusterFixture(5);

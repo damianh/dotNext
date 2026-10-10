@@ -15,7 +15,8 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
         Func<int, IPersistentState> stateFactory = null,
         InProcessCluster.LeaseOptions lease = null,
         Func<int, TimeProvider, TimeProvider> clockFactory = null,
-        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null)
+        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null,
+        bool aggressiveLeaderStickiness = false)
     {
         EndPoint[] membership = Enumerable.Range(0, memberCount)
             .Select(i => new DnsEndPoint($"node-{i}", 0)).ToArray();
@@ -24,7 +25,7 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
             .ToArray();
         Nodes = States.Select((state, i) => new InProcessCluster(
             Network, ((DnsEndPoint)membership[i]).Host, membership, state,
-            clockFactory?.Invoke(i, TimeProvider) ?? TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false, lease, failureDetectorFactory)).ToArray();
+            clockFactory?.Invoke(i, TimeProvider) ?? TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false, lease, failureDetectorFactory, aggressiveLeaderStickiness)).ToArray();
     }
 
     internal InProcessCluster Leader => Nodes[0];

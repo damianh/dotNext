@@ -16,7 +16,7 @@ public sealed class SilentPeerElectionTests : RaftTest
 
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(500)]  // below the election timeout: elects a leader
-    [InlineData(3000)] // above the upper election timeout: no leader is ever elected
+    [InlineData(3000)] // above the upper election timeout: the majority still elects a leader
     public static async Task MajorityElectsLeaderWhileThirdMemberIsSilent(int requestTimeoutMs)
     {
         // The kernel completes the handshake of a listening socket that never accepts, and buffers what the peers send.

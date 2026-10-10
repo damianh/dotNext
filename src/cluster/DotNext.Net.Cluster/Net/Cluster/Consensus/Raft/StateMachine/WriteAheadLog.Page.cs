@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -17,9 +18,41 @@ partial class WriteAheadLog
     private abstract class Page : MemoryManager<byte>
     {
         public const int MinSize = 4096;
+        private const string TemporaryFileSuffix = ".tmp";
         
         protected static string GetPageFileName(DirectoryInfo directory, uint pageIndex)
             => Path.Combine(directory.FullName, pageIndex.ToString(InvariantCulture));
+
+        // A page file appears under its final name only with its full size, so a crash cannot leave
+        // a short page behind (#148). The file is sized under a temporary name, flushed, published
+        // without replacing an existing file, and the directory is flushed.
+        protected static void CreateFileIfNeeded(string fileName, int pageSize)
+        {
+            if (File.Exists(fileName))
+                return;
+
+            var temporaryFile = string.Concat(fileName, ".", Path.GetRandomFileName(), TemporaryFileSuffix);
+            try
+            {
+                using (var handle = File.OpenHandle(temporaryFile, FileMode.CreateNew, FileAccess.Write))
+                    RandomAccess.SetLength(handle, pageSize);
+
+                DurableFile.Publish(temporaryFile, fileName, DurableFile.FlushDirectory, overwrite: false);
+            }
+            finally
+            {
+                File.Delete(temporaryFile);
+            }
+        }
+
+        // Matches the temporary files of CreateFileIfNeeded: <page index>.<random>.tmp
+        public static bool IsTemporaryFile(string fileName)
+        {
+            var separator = fileName.IndexOf('.');
+            return separator > 0
+                   && fileName.EndsWith(TemporaryFileSuffix, StringComparison.Ordinal)
+                   && uint.TryParse(fileName.AsSpan(0, separator), NumberStyles.None, InvariantCulture, out _);
+        }
         
         public sealed override void Unpin()
         {
@@ -44,7 +77,8 @@ partial class WriteAheadLog
             fileName = GetPageFileName(directory, pageIndex);
 
             const FileAccess fileAccess = FileAccess.ReadWrite;
-            fileHandle = File.OpenHandle(fileName, FileMode.OpenOrCreate, fileAccess);
+            CreateFileIfNeeded(fileName, pageSize);
+            fileHandle = File.OpenHandle(fileName, FileMode.Open, fileAccess);
             File.SetAttributes(fileHandle, FileAttributes.NotContentIndexed);
 
             var mappedHandle = MemoryMappedFile.CreateFromFile(fileHandle, mapName: null, pageSize, MemoryMappedFileAccess.ReadWrite,
@@ -106,11 +140,8 @@ partial class WriteAheadLog
             PoolIndex = -1;
         }
 
-        protected void EnsureFileSize(SafeFileHandle handle)
-        {
-            if (RandomAccess.GetLength(handle) is 0U)
-                RandomAccess.SetLength(handle, pageSize);
-        }
+        protected void CreateFileIfNeeded(string fileName)
+            => CreateFileIfNeeded(fileName, pageSize);
 
         protected static (int Start, int End) Align(int offset, int length, uint sectorSize) => new()
         {
@@ -183,12 +214,11 @@ partial class WriteAheadLog
     {
         protected override async ValueTask FlushAsync(string fileName, int offset, int length, CancellationToken token)
         {
+            CreateFileIfNeeded(fileName);
             using var handle = File.OpenHandle(fileName,
-                FileMode.OpenOrCreate,
+                FileMode.Open,
                 FileAccess.Write,
                 options: FileOptions.WriteThrough | FileOptions.Asynchronous);
-
-            EnsureFileSize(handle);
 
             await RandomAccess.WriteAsync(
                     handle,

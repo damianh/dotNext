@@ -18,6 +18,12 @@ partial class WriteAheadLog
 
         private readonly int MetadataEntryAlignedSize = GetAlignedSize(LogEntryMetadata.Size + hashSizeInBytes, manager.PageSize);
 
+        // The end of the last metadata record at or before lastIndex. Index zero has no record.
+        public static ulong GetEndOfRecords(long lastIndex, int hashSizeInBytes, int pageSize)
+            => lastIndex > 0L
+                ? ((ulong)lastIndex + 1UL) * (uint)GetAlignedSize(LogEntryMetadata.Size + hashSizeInBytes, pageSize)
+                : 0UL;
+
         public ReadOnlyMemory<byte> GetRecord(long index)
         {
             var pageIndex = GetStartPageIndex(index, out var offset);

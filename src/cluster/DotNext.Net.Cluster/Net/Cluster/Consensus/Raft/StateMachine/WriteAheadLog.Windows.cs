@@ -23,12 +23,12 @@ partial class WriteAheadLog
 
         protected override async ValueTask FlushAsync(string fileName, int offset, int length, CancellationToken token)
         {
+            CreateFileIfNeeded(fileName);
             using var handle = File.OpenHandle(fileName,
-                FileMode.OpenOrCreate,
+                FileMode.Open,
                 FileAccess.Write,
                 options: FileOptions.Asynchronous | FileOptions.WriteThrough | NoBuffering);
 
-            EnsureFileSize(handle);
             await FlushAsync(handle, offset, length, token).ConfigureAwait(false);
         }
 

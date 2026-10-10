@@ -240,6 +240,37 @@ public sealed class FaultCampaignHarnessTests : Test
     }
 
     [Fact]
+    public static void LinuxResourceSampleCountsDescriptorsRemovedAfterEnumeration()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var socket = Path.Combine(directory, "socket");
+            var vanished = Path.Combine(directory, "vanished");
+            var file = Path.Combine(directory, "file");
+            File.CreateSymbolicLink(socket, "socket:[123]");
+            File.CreateSymbolicLink(vanished, "/dev/null");
+            File.CreateSymbolicLink(file, "/dev/null");
+            var paths = Directory.GetFiles(directory);
+            File.Delete(vanished);
+            Null(new FileInfo(vanished).LinkTarget);
+
+            var counts = ResourceUsage.CountDescriptors(paths);
+            Equal(3, counts.Descriptors);
+            Equal(1, counts.Sockets);
+            Equal(1, counts.Vanished);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public static void LinuxResourceSampleReportsTheCurrentProcessAndSockets()
     {
         if (!OperatingSystem.IsLinux())

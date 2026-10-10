@@ -22,18 +22,7 @@ internal sealed class ResourceUsage
     internal static ResourceUsage Capture(string? dataDirectory = null)
     {
         using var process = Process.GetCurrentProcess();
-        var descriptors = 0;
-        var sockets = 0;
-        var vanished = 0;
-        foreach (var path in Directory.EnumerateFiles("/proc/self/fd"))
-        {
-            descriptors++;
-            var target = new FileInfo(path).LinkTarget;
-            if (target is null)
-                vanished++;
-            else if (target.StartsWith("socket:[", StringComparison.Ordinal))
-                sockets++;
-        }
+        var (descriptors, sockets, vanished) = CountDescriptors(Directory.EnumerateFiles("/proc/self/fd"));
 
         return new()
         {
@@ -52,6 +41,35 @@ internal sealed class ResourceUsage
             CompletedWorkItems = ThreadPool.CompletedWorkItemCount,
             Storage = dataDirectory is null ? null : StorageUsage.Capture(dataDirectory),
         };
+    }
+
+    internal static (int Descriptors, int Sockets, int Vanished) CountDescriptors(IEnumerable<string> paths)
+    {
+        var descriptors = 0;
+        var sockets = 0;
+        var vanished = 0;
+        foreach (var path in paths)
+        {
+            descriptors++;
+            string? target;
+            try
+            {
+                target = new FileInfo(path).LinkTarget;
+            }
+            catch (FileNotFoundException)
+            {
+                // The descriptor closed between enumeration and the link lookup.
+                vanished++;
+                continue;
+            }
+
+            if (target is null)
+                vanished++;
+            else if (target.StartsWith("socket:[", StringComparison.Ordinal))
+                sockets++;
+        }
+
+        return (descriptors, sockets, vanished);
     }
 }
 

@@ -2182,7 +2182,8 @@ episode unrelated to partitions. Node 2 aborted on every restart with `InvalidDa
 '.../wal/data/198' has length 0, but the configured chunk size is 4096`. `AnonymousPage.FlushAsync` creates the page
 file and sets its length in two steps, and a SIGKILL between them leaves a zero-length page. The fork's page-size
 validation then fails closed on every start, so the node cannot rejoin. Filed as #148 with a red test on branch
-`dh/wal-zero-length-page-red` (commit `8098d1e96`), and not fixed here. The failure is intermittent: it needs a kill in
+`dh/wal-zero-length-page-red` (commit `8098d1e96`), and not fixed here. Fixed later, see [Zero-length WAL pages after a crash
+(#148)](#zero-length-wal-pages-after-a-crash-148). The failure is intermittent: it needs a kill in
 that window.
 
 **Residual blind spots.** One machine and loopback. No latency, loss or jitter. Partitions are symmetric only, isolate
@@ -2237,6 +2238,58 @@ used to deliver every vote; they now tolerate a vote cancelled after the majorit
 transports (seed 1), and on TCP with `RequestTimeout` raised to 3 s by a local edit (not committed), which failed
 with exit 4 before: the leader-partition episode healed after 9.4 s, against 7.8 s at the pinned 1 s. The campaign
 keeps its TCP pin.
+
+## Zero-length WAL pages after a crash (#148)
+
+**Problem.** A new WAL page file was created in two steps: open with `OpenOrCreate` (or `O_CREAT`), then set its
+length (`SetLength`, or the extension done by `MemoryMappedFile.CreateFromFile`). A SIGKILL between the two left a
+zero-length page under its final name. The fork's page-size validation (8a0a74003) fails closed on any length mismatch,
+so the node then aborted on every restart and could not rejoin (found by the fault campaign's `cluster-kill` episode,
+above). All four page kinds were exposed: memory-mapped (`SharedMemory`), anonymous (`PrivateMemory`) and the Linux and
+Windows direct-I/O pages. Metadata pages had the same exposure and were never size-validated. An empty metadata page
+was silently accepted, even when durable state referred to it: mmap zero-extended it, and the anonymous paths loaded
+uninitialized memory.
+
+**Fix, option 2 (atomic creation).** `Page.CreateFileIfNeeded` sizes a new page under `<page>.<random>.tmp`
+(`CreateNew`), flushes it, and publishes it with `DurableFile.Publish(..., overwrite: false)`, which flushes the
+directory afterwards (#24, #106). Every page kind calls it before opening the page with `FileMode.Open`; the Linux
+direct path no longer passes `O_CREAT`. A page therefore appears under its final name only at full size. Publication
+never replaces a file: `MoveFileEx` without `REPLACE_EXISTING` on Windows, and on Unix .NET's existence check before
+`rename(2)`. Page creation is serialized by the WAL's locks, so a collision means a bug and fails closed.
+
+**Fix, option 1 (startup tolerance, defence in depth for stores written by older builds).** The constructor removes
+stale `<page>.*.tmp` files from `data/` and `metadata/` (as #106 does for the configuration file). An empty page is
+deleted only when no durable state refers to it: a data page must start at or beyond the checkpoint's durable write
+position, and a metadata page at or beyond the end of the record of max(last index, checkpoint index, snapshot index).
+A referenced empty page still throws `InvalidDataException`: that is lost data, and it is not hidden. If anything was
+deleted, the directory is flushed. Every other length is rejected as before (data pages: the chunk size; metadata
+pages, newly: 4 KiB), and still before the checkpoint is read. Version 0/1 checkpoints carry no write position, so
+they tolerate an empty data page only when the last index is 0 (a new store that crashed in its first append).
+
+The empty page is deleted rather than reused. Reuse would need the in-place `SetLength` that option 2 removes, and the
+anonymous pages would load uninitialized buffers from it. After deletion the page manager sees exactly a page that was
+never written, and it is created atomically on its first write, so every page under its final name stays full size.
+No format version changed.
+
+**Tests.** `ZeroLengthPageTests` (55 cases; most fail on the base): the red test from #148; a restart after a crash at
+each step of the create sequence (empty final page from an older build, empty temporary file, sized temporary file,
+published page next to a leftover temporary file, published page), for data and metadata pages and every memory
+strategy (direct I/O on Linux and Windows), each checking the data, an append into the page being created, no
+temporary files left and every page at full size; a new store whose first append crashed; a referenced empty data or
+metadata page (pages 0 and 1) fails closed and is kept; lengths 1, 4095, 4097 and 8192, referenced or not, are rejected
+for both kinds; unrelated `*.tmp` files are kept. The crash states are written to disk after an orderly close, as in
+the red test: a process kill loses nothing already handed to the kernel. The existing `WriteAheadLog*`,
+`TermVoteDurabilityTests`, `DurableWriteOracleTests`, `SimulationTests`, `RegressionIssue10`, `DurableFileTests` and
+`PersistentClusterConfigurationStorage*` suites pass, except timeouts that the base also shows on a loaded machine
+(#137's `ImportLog`/`IncrementalState`, and `WriteAheadLogTests.StateRecovery`, 40-45 s per case on the base against
+its 60 s limit). The durable-write smoke exits 0 and its three `--inject` modes exit 3. The fault campaign passes on
+HTTP and TCP (seed 1), `cluster-kill` alone passes for seeds 2-5 on both transports, all page files left are full
+size with no temporary files, and the `drop-applied`, `volatile-storage` and `partition-leak` injections exit 3.
+
+**Cost.** Creating a page adds a file flush, a rename and a directory flush, once per chunk (the default chunk is the
+OS page size) and once per 4 KiB of metadata records. On `wal-append-128B-c1` (164 appends, 7 new pages) the median
+acknowledgment latency was 60.5 ms on the base and 60.7 ms with the fix, with about 1% more fsyncs: not measurable.
+No defaults changed.
 
 ## Scope and limitations
 

@@ -19,7 +19,8 @@ internal static partial class DurableFile
     internal static void Publish(string temporaryPath, string destinationPath, Action<DirectoryInfo> flushDirectory)
         => Publish(temporaryPath, destinationPath, flushDirectory, overwrite: true);
 
-    // Without overwrite, publication fails if the destination already exists.
+    // Without overwrite, publication fails if the destination already exists. On Unix, .NET checks for the
+    // destination before rename(2), so this relies on the callers serializing the creation of a file.
     internal static void Publish(string temporaryPath, string destinationPath, Action<DirectoryInfo> flushDirectory, bool overwrite)
     {
         ArgumentNullException.ThrowIfNull(flushDirectory);

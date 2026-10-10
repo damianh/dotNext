@@ -29,7 +29,8 @@ public sealed class ZeroLengthPageTests : Test
         // the temporary file is sized (and flushed)
         SizedTemporaryFile,
 
-        // published without replacement by link(2): both names refer to the sized file until the temporary is unlinked
+        // the page is published, and a sized temporary file of the same page is left next to it
+        // (not produced by rename(2) or MoveFileEx, but must be tolerated all the same)
         PublishedWithTemporaryFile,
 
         // published, and the directory is flushed, but the page has not been written yet

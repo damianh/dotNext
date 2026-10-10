@@ -26,9 +26,10 @@ internal static class NodeHost
 {
     internal const int LowerElectionTimeout = 1000, UpperElectionTimeout = 2000;
 
-    // Over TCP this one timeout also bounds vote and pre-vote requests, and a vote round waits for every member (#146),
-    // so it stays at the library default, the lower election timeout. Otherwise a silent (partitioned) member would
-    // stall every election of the majority. HTTP votes use its separate RpcTimeout (default: upper election timeout / 2).
+    // Over TCP this one timeout also bounds vote and pre-vote requests. It stays at the library default, the lower
+    // election timeout, as pinned when a vote round still waited for every member and a silent (partitioned) member
+    // stalled every election of the majority (#146, since fixed: rounds are decided on a majority).
+    // HTTP votes use its separate RpcTimeout (default: upper election timeout / 2).
     internal static TimeSpan RequestTimeout(Transport transport) => transport switch
     {
         Transport.Http => TimeSpan.FromSeconds(3),

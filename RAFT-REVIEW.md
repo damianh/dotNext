@@ -2141,7 +2141,8 @@ candidate falls back to follower while holding a majority of votes. A crashed me
 connections are refused immediately. HTTP votes use `RpcTimeout`, which defaults to 1 s. Filed as #146 with a red test
 on branch `dh/tcp-silent-peer-election-red` (commit `6b7a926`), and not fixed here. The campaign now runs TCP at the
 library default `RequestTimeout`, the lower election timeout, which is not exposed. Deployments that raise the TCP
-`RequestTimeout` to or above the election timeout are exposed.
+`RequestTimeout` to or above the election timeout are exposed. Since fixed, see
+[Majority-decided elections (#146)](#majority-decided-elections-146).
 
 *Results* (2026-10-09, same machine as above). Seeds 1-3, both transports, full schedule: 6 runs, all pass, 59-69 s
 each. Leader partitions:
@@ -2195,6 +2196,47 @@ No TLS, UDP, Windows, other memory strategies, SIGSTOP or slow-disk faults, and 
 **Follow-ups** (not in this PR): #146; #148; asymmetric, one-way and longer partitions, and latency, loss or jitter; membership churn, including re-adding a wiped node; long
 burn-in campaigns; resource accumulation (handles, memory, WAL files) over many restarts; power-loss testing; SIGSTOP
 pauses; TLS; other memory strategies.
+
+## Majority-decided elections (#146)
+
+**Problem.** `RaftCluster.PreVoteAsync` and `CandidateState.EndVoting` read every member's response before deciding,
+even when the outcome was already known. A member that keeps its connection open without answering (partitioned
+behind a proxy, or stalled) holds the round until its request times out. Over TCP, `RequestTimeout` bounds vote and
+pre-vote requests; at or above the election timeout, the candidate's voting deadline expires first and it returns to
+follower while holding a majority, so the majority never elects a leader (found by the stage 3 partition episodes,
+above). HTTP votes use the shorter `RpcTimeout`, and a crashed member refuses connections at once.
+
+**Fix (option 1 of the issue).** Both rounds count responses in a `VotingState` over the members the round started
+with, and stop as soon as the outcome is decided. They are won once accepted pre-votes, or granted votes, reach
+`ReplicationState.GetMajority(count)` (`(count >>> 1) + 1`). This is the full-configuration majority of finding #3,
+now the single definition shared with `LeaderState.GetCommitIndex` and the replication quorum, so a 4-member
+cluster still needs 3. They are lost once the members that have not denied cannot reach it (a rejection or
+`MemberUnavailableException` counts as a denial). Other vote exceptions retain the #116 supervision path (74048
+`VotingFailed` and follower recovery); other pre-vote exceptions retain the transition failure path.
+A pre-vote rejected by a leader ends the round at once, as before it
+forced a loss. The local member still has to vote for the candidate to lead. Higher-term handling is unchanged:
+a response read before the decision steps the candidate down to that term; a later one is ignored, and the leader
+learns the term from its first replication response. After the decision, outstanding vote requests are cancelled
+with the candidate state (over TCP this drops that member's connection), and outstanding pre-votes finish on their
+own (bounded by `RequestTimeout`). Neither changes state, and their faults are observed. The candidate no longer
+calls `CancellationTokenSource.TryReset()` on the win path: the fork's `VotingDeadline` already stops the deadline,
+and the reset cleared the registrations that cancel the outstanding vote requests. The #116 supervision (74048
+`VotingFailed`) still covers the voting task; failures of ignored requests are not reported. `RequestTimeout`,
+`VotingDeadline` and the timeout defaults are unchanged; options 2 and 3 (a TCP vote timeout, configuration
+validation) were not taken.
+
+**Tests.** `SilentPeerElectionTests` (TCP, three real nodes, the third accepts connections and never answers) elects
+a leader with `RequestTimeout` of 500 ms and 3 s; the 3 s case failed before. `MajorityElectionTests` (in-process,
+held messages): a leader is elected while one vote is outstanding, which is then cancelled, and a late pre-vote has
+no effect; a leader rejection ends the pre-vote round while other members remain silent; the pre-vote and the vote
+stop once a majority is impossible (5 members, 3 denied, the fourth request
+still pending); a 4-member cluster with 2 of 4 votes elects no leader and with 3 of 4 does; a higher-term vote
+response that arrives after the decision does not stop the transition, and the leader steps down to that term on
+its first replication round. All are red without the fix. `InProcessClusterFixture.ElectAsync` and `CommitIndexTests`
+used to deliver every vote; they now tolerate a vote cancelled after the majority. The fault campaign passes on both
+transports (seed 1), and on TCP with `RequestTimeout` raised to 3 s by a local edit (not committed), which failed
+with exit 4 before: the leader-partition episode healed after 9.4 s, against 7.8 s at the pinned 1 s. The campaign
+keeps its TCP pin.
 
 ## Scope and limitations
 

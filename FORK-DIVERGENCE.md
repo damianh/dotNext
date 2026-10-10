@@ -208,6 +208,19 @@ returns to follower with a randomized election timeout. Upstream ends the task s
 candidate with no election in progress. Failures during disposal are unchanged (Debug 74034). See
 [Failure signals and operator actions](RAFT-REVIEW.md#failure-signals-and-operator-actions-26).
 
+### Majority-decided elections (#146)
+
+The pre-vote and vote rounds stop as soon as their outcome is known: the candidate proceeds once the accepted
+pre-votes, or becomes leader once the granted votes (including its own), form a majority of the configuration the
+round started with (`(count >>> 1) + 1`, the same majority as commit and quorum checks), and gives up once the
+remaining members can no longer form one. A pre-vote rejected by a leader ends the round. Upstream waits for every
+member's response, so a member that holds its connection open without answering keeps the round open until its
+request times out; over TCP, with `RequestTimeout` at or above the election timeout, the majority never elects a
+leader. Responses that arrive after the decision are ignored: outstanding vote requests are cancelled with the
+candidate state, and outstanding pre-votes finish on their own. A higher term in a response read before the decision
+is handled as before; a later one reaches the leader through replication. See
+[Majority-decided elections](RAFT-REVIEW.md#majority-decided-elections-146).
+
 ### Leader local read failure attribution (#115)
 
 When the leader fails to read its own log (or load the configuration) before sending a replication request to a
@@ -255,7 +268,8 @@ configuration barriers), #59 (leader lease timing), #66 (read barrier spin after
 #69 (configuration append boundary), #70 (follower term signal reset per request), #50 (leader proposal term safety),
 #51 (unavailable-member leadership-loss logging), #73 (cancelled snapshot install), #75 (failed background snapshot), #24 (term/vote published after durable),
 #106 (durable applied cluster configuration baseline), #26 (candidate voting supervision), #115 (leader local read
-failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL cleanup barrier fairness).
+failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL cleanup barrier fairness), #146
+(majority-decided elections).
 
 ## Upstream sync log
 

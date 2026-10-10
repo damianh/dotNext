@@ -37,8 +37,13 @@ public sealed class CommitIndexTests : RaftTest
         timeProvider.Advance(TimeSpan.FromMilliseconds(100));
         foreach (var node in followers)
             await network.DeliverAsync(await PendingAsync(node, RaftMessageType.PreVote));
+
+        // the votes left after a majority grants are canceled with the candidate state (#146)
+        var votes = new List<PendingMessage>();
         foreach (var node in followers)
-            await network.DeliverAsync(await PendingAsync(node, RaftMessageType.Vote));
+            votes.Add(await PendingAsync(node, RaftMessageType.Vote));
+        foreach (var vote in votes)
+            await network.TryDeliverAsync(vote);
         await nodeA.WaitForLeaderAsync(TimeSpan.FromSeconds(5), TestToken);
 
         // Observe the automatic first round before requesting its retry, so the

@@ -1013,18 +1013,22 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
     {
         var lastIndex = AuditTrail.LastEntryIndex;
         var lastTerm = await AuditTrail.GetTermAsync(lastIndex, LifecycleToken).ConfigureAwait(false);
-        var votes = 0;
 
         // the pre-vote runs within the counted transition, it's not counted while it waits for the responses
         var requests = Activity is { } activity ? new ActivityTracker.Requests(activity, LifecycleToken) : null;
+        var tasks = Array.Empty<Task<Result<PreVoteResult>>>();
         try
         {
-            var responses = Task.WhenEach(members.Values
+            tasks = members.Values
                 .Select(member => ActivityTracker.Requests.Start(
                     requests,
                     static args => args.member.PreVoteAsync(args.currentTerm, args.lastIndex, args.lastTerm, args.LifecycleToken),
                     (member, currentTerm, lastIndex, lastTerm, LifecycleToken)))
-                .ToArray());
+                .ToArray();
+
+            // the pre-votes are counted over the members the round started with
+            var votes = new VotingState(tasks.Length);
+            var responses = Task.WhenEach(tasks);
 
             // analyze responses
             var enumerator = responses.GetAsyncEnumerator();
@@ -1041,14 +1045,13 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                         switch (response.GetAwaiter().GetResult().Value)
                         {
                             case PreVoteResult.Accepted:
-                                votes++;
+                                votes.Grant();
                                 break;
                             case PreVoteResult.RejectedByFollower:
-                                votes--;
+                                votes.Deny();
                                 break;
                             case PreVoteResult.RejectedByLeader:
-                                votes = short.MinValue;
-                                break;
+                                return false;
                         }
                     }
                     catch (OperationCanceledException)
@@ -1057,21 +1060,27 @@ public abstract partial class RaftCluster<TMember> : Disposable, IUnresponsiveCl
                     }
                     catch (MemberUnavailableException)
                     {
-                        votes -= 1;
+                        votes.Deny();
                     }
                     finally
                     {
                         response.Dispose();
                     }
+
+                    // #146: the remaining responses cannot change the outcome, don't wait for a silent member.
+                    // They finish without effect.
+                    if (votes.IsDecided)
+                        break;
                 }
             }
+
+            return votes.IsWon;
         }
         finally
         {
             requests?.Abandon();
+            VotingState.IgnoreRemaining(tasks);
         }
-
-        return votes > 0;
     }
 
     /// <summary>

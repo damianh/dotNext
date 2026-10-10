@@ -6,7 +6,7 @@ namespace DotNext.Net.Cluster.Consensus.Raft.ReplicationUtils;
 [StructLayout(LayoutKind.Auto)]
 internal struct ReplicationState(int count)
 {
-    private readonly int majority = (count >>> 1) + 1;
+    private readonly int majority = GetMajority(count);
     private int replicated, committed, unavailable;
 
     // Quorum is lost when the remaining available members cannot form a majority.
@@ -41,4 +41,8 @@ internal struct ReplicationState(int count)
     public void OnCommitted() => committed++;
 
     public void Unavailable() => unavailable++;
+
+    // The majority of the full configuration, not of the members that responded (review finding #3).
+    // Commit, quorum and election counting all use it.
+    internal static int GetMajority(int count) => (count >>> 1) + 1;
 }

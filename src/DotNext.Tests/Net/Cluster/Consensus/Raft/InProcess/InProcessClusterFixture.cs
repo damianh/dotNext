@@ -15,7 +15,8 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
         Func<int, IPersistentState> stateFactory = null,
         InProcessCluster.LeaseOptions lease = null,
         Func<int, TimeProvider, TimeProvider> clockFactory = null,
-        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null)
+        Func<TimeSpan, InProcessClusterMember, IFailureDetector> failureDetectorFactory = null,
+        bool aggressiveLeaderStickiness = false)
     {
         EndPoint[] membership = Enumerable.Range(0, memberCount)
             .Select(i => new DnsEndPoint($"node-{i}", 0)).ToArray();
@@ -24,7 +25,7 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
             .ToArray();
         Nodes = States.Select((state, i) => new InProcessCluster(
             Network, ((DnsEndPoint)membership[i]).Host, membership, state,
-            clockFactory?.Invoke(i, TimeProvider) ?? TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false, lease, failureDetectorFactory)).ToArray();
+            clockFactory?.Invoke(i, TimeProvider) ?? TimeProvider, TimeSpan.FromMilliseconds(100), startFollower: false, lease, failureDetectorFactory, aggressiveLeaderStickiness)).ToArray();
     }
 
     internal InProcessCluster Leader => Nodes[0];
@@ -51,8 +52,14 @@ internal sealed class InProcessClusterFixture : Test, IAsyncDisposable
         TimeProvider.Advance(electionDelay ?? TimeSpan.FromMilliseconds(100));
         for (var i = 1; i < Nodes.Length; i++)
             await Network.DeliverAsync(await PendingAsync(i, RaftMessageType.PreVote));
+
+        // All votes are requested before any response. Once a majority grants, the rest are canceled with the
+        // candidate state (#146), so they may no longer be deliverable.
+        var votes = new PendingMessage[Nodes.Length - 1];
         for (var i = 1; i < Nodes.Length; i++)
-            await Network.DeliverAsync(await PendingAsync(i, RaftMessageType.Vote));
+            votes[i - 1] = await PendingAsync(i, RaftMessageType.Vote);
+        foreach (var vote in votes)
+            await Network.TryDeliverAsync(vote);
         await Leader.WaitForLeaderAsync(TimeSpan.FromSeconds(5), TestToken);
     }
 

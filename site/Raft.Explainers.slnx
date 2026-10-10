@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Raft.Explainers.Engine/Raft.Explainers.Engine.csproj" />
+    <Project Path="src/Raft.Explainers.Web/Raft.Explainers.Web.csproj" />
+  </Folder>
+  <Project Path="../src/cluster/DotNext.Net.Cluster/DotNext.Net.Cluster.csproj" />
+  <Project Path="../src/DotNext.IO/DotNext.IO.csproj" />
+  <Project Path="../src/DotNext.Threading/DotNext.Threading.csproj" />
+  <Project Path="../src/DotNext.Unsafe/DotNext.Unsafe.csproj" />
+  <Project Path="../src/DotNext/DotNext.csproj" />
+</Solution>

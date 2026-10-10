@@ -1,0 +1,122 @@
+name: Raft burn-in
+
+# Explicitly opt-in: no PR or scheduled trigger, no universal resource or latency thresholds.
+on:
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: Positive seed for victims and hold times
+        required: true
+        default: '1'
+        type: string
+      cycles:
+        description: Full fault schedule repetitions (1-100); run stops incomplete at 60 minutes or 200000 submitted writes
+        required: true
+        default: '30'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_NOLOGO: 'true'
+  TOOL: src/DotNext.Raft.FaultCampaign/bin/Release/net10.0/DotNext.Raft.FaultCampaign.dll
+  RESULTS_DIR: TestResults/burn-in
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  burn-in:
+    name: Burn-in (${{ matrix.transport }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [http, tcp]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Validate bounds
+        env:
+          SEED: ${{ inputs.seed }}
+          CYCLES: ${{ inputs.cycles }}
+        run: |
+          [[ "$SEED" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "::error::seed must be a positive integer"; exit 1; }
+          [[ "$CYCLES" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$CYCLES" -le 100 ] || {
+            echo "::error::cycles must be between 1 and 100"; exit 1;
+          }
+
+      - name: Build
+        run: dotnet build src/DotNext.Raft.FaultCampaign/DotNext.Raft.FaultCampaign.csproj --configuration Release
+
+      - name: Burn-in
+        timeout-minutes: 65
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+          SEED: ${{ inputs.seed }}
+          CYCLES: ${{ inputs.cycles }}
+        run: |
+          set -o pipefail
+          mkdir -p "$RESULTS_DIR"
+          dotnet "$TOOL" run --transport "$TRANSPORT" --seed "$SEED" --cycles "$CYCLES" \
+            --max-duration 60 --max-writes 200000 --out "$RESULTS_DIR/$TRANSPORT" \
+            2>&1 | tee "$RESULTS_DIR/$TRANSPORT.log"
+
+      - name: Oracle teeth
+        if: ${{ !cancelled() }}
+        timeout-minutes: 4
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          mkdir -p "$RESULTS_DIR"
+          out="$RESULTS_DIR/$TRANSPORT-inject"
+          code=0
+          dotnet "$TOOL" run --transport "$TRANSPORT" --cycles 2 --inject volatile-storage \
+            --episodes cluster-kill --max-duration 3 --out "$out" > "$out.log" 2>&1 || code=$?
+          tail -n 3 "$out.log"
+          oracle=$(jq -r '.violation.oracle // "none"' "$out/report.json")
+          [ "$code" -eq 3 ] && grep -qxE \
+            'durability|committed-prefix agreement|acknowledged writes|election safety|apply order' <<< "$oracle" || {
+            echo "::error::volatile-storage exited $code with oracle '$oracle', expected a named safety violation"; exit 1;
+          }
+
+      - name: Summarize
+        if: ${{ always() }}
+        env:
+          TRANSPORT: ${{ matrix.transport }}
+        run: |
+          report="$RESULTS_DIR/$TRANSPORT/report.json"
+          if [ -f "$report" ]; then
+            {
+              echo "### Burn-in ($TRANSPORT)"
+              jq -r '"Seed \(.seed), revision `\(.environment.revision)`, \(.bounds.cycles) cycles, **\(.verdict)** (exit \(.exitCode)). \(.episodes | map(select(.outcome == "pass")) | length)/\(.episodes | length) episodes passed; \(.workload.submitted) submitted, \(.workload.acknowledged) acknowledged; \(.resources | length) checkpoint samples."' "$report"
+              jq -r 'select(.incomplete != null) | "Incomplete: \(.incomplete)"' "$report"
+              jq -r 'select(.violation != null) | "Violation (\(.violation.oracle)): \(.violation.message)"' "$report"
+              echo "Resource samples are observational, not a stability verdict. Compare by workload, applied history and incarnation."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload artifacts
+        if: ${{ always() && hashFiles('TestResults/burn-in/**') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: raft-burn-in-${{ matrix.transport }}-${{ github.run_attempt }}
+          path: TestResults/burn-in/
+          if-no-files-found: error
+          retention-days: 14

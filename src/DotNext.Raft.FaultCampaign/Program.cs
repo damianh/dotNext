@@ -30,12 +30,14 @@ static int Usage(string? error)
 
     Console.Error.WriteLine(
         """
-        Real-process fault-injection smoke campaign for the Raft implementation (#118 stage 3).
+        Real-process fault-injection smoke and bounded burn-in campaign for Raft (#118 stage 3).
 
         usage: DotNext.Raft.FaultCampaign run [options]
           --transport http|tcp      the Raft transport (default http)
           --out <dir>               the artifact directory: report, history, node logs, data (default ./fault-campaign)
           --seed <n>                the seed that picks victims and hold times (default 1)
+          --cycles <n>              repetitions of the schedule, 1-1000 (default 1)
+          --max-writes <n>          bound on submitted writes, 1-1000000 (default 200000)
           --episodes <list>         a comma-separated subset of the schedule, in schedule order (default: all)
           --inject none|drop-applied|volatile-storage|partition-leak
                                     a test-only failure that the oracles must catch (exit code 3)

@@ -2198,6 +2198,72 @@ No TLS, UDP, Windows, other memory strategies, SIGSTOP or slow-disk faults, and 
 burn-in campaigns; resource accumulation (handles, memory, WAL files) over many restarts; power-loss testing; SIGSTOP
 pauses; TLS; other memory strategies.
 
+## Bounded real-process burn-in, #118 stage 3
+
+The existing HTTP/TCP process campaign now accepts `--cycles` (default 1, maximum 1000) and `--max-writes`
+(default 200000, maximum 1000000). This is a test-tool extension, not a runtime or durability change. Warmup runs
+once; the seeded fault schedule repeats over the same cluster, storage directories, client sequences and history
+oracles. Every fault is followed by the existing recovery and history checks, and the final checkpoint audits every
+acknowledgment. The first cycle preserves the smoke schedule; subsequent cycles continue its random stream.
+
+**Reproduction and bounds.** Build the tool in Release, then run from the repository root:
+
+```bash
+dotnet src/DotNext.Raft.FaultCampaign/bin/Release/net10.0/DotNext.Raft.FaultCampaign.dll run \
+  --transport tcp --seed 7 --cycles 30 --max-duration 60 --max-writes 200000 \
+  --out TestResults/burn-in/tcp
+```
+
+Use `--transport http` and another output directory for HTTP. The command, full numbered schedule, cycle numbers,
+revision, environment and bounds are recorded in `report.json`. Only all requested cycles plus the final checkpoint
+can pass. Time, admitted write attempts, free disk space (2 GiB to start, 1 GiB during execution), Ctrl+C and SIGTERM
+bound execution; hitting a bound or cancellation is incomplete (exit 5), with node shutdown and failure artifacts.
+Write attempts include partition probes and the final barrier. Output is a dedicated scratch directory; free-space
+checks are not a storage quota and experiments never fill a shared volume deliberately.
+
+**Resources and retention.** Each passing checkpoint records driver and per-node RSS, managed memory, last-GC heap,
+GC counts, CPU time, OS threads, descriptors/sockets, thread-pool threads and pending/completed work; running client
+tasks, active/cumulative proxy connections; log/commit/apply/snapshot indices and queue proxies; WAL bytes/page counts,
+snapshot files/bytes and temporary files/bytes. Samples are in `report.json.resources` and incremental
+`resources.jsonl`. Incarnation and PID identify restarted counters. The measurements are non-atomic; disappeared
+files and descriptors are reported, not silently zeroed. They are logical lengths, not allocated disk blocks or
+physical write amplification, and thread-pool pending work is not a count of all live managed Tasks.
+
+The history state machine intentionally retains every applied entry and snapshots the whole history. The driver
+retains all acknowledgments, incarnation records, process objects and classified log signals. Thus memory and
+snapshot size grow with history even when old WAL pages are reclaimed. Samples are taken under load, not after
+quiescence or forced GC. No resource-stability claim or arbitrary regression threshold is made: comparisons need
+the same workload, history length, retention/compaction contract and incarnation. Repeated whole-cluster kills reset
+node processes each cycle, so the full schedule does not measure uninterrupted long-lived process retention.
+
+**CI and oracle teeth.** `raft-burn-in.yml` is manual-only on `ubuntu-24.04`: HTTP and TCP, default 30 cycles/seed 1,
+60-minute run bound, 200000 write attempts, 65-minute campaign step, 80-minute job (160 runner-minutes maximum).
+Inputs allow 1-100 cycles; no new scheduled runner spend is enabled. Both jobs also run `volatile-storage` with
+`--cycles 2 --episodes cluster-kill` and require exit 3 from a named safety oracle. Smoke CI retains the drop-apply,
+volatile-storage and partition-leak checks. Artifacts are uploaded even on failure/cancellation for 14 days:
+reports, incremental resource samples, complete available history, node logs, leader claims and retained failed WALs.
+
+**Local validation** (2026-10-10, base revision `b3b8f73c6` plus this worktree change; AMD Ryzen 7 PRO 8700GE x16,
+64 GiB, NixOS 26.11, ext4 on dm-crypt, .NET 10.0.12, SDK 10.0.401, workstation concurrent GC). Two full cycles
+with seed 7 passed on HTTP (114 s, 1377 acknowledgments) and TCP (110 s, 1307 acknowledgments). Six full TCP cycles
+with seed 11 passed in 298 s: 60 faults, 3999 acknowledgments, 62 resource samples and 21/18/18 node incarnations.
+Across those samples, data pages ranged 1-7, metadata pages 1-2, snapshot files 1-2, temporary files 0-1 and active
+proxy connections 2-5. These are short-run observations, not a long-duration baseline or resource-stability budget.
+All acknowledgments matched every node's final history, and incremental samples matched the final JSON report.
+
+All three mutations exited 3 with a named oracle on both transports in repeat mode. SIGTERM retained reports/WALs
+and stopped sampled node processes with exit 5; a one-attempt bound and a 30-second deadline also exited 5.
+The 48 focused harness/node tests passed. Raw local artifacts are under `TestResults/burn-in/` (not committed).
+One concurrently started bounds probe encountered the existing ephemeral listen-port reservation race (`Address
+already in use`, unexpected node exit); the sequential probe passed. Run campaigns sequentially on one host.
+The new manual workflow's 30-cycle/60-minute configuration has not been run here.
+
+**Residual blind spots.** Windows and other memory strategies remain out of scope. No membership churn/wiped-node
+re-add, asymmetric or overlapping failures, injected I/O faults or power loss. Killing a process preserves the OS
+page cache, so the filesystem/device durability assumptions from the smoke campaign remain. Checkpoint samples
+can miss transient peaks and do not count all managed tasks or isolate control sockets from Raft sockets.
+This adds a bounded campaign and observations, not proof of safety or stable resource use.
+
 ## Majority-decided elections (#146)
 
 **Problem.** `RaftCluster.PreVoteAsync` and `CandidateState.EndVoting` read every member's response before deciding,

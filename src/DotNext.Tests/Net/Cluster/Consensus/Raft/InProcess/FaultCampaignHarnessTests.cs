@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Text.Json;
 using DotNext.Benchmarks.DurableWrite.Oracles;
 using DotNext.Raft.FaultCampaign;
 using DotNext.Raft.FaultCampaign.Driver;
@@ -168,6 +169,131 @@ public sealed class FaultCampaignHarnessTests : Test
     }
 
     [Fact]
+    public static void BurnInRepeatsTheScheduleWithoutChangingTheSmokeCycle()
+    {
+        var smoke = Schedule.Create(7, null);
+        var repeated = Schedule.Create(7, null, 3);
+        Equal(repeated, Schedule.Create(7, null, 3));
+        Equal(smoke, repeated[..smoke.Length]);
+        Equal(Enumerable.Range(1, smoke.Length * 3), repeated.Select(static e => e.Number));
+        for (var cycle = 0; cycle < 3; cycle++)
+            Equal(Schedule.Default, repeated.Skip(cycle * smoke.Length).Take(smoke.Length).Select(static e => e.Kind));
+
+        FaultKind[] subset = [FaultKind.ClusterKill, FaultKind.LaggingSnapshot];
+        Equal(subset.Concat(subset), Schedule.Create(1, subset, 2).Select(static e => e.Kind));
+        Throws<ArgumentOutOfRangeException>(static () => Schedule.Create(1, null, 0));
+        Throws<ArgumentOutOfRangeException>(static () => Schedule.Create(1, null, 1001));
+    }
+
+    [Fact]
+    public static void BurnInOptionsAreExplicitAndBounded()
+    {
+        var smoke = CampaignOptions.Parse([]);
+        Equal(1, smoke.Cycles);
+        Equal(200_000, smoke.MaxWrites);
+        var burn = CampaignOptions.Parse(["--cycles", "30", "--max-writes", "10000", "--max-duration", "60"]);
+        Equal(30, burn.Cycles);
+        Equal(10_000, burn.MaxWrites);
+        Equal(TimeSpan.FromHours(1), burn.MaxDuration);
+        Throws<UsageException>(static () => CampaignOptions.Parse(["--cycles", "0"]));
+        Throws<UsageException>(static () => CampaignOptions.Parse(["--cycles", "1001"]));
+        Throws<UsageException>(static () => CampaignOptions.Parse(["--max-writes", "0"]));
+        Throws<UsageException>(static () => CampaignOptions.Parse(["--max-writes", "1000001"]));
+    }
+
+    [Fact]
+    public static void ResourceStorageInventorySeparatesPagesSnapshotsAndTemporaryFiles()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(directory, "wal", "data"));
+            Directory.CreateDirectory(Path.Combine(directory, "wal", "metadata"));
+            Directory.CreateDirectory(Path.Combine(directory, "sm"));
+            File.WriteAllBytes(Path.Combine(directory, "wal", "data", "0"), new byte[16]);
+            File.WriteAllBytes(Path.Combine(directory, "wal", "data", "1.a.tmp"), new byte[8]);
+            File.WriteAllBytes(Path.Combine(directory, "wal", "metadata", "0"), new byte[4]);
+            File.WriteAllBytes(Path.Combine(directory, "wal", "checkpoint"), new byte[2]);
+            File.WriteAllBytes(Path.Combine(directory, "sm", "100-2"), new byte[32]);
+            File.WriteAllBytes(Path.Combine(directory, "sm", "snapshot.tmp"), new byte[64]);
+            var usage = StorageUsage.Capture(directory);
+            Equal(30L, usage.WalBytes);
+            Equal(1, usage.DataPages);
+            Equal(1, usage.MetadataPages);
+            Equal(32L, usage.SnapshotBytes);
+            Equal(1, usage.SnapshotFiles);
+            Equal(2, usage.TemporaryFiles);
+            Equal(72L, usage.TemporaryBytes);
+            Equal(0, usage.DisappearedFiles);
+            var restored = JsonSerializer.Deserialize<StorageUsage>(JsonSerializer.Serialize(usage, ControlApi.Json), ControlApi.Json);
+            NotNull(restored);
+            Equal(usage.WalBytes, restored.WalBytes);
+            Equal(usage.SnapshotBytes, restored.SnapshotBytes);
+            Equal(usage.TemporaryFiles, restored.TemporaryFiles);
+            File.Delete(Path.Combine(directory, "wal", "data", "0"));
+            Equal(0, StorageUsage.Capture(directory).DataPages);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public static void LinuxResourceSampleCountsDescriptorsRemovedAfterEnumeration()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var socket = Path.Combine(directory, "socket");
+            var vanished = Path.Combine(directory, "vanished");
+            var file = Path.Combine(directory, "file");
+            File.CreateSymbolicLink(socket, "socket:[123]");
+            File.CreateSymbolicLink(vanished, "/dev/null");
+            File.CreateSymbolicLink(file, "/dev/null");
+            var paths = Directory.GetFiles(directory);
+            File.Delete(vanished);
+            Null(new FileInfo(vanished).LinkTarget);
+
+            var counts = ResourceUsage.CountDescriptors(paths);
+            Equal(3, counts.Descriptors);
+            Equal(1, counts.Sockets);
+            Equal(1, counts.Vanished);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public static void LinuxResourceSampleReportsTheCurrentProcessAndSockets()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        socket.Listen(1);
+        var usage = ResourceUsage.Capture();
+        Equal(Environment.ProcessId, usage.Pid);
+        True(usage.WorkingSetBytes > 0L);
+        True(usage.ManagedBytes > 0L);
+        True(usage.Threads > 0);
+        True(usage.SocketDescriptors > 0);
+        True(usage.FileDescriptors >= usage.SocketDescriptors);
+        Equal(3, usage.GcCollections.Length);
+        var restored = JsonSerializer.Deserialize<ResourceUsage>(JsonSerializer.Serialize(usage, ControlApi.Json), ControlApi.Json);
+        NotNull(restored);
+        Equal(usage.Pid, restored.Pid);
+        Equal(usage.SocketDescriptors, restored.SocketDescriptors);
+    }
+
+    [Fact]
     public static void FollowerIsNeverTheLeader()
     {
         var random = new Random(1);
@@ -272,6 +398,7 @@ public sealed class FaultCampaignHarnessTests : Test
 
         await client.SendAsync("a"u8.ToArray(), token);
         Equal(1, await server.ReceiveAsync(buffer, token));
+        Equal(1, network.Statistics.ActiveConnections);
 
         network.Isolate(0);
         await client.SendAsync("b"u8.ToArray(), token);
@@ -295,6 +422,8 @@ public sealed class FaultCampaignHarnessTests : Test
         Equal(0L, statistics.UnattributedConnections);
         Equal(1L, statistics.DroppedBytes);
         Equal(1L, statistics.ResetAtHeal);
+        while (network.Statistics.ActiveConnections is not 0)
+            await Task.Delay(20, token);
     }
 
     [Fact(Timeout = TestTimeouts.Default)]

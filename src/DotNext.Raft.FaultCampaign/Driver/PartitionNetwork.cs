@@ -85,6 +85,7 @@ internal sealed class PartitionNetwork : IDisposable
     internal ProxyStatistics Statistics => new()
     {
         Connections = proxies.Sum(static p => p.Connections),
+        ActiveConnections = proxies.Sum(static p => p.ActiveConnections),
         UnattributedConnections = proxies.Sum(static p => p.Unattributed),
         DroppedBytes = proxies.Sum(static p => p.DroppedBytes),
         ResetAtHeal = proxies.Sum(static p => p.ResetAtHeal),
@@ -115,6 +116,7 @@ internal sealed class PartitionNetwork : IDisposable
 internal sealed class ProxyStatistics
 {
     public long Connections { get; init; }
+    public int ActiveConnections { get; init; }
     public long UnattributedConnections { get; init; }
     public long DroppedBytes { get; init; }
     public long ResetAtHeal { get; init; }
@@ -135,6 +137,15 @@ internal sealed class LinkProxy(PartitionNetwork network, int node, int listenPo
     private long accepted, unattributed, droppedBytes, resetAtHeal;
 
     internal long Connections => Interlocked.Read(in accepted);
+
+    internal int ActiveConnections
+    {
+        get
+        {
+            lock (sync)
+                return connections.Count;
+        }
+    }
 
     internal long Unattributed => Interlocked.Read(in unattributed);
 

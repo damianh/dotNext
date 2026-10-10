@@ -87,16 +87,20 @@ internal static class Schedule
     };
 
     /// <param name="kinds">The faults, in order; <see langword="null"/> for <see cref="Default"/>.</param>
-    internal static Episode[] Create(int seed, IReadOnlyList<FaultKind>? kinds)
+    internal static Episode[] Create(int seed, IReadOnlyList<FaultKind>? kinds, int cycles = 1)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(cycles, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(cycles, 1000);
         var random = new Random(seed);
         var result = new List<Episode>();
-        foreach (var kind in kinds ?? Default)
+        for (var cycle = 0; cycle < cycles; cycle++)
         {
-            // Long enough for the remaining nodes to elect a leader (election timeout 1-2 s) before the victim returns,
-            // short enough to keep the smoke run in minutes. A mid-election partition heals around the election timeout.
-            var hold = TimeSpan.FromMilliseconds(kind is FaultKind.PartitionMidElection ? random.Next(1000, 3000) : random.Next(500, 4000));
-            result.Add(new(result.Count + 1, kind, hold));
+            foreach (var kind in kinds ?? Default)
+            {
+                // Continue the seeded stream across cycles; the first cycle keeps the smoke schedule.
+                var hold = TimeSpan.FromMilliseconds(kind is FaultKind.PartitionMidElection ? random.Next(1000, 3000) : random.Next(500, 4000));
+                result.Add(new(result.Count + 1, kind, hold));
+            }
         }
 
         return result.ToArray();

@@ -210,6 +210,7 @@ internal sealed class NodeState(NodeOptions options, HistoryStateMachine stateMa
         app.MapPost(ControlApi.Write, WriteAsync);
         app.MapGet(ControlApi.Status, GetStatus);
         app.MapGet(ControlApi.History, GetHistory);
+        app.MapGet(ControlApi.Resources, () => Results.Json(ResourceUsage.Capture(options.DataDirectory), ControlApi.Json));
     }
 
     private async Task WriteAsync(HttpContext context)

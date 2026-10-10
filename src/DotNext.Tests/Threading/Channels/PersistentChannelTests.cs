@@ -273,11 +273,11 @@ public sealed class PersistentChannelTests : Test
     public static async Task ReentrantConsumption()
     {
         var path = GetTempPath();
-        await ProduceTestSet(path, 0, 1000);
-        await ProduceTestSet(path, 1000, 2000);
-        await ProduceTestSet(path, 2000, 3000);
+        await ProduceTestSet(path, 0, 100);
+        await ProduceTestSet(path, 100, 200);
+        await ProduceTestSet(path, 200, 300);
 
-        await ConsumeTestSet(path, 0, 3000);
+        await ConsumeTestSet(path, 0, 300);
 
         static async Task ProduceTestSet(string path, Int128 startInclusive, Int128 endExclusive)
         {

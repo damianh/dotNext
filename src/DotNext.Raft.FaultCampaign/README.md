@@ -243,8 +243,10 @@ boundary and incarnation before choosing a regression budget. This instrumentati
 work items, **not every live managed Task**, and sockets include listeners and control connections.
 
 **CI.** `.github/workflows/raft-burn-in.yml` is `workflow_dispatch` only; no new scheduled or PR job. Its Linux HTTP
-and TCP jobs default to 30 full cycles, seed 1, with a fixed 60-minute/200000-attempt run budget, 65-minute campaign
-step and 80-minute job timeout (at most 160 runner-minutes across the two jobs). Dispatch accepts 1-100 cycles.
+and TCP jobs default to 15 full cycles, seed 1, with a fixed 60-minute/200000-attempt run budget, 65-minute campaign
+step and 80-minute job timeout (at most 160 runner-minutes across the two jobs). Dispatch accepts 1-100 cycles, but on
+`ubuntu-24.04` the write budget runs out after about 17 cycles (roughly 1,100 attempts per episode), so larger values
+end incomplete (exit 5).
 It also requires the `volatile-storage` mutation to fail with exit 3 and a named oracle in repeat mode. Existing
 smoke CI retains all three mutation checks. All available reports, resource samples, histories, logs and claims
 are uploaded for 14 days; failed/incomplete runs retain WAL directories. Successful runs remove node data unless

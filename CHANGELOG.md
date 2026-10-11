@@ -1,6 +1,10 @@
 Release Notes
 ====
 
+# Unreleased
+## DotNext
+* Fixed `SkipNulls` and `Flatten` enumerators to throw `InvalidOperationException` when `Current` is read before a successful `MoveNext`, after enumeration ends, or after reset or disposal
+
 # 10-06-2026
 <a href="https://www.nuget.org/packages/dotnext/6.9.0">DotNext 6.9.0</a>
 * Fixed stack allocation threshold in `SpanOwner`

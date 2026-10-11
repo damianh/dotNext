@@ -2260,9 +2260,12 @@ The manual workflow was first dispatched on `fork` @ `cfa6e8597` with seed 1. At
 both jobs ended incomplete (exit 5) on the 200000-attempt bound after about 14 minutes, with every oracle passed:
 TCP had run 171 of 300 episodes (193,654 acknowledged) and HTTP 200 (191,930 acknowledged). The default is now 15
 cycles. At 15 cycles both jobs passed (run 38165882356): HTTP finished in 584 s with 148,687 acknowledged, and TCP in
-646 s with 72,355 acknowledged. The only signals were three or four 74044 "member too far behind" warnings per job.
-They are reported as unclassified, not failures, and they come when a member falls behind, either at warmup or after
-it restarted.
+646 s with 72,355 acknowledged. Signals: the expected ones, plus unclassified Warning 74044 `SlowMember` ("too far
+behind the leader"), 54,795 on HTTP and 19,260 on TCP (the 30-cycle jobs: 67,209 and 58,699), and on the 15-cycle
+HTTP job one unclassified Kestrel Warning EventId 0, "Connection processing ended abnormally"
+(`InvalidOperationException: Reading is already in progress`). 74044 comes in bursts of seconds throughout the run
+while a killed or cut member catches up; the job log prints only the first three lines of each unclassified rule.
+No unexpected signal in any job.
 
 **Residual blind spots.** Windows and other memory strategies remain out of scope. No membership churn/wiped-node
 re-add, asymmetric or overlapping failures, injected I/O faults or power loss. Killing a process preserves the OS

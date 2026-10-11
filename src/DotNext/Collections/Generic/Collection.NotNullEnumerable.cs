@@ -35,8 +35,8 @@ public static partial class Collection
     /// <summary>
     /// Returns only elements which has values.
     /// </summary>
-    /// <typeparam name="T">Type of the monad.</typeparam>
-    /// <typeparam name="TMonad">Type of the elements in the collection.</typeparam>
+    /// <typeparam name="T">Type of the values contained in the monad.</typeparam>
+    /// <typeparam name="TMonad">Type of the monad.</typeparam>
     /// <param name="collection">A collection to check. Cannot be <see langword="null"/>.</param>
     /// <returns>Modified lazy collection of values.</returns>
     public static IEnumerable<T> Flatten<T, TMonad>(this IEnumerable<TMonad> collection)

@@ -95,7 +95,7 @@ A set of skills for AI agents has been released: skills explain how to use .NEXT
 <a href="https://www.nuget.org/packages/dotnext.aspnetcore.cluster/6.9.0">DotNext.AspNetCore.Cluster 6.9.0</a>
 * Updated dependencies
 
-<a href="https://www.nuget.org/packages/dotnext.maintenanceservices/1.8.0">DotNext.MaintenanceServices 1.9.0</a>
+<a href="https://www.nuget.org/packages/dotnext.maintenanceservices/1.9.0">DotNext.MaintenanceServices 1.9.0</a>
 * Updated dependencies
 
 Changelog for previous versions located [here](./CHANGELOG.md).

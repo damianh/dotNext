@@ -595,7 +595,7 @@ public partial class AsyncEventHub : QueuedSynchronizer, IResettable
     /// Creates <see cref="EventGroup"/> from a set of indices.
     /// </summary>
     /// <remarks>
-    /// This method provides supports collection builder pattern.
+    /// This method supports the collection builder pattern.
     /// </remarks>
     /// <param name="indices">A set of indices.</param>
     /// <returns>A new group of events.</returns>

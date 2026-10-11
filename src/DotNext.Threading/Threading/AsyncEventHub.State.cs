@@ -298,13 +298,13 @@ partial class AsyncEventHub
 
             if (x.Length > y.Length)
             {
-                x = x.Slice(0, y.Length);
                 rest = x.Slice(y.Length);
+                x = x.Slice(0, y.Length);
             }
             else
             {
-                y = y.Slice(0, x.Length);
                 rest = y.Slice(x.Length);
+                y = y.Slice(0, x.Length);
             }
 
             return x.SequenceEqual(y) && rest.IsZeroed;
@@ -316,7 +316,11 @@ partial class AsyncEventHub
         public readonly override int GetHashCode()
         {
             var hash = new HashCode();
-            hash.AddBytes(ReadOnlySpan);
+            var bytes = ReadOnlySpan;
+            while (!bytes.IsEmpty && bytes[^1] is 0)
+                bytes = bytes[..^1];
+
+            hash.AddBytes(bytes);
             return hash.ToHashCode();
         }
 

@@ -10,9 +10,9 @@ on:
         default: '1'
         type: string
       cycles:
-        description: Full fault schedule repetitions (1-100); run stops incomplete at 60 minutes or 200000 submitted writes
+        description: Full fault schedule repetitions (1-100); run stops incomplete at 60 minutes or 200000 submitted writes (about 17 cycles on ubuntu-24.04)
         required: true
-        default: '30'
+        default: '15'
         type: string
 
 permissions:

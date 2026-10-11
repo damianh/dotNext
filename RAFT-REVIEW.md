@@ -2236,7 +2236,7 @@ quiescence or forced GC. No resource-stability claim or arbitrary regression thr
 the same workload, history length, retention/compaction contract and incarnation. Repeated whole-cluster kills reset
 node processes each cycle, so the full schedule does not measure uninterrupted long-lived process retention.
 
-**CI and oracle teeth.** `raft-burn-in.yml` is manual-only on `ubuntu-24.04`: HTTP and TCP, default 30 cycles/seed 1,
+**CI and oracle teeth.** `raft-burn-in.yml` is manual-only on `ubuntu-24.04`: HTTP and TCP, default 15 cycles/seed 1,
 60-minute run bound, 200000 write attempts, 65-minute campaign step, 80-minute job (160 runner-minutes maximum).
 Inputs allow 1-100 cycles; no new scheduled runner spend is enabled. Both jobs also run `volatile-storage` with
 `--cycles 2 --episodes cluster-kill` and require exit 3 from a named safety oracle. Smoke CI retains the drop-apply,
@@ -2256,7 +2256,13 @@ and stopped sampled node processes with exit 5; a one-attempt bound and a 30-sec
 The 48 focused harness/node tests passed. Raw local artifacts are under `TestResults/burn-in/` (not committed).
 One concurrently started bounds probe encountered the existing ephemeral listen-port reservation race (`Address
 already in use`, unexpected node exit); the sequential probe passed. Run campaigns sequentially on one host.
-The new manual workflow's 30-cycle/60-minute configuration has not been run here.
+The manual workflow was first dispatched on `fork` @ `cfa6e8597` with seed 1. At the original default of 30 cycles,
+both jobs ended incomplete (exit 5) on the 200000-attempt bound after about 14 minutes, with every oracle passed:
+TCP had run 171 of 300 episodes (193,654 acknowledged) and HTTP 200 (191,930 acknowledged). The default is now 15
+cycles. At 15 cycles both jobs passed (run 38165882356): HTTP finished in 584 s with 148,687 acknowledged, and TCP in
+646 s with 72,355 acknowledged. The only signals were three or four 74044 "member too far behind" warnings per job.
+They are reported as unclassified, not failures, and they come when a member falls behind, either at warmup or after
+it restarted.
 
 **Residual blind spots.** Windows and other memory strategies remain out of scope. No membership churn/wiped-node
 re-add, asymmetric or overlapping failures, injected I/O faults or power loss. Killing a process preserves the OS

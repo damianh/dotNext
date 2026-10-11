@@ -118,7 +118,7 @@ public sealed class CollectionTests : Test
     }
 
     [Fact]
-    public static void SkipEmptyOptionalValuesAsync()
+    public static void SkipEmptyOptionalValues()
     {
         var list = new List<Optional<int>> { 42, Optional<int>.None, 43, Optional<int>.None };
         Equal([42, 43], list.Flatten<int, Optional<int>>().ToArray());

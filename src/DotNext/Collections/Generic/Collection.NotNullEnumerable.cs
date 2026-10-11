@@ -57,31 +57,40 @@ file sealed class NotNullEnumerable<TInput, TOutput, TFilter>(IEnumerable<TInput
     {
         private readonly IEnumerator<TInput?> enumerator;
         private TOutput? current;
+        private bool hasCurrent;
 
         internal Enumerator(IEnumerable<TInput?> enumerable)
             => enumerator = enumerable.GetEnumerator();
 
-        public TOutput Current => current!;
+        public TOutput Current => hasCurrent ? current! : throw new InvalidOperationException();
 
         object IEnumerator.Current => Current;
 
         public bool MoveNext()
         {
+            hasCurrent = false;
             while (enumerator.MoveNext())
             {
                 if (TFilter.TryGet(enumerator.Current, out current))
-                    return true;
+                    return hasCurrent = true;
             }
 
+            current = default;
             return false;
         }
 
-        public void Reset() => enumerator.Reset();
+        public void Reset()
+        {
+            enumerator.Reset();
+            hasCurrent = false;
+            current = default;
+        }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
+                hasCurrent = false;
                 current = default;
                 enumerator.Dispose();
             }

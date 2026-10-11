@@ -124,6 +124,104 @@ public sealed class CollectionTests : Test
         Equal([42, 43], list.Flatten<int, Optional<int>>().ToArray());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static void SkipNullsEnumeratorState(bool trailingNull)
+    {
+        string?[] items = [null, "a", null, "b"];
+        if (trailingNull)
+            items = [.. items, null];
+
+        AssertEnumeratorState(items.SkipNulls(), "a", "b");
+        AssertEnumeratorState(Array.Empty<string?>().SkipNulls());
+        AssertEnumeratorState(new string?[] { null, null }.SkipNulls());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static void SkipNullsValueTypeEnumeratorState(bool trailingNull)
+    {
+        int?[] items = [null, 0, null, 42];
+        if (trailingNull)
+            items = [.. items, null];
+
+        AssertEnumeratorState(items.SkipNulls(), 0, 42);
+        AssertEnumeratorState(Array.Empty<int?>().SkipNulls());
+        AssertEnumeratorState(new int?[] { null, null }.SkipNulls());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static void FlattenValueTypeEnumeratorState(bool trailingEmpty)
+    {
+        Optional<int>[] items = [Optional<int>.None, 0, Optional<int>.None, 42];
+        if (trailingEmpty)
+            items = [.. items, Optional<int>.None];
+
+        AssertEnumeratorState(items.Flatten<int, Optional<int>>(), 0, 42);
+        AssertEnumeratorState(Array.Empty<Optional<int>>().Flatten<int, Optional<int>>());
+        AssertEnumeratorState(new[] { Optional<int>.None, Optional<int>.None }.Flatten<int, Optional<int>>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static void FlattenReferenceTypeEnumeratorState(bool trailingEmpty)
+    {
+        Optional<string>[] items = [Optional<string>.None, "a", Optional<string>.None, "b"];
+        if (trailingEmpty)
+            items = [.. items, Optional<string>.None];
+
+        AssertEnumeratorState(items.Flatten<string, Optional<string>>(), "a", "b");
+        AssertEnumeratorState(Array.Empty<Optional<string>>().Flatten<string, Optional<string>>());
+        AssertEnumeratorState(new[] { Optional<string>.None, Optional<string>.None }.Flatten<string, Optional<string>>());
+    }
+
+    private static void AssertEnumeratorState<T>(IEnumerable<T> collection, params ReadOnlySpan<T> expected)
+        where T : notnull
+    {
+        using var enumerator = collection.GetEnumerator();
+        var untypedEnumerator = (System.Collections.IEnumerator)enumerator;
+        AssertNoCurrent();
+
+        for (var iteration = 0; iteration < 2; iteration++)
+        {
+            enumerator.Reset();
+            AssertNoCurrent();
+
+            foreach (var item in expected)
+            {
+                True(enumerator.MoveNext());
+                Equal(item, enumerator.Current);
+                Equal(item, enumerator.Current);
+                Equal(item, untypedEnumerator.Current);
+            }
+
+            False(enumerator.MoveNext());
+            AssertNoCurrent();
+            False(enumerator.MoveNext());
+            AssertNoCurrent();
+        }
+
+        enumerator.Reset();
+        AssertNoCurrent();
+        Equal(!expected.IsEmpty, enumerator.MoveNext());
+        enumerator.Reset();
+        AssertNoCurrent();
+        Equal(!expected.IsEmpty, enumerator.MoveNext());
+        enumerator.Dispose();
+        AssertNoCurrent();
+
+        void AssertNoCurrent()
+        {
+            Throws<InvalidOperationException>(() => enumerator.Current);
+            Throws<InvalidOperationException>(() => untypedEnumerator.Current);
+        }
+    }
+
     [Fact]
     public static void ToStringTest()
     {

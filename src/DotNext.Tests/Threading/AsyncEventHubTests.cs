@@ -204,4 +204,18 @@ public sealed class AsyncEventHubTests : Test
         group1 = [514, 512, 1, 0];
         Equal(group1, group2);
     }
+
+    [Fact]
+    public static void EventGroupEquality()
+    {
+        AsyncEventHub.EventGroup group1 = [0];
+        AsyncEventHub.EventGroup group2 = [0, 512];
+        NotEqual(group1, group2);
+
+        using var hub = new AsyncEventHub(512);
+        group1 = [];
+        group2 = hub.CaptureState();
+        Equal(group1, group2);
+        Equal(group1.GetHashCode(), group2.GetHashCode());
+    }
 }

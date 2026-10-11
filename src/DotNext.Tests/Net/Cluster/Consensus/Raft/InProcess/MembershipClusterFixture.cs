@@ -87,7 +87,9 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
     /// Classifies the candidate's votes and write-barrier replication, for example to keep a partition.
     /// Defaults to delivering everything.
     /// </param>
-    internal async Task ElectAsync(MembershipNode candidate, bool passWriteBarrier = true, Func<PendingMessage, MessageAction> filter = null)
+    /// <param name="electionDelay">The virtual time to advance after starting the election timer.</param>
+    internal async Task ElectAsync(MembershipNode candidate, bool passWriteBarrier = true, Func<PendingMessage, MessageAction> filter = null,
+        TimeSpan? electionDelay = null)
     {
         filter ??= static _ => MessageAction.Deliver;
         var elected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -95,7 +97,7 @@ internal sealed class MembershipClusterFixture : Test, IAsyncDisposable
         try
         {
             candidate.StartElectionTimer();
-            TimeProvider.Advance(TimeSpan.FromMilliseconds(100));
+            TimeProvider.Advance(electionDelay ?? TimeSpan.FromMilliseconds(100));
             await PumpAsync(candidate, elected.Task, message => message.MessageType is RaftMessageType.PreVote or RaftMessageType.Vote
                 ? filter(message)
                 : MessageAction.Hold, forceRounds: false);

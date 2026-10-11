@@ -107,27 +107,29 @@ public abstract class ReferenceCounted<T>
     /// </summary>
     /// <remarks>
     /// Strong reference is a short-lived scope which protects the resource from being disposed.
+    /// Copies share the same acquisition. Disposing any copy invalidates all copies and releases
+    /// the acquisition at most once. Acquire another scope for an independent reference.
+    /// Do not dispose a copy while another copy is accessing the resource.
     /// </remarks>
     [StructLayout(LayoutKind.Auto)]
     public struct Scope : IOptionMonad<T>, IDisposable
     {
-        private ReferenceCounted<T>? arc;
+        private readonly Acquisition? acquisition;
 
         internal Scope(ReferenceCounted<T> arc)
-            => this.arc = arc.TryAcquire() ? arc : null;
+            => acquisition = new(arc);
         
         /// <summary>
         /// Gets a value indicating that this reference is valid and can be used to access the resource.
         /// </summary>
-        [MemberNotNullWhen(true, nameof(arc))]
-        public readonly bool IsValid => arc is not null;
+        public readonly bool IsValid => acquisition?.Container is not null;
 
         [DebuggerBrowsable(DebuggerBrowsableState.Never)]
         private readonly ReferenceCounted<T> Container
         {
             get
             {
-                var containerCopy = arc;
+                var containerCopy = acquisition?.Container;
                 if (containerCopy is null)
                     InvalidOperationException.Throw();
 
@@ -153,22 +155,25 @@ public abstract class ReferenceCounted<T>
         /// Releases the strong reference.
         /// </summary>
         /// <remarks>
-        /// This method must not be called more than once.
+        /// Repeated or concurrent calls on this scope or its copies release the acquisition at most once.
         /// </remarks>
-        public void Dispose()
-        {
-            if (IsValid)
-            {
-                arc.Release();
-                arc = null;
-            }
-        }
+        public void Dispose() => acquisition?.Release();
 
         /// <inheritdoc/>
         readonly bool IOptionMonad<T>.HasValue => IsValid;
 
         /// <inheritdoc/>
-        readonly T? IOptionMonad<T>.ValueOrDefault => IsValid ? arc.resource : default;
+        readonly T? IOptionMonad<T>.ValueOrDefault
+            => acquisition?.Container is { } container ? container.resource : default;
+
+        private sealed class Acquisition(ReferenceCounted<T> arc)
+        {
+            private ReferenceCounted<T>? container = arc.TryAcquire() ? arc : null;
+
+            internal ReferenceCounted<T>? Container => Volatile.Read(ref container);
+
+            internal void Release() => Interlocked.Exchange(ref container, null)?.Release();
+        }
     }
 }
 

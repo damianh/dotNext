@@ -28,6 +28,103 @@ public sealed class ReferenceCountedTests : Test
         True(obj.IsDisposed);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public static void CopiedScopeReleasesOnce(bool releaseOwnerFirst)
+    {
+        var obj = new MyDisposableObject();
+        using var arc = new ReferenceCountedOwner<MyDisposableObject>(obj);
+        var scope = arc.Acquire();
+        var copy = scope;
+        var independent = arc.Acquire();
+
+        if (releaseOwnerFirst)
+            arc.Dispose();
+
+        copy.Dispose();
+        False(scope.IsValid);
+        False(copy.IsValid);
+        Throws<InvalidOperationException>(() => scope.Value);
+        Throws<InvalidOperationException>(() => scope.ValueRef);
+        IOptionMonad<MyDisposableObject> option = scope;
+        False(option.HasValue);
+        Null(option.ValueOrDefault);
+        scope.Dispose();
+        copy.Dispose();
+        arc.Dispose();
+
+        True(independent.IsValid);
+        Same(obj, independent.Value);
+        False(obj.IsDisposed);
+        Equal(0, obj.DisposeCount);
+
+        independent.Dispose();
+        Equal(1, obj.DisposeCount);
+        False(arc.Acquire().IsValid);
+    }
+
+    [Fact]
+    public static void BoxedScopeReleasesOnce()
+    {
+        var obj = new MyDisposableObject();
+        using var arc = new ReferenceCountedOwner<MyDisposableObject>(obj);
+        var scope = arc.Acquire(out var actual);
+        Same(obj, actual);
+        IDisposable boxed = scope;
+        arc.Dispose();
+
+        boxed.Dispose();
+        False(scope.IsValid);
+        scope.Dispose();
+        boxed.Dispose();
+        Equal(1, obj.DisposeCount);
+    }
+
+    [Fact]
+    public static void ThrowingDisposalInvalidatesCopies()
+    {
+        var obj = new MyDisposableObject(throwOnDispose: true);
+        using var arc = new ReferenceCountedOwner<MyDisposableObject>(obj);
+        var scope = arc.Acquire();
+        var copy = scope;
+        arc.Dispose();
+
+        Throws<InvalidOperationException>(() => scope.Dispose());
+        False(scope.IsValid);
+        False(copy.IsValid);
+        scope.Dispose();
+        copy.Dispose();
+        Equal(1, obj.DisposeCount);
+        False(arc.Acquire().IsValid);
+    }
+
+    [Fact(Timeout = TestTimeouts.Default)]
+    public static async Task ConcurrentCopiedScopeDisposal()
+    {
+        var obj = new MyDisposableObject();
+        using var arc = new ReferenceCountedOwner<MyDisposableObject>(obj);
+        var scope = arc.Acquire();
+        var independent = arc.Acquire();
+        arc.Dispose();
+
+        var tasks = new Task[100];
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            var copy = scope;
+            tasks[i] = Task.Run(() => copy.Dispose(), TestToken);
+        }
+
+        await Task.WhenAll(tasks).WaitAsync(TestToken);
+        False(scope.IsValid);
+        True(independent.IsValid);
+        Same(obj, independent.Value);
+        Equal(0, obj.DisposeCount);
+
+        independent.Dispose();
+        Equal(1, obj.DisposeCount);
+    }
+
     [Theory(Timeout = TestTimeouts.Default)]
     [InlineData(10)]
     [InlineData(100)]
@@ -86,9 +183,20 @@ public sealed class ReferenceCountedTests : Test
     }
 }
 
-file sealed class MyDisposableObject : TaskCompletionSource, IDisposable
+file sealed class MyDisposableObject(bool throwOnDispose = false) : TaskCompletionSource, IDisposable
 {
+    private int disposeCount;
+
+    public int DisposeCount => Volatile.Read(ref disposeCount);
+
     public bool IsDisposed => Task.IsCompletedSuccessfully;
 
-    public void Dispose() => TrySetResult();
+    public void Dispose()
+    {
+        Interlocked.Increment(ref disposeCount);
+        if (throwOnDispose)
+            throw new InvalidOperationException();
+
+        TrySetResult();
+    }
 }

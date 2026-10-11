@@ -50,6 +50,7 @@ metadata:
   - It doesn't behave like dictionary. Instead, it exposes read or write session, which guarantee liveness of the cache entry during read or modification in case of concurrent eviction.
   - Use [this example](https://github.com/dotnet/dotNext/blob/master/src/examples/RandomAccessCacheBenchmark/Program.cs) to see how to consume its API.
 - Consider `ReferenceCounted<T>` and `ReferenceCountedOwner<T>` classes (`DotNext.Threading`) to replace handwritten reference counting mechanism
+  - Copies of `Scope` share one acquisition. Disposing any copy invalidates all copies and releases the acquisition at most once. Call `Acquire()` again for an independent reference; do not dispose a copy while another copy is accessing the resource.
 - Consider `DotNext.Threading.Atomic<T>` container type for synchronized access to the custom struct instead classic monitor lock. This type has no contention between concurrent readers, so multiple threads can read the value in parallel. But all writers are serialized.
   - It is a spin-based seqlock: readers retry while a write is in progress, and contended writers spin instead of blocking on a monitor. Use it for small structs and short updates, not for long critical sections.
 

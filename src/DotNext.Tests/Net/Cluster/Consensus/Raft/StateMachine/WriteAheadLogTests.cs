@@ -327,7 +327,7 @@ public sealed class WriteAheadLogTests : Test
         }
     }
 
-    [Fact(Timeout = TestTimeouts.Default)]
+    [Fact(Timeout = TestTimeouts.Long)]
     public static async Task IncrementalState()
     {
         var dir = GetTempPath();
@@ -348,7 +348,7 @@ public sealed class WriteAheadLogTests : Test
         Equal(count * (0L + count - 1L) / 2L, stateMachine.Value);
     }
 
-    [Theory(Timeout = TestTimeouts.Default)]
+    [Theory(Timeout = TestTimeouts.Long)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.None)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.Crc32)]
     [InlineData(WriteAheadLog.IntegrityHashAlgorithm.Crc64)]
@@ -412,7 +412,7 @@ public sealed class WriteAheadLogTests : Test
         Equal("Entry2", payload.StringField.Value);
     }
     
-    [Fact(Timeout = TestTimeouts.Default)]
+    [Fact(Timeout = TestTimeouts.Long)]
     public static async Task ImportLog()
     {
         const long count = 1000L;

@@ -57,12 +57,18 @@ public sealed class RaftHttpClusterTests : RaftTest
     public static async Task CommunicationWithLeader()
     {
         var config1 = CreateConfiguration(3262, coldStart: true,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
             ("requestTimeout", "00:01:00"));
 
         var config2 = CreateConfiguration(3263, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
             ("requestTimeout", "00:01:00"));
 
         var config3 = CreateConfiguration(3264, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
             ("requestTimeout", "00:01:00"));
 
         var listener = new LeaderTracker();
@@ -389,9 +395,18 @@ public sealed class RaftHttpClusterTests : RaftTest
     [Fact(Timeout = TestTimeouts.Default)]
     public static async Task StandbyMode()
     {
-        var config1 = CreateConfiguration(3262, coldStart: true);
-        var config2 = CreateConfiguration(3263, coldStart: false);
-        var config3 = CreateConfiguration(3264, coldStart: false);
+        var config1 = CreateConfiguration(3262, coldStart: true,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"));
+        var config2 = CreateConfiguration(3263, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"));
+        var config3 = CreateConfiguration(3264, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"));
 
         var listener = new LeaderTracker();
         using var host1 = CreateHost<Startup>(3262, config1, listener);
@@ -445,10 +460,19 @@ public sealed class RaftHttpClusterTests : RaftTest
         Directory.CreateDirectory(configRoot);
 
         var config1 = CreateConfiguration(3262, coldStart: true,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"),
             (Startup.PersistentConfigurationPath, Path.Combine(configRoot, "node1")));
         var config2 = CreateConfiguration(3263, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"),
             (Startup.PersistentConfigurationPath, Path.Combine(configRoot, "node2")));
         var config3 = CreateConfiguration(3264, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"),
             (Startup.PersistentConfigurationPath, Path.Combine(configRoot, "node3")));
 
         using (var host1 = CreateHost<Startup>(3262, config1))
@@ -514,10 +538,19 @@ public sealed class RaftHttpClusterTests : RaftTest
         Directory.CreateDirectory(configRoot);
 
         var config1 = CreateConfiguration(3262, coldStart: true,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"),
             (Startup.PersistentConfigurationPath, Path.Combine(configRoot, "node1")));
         var config2 = CreateConfiguration(3263, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"),
             (Startup.PersistentConfigurationPath, Path.Combine(configRoot, "node2")));
         var config3 = CreateConfiguration(3264, coldStart: false,
+            ("lowerElectionTimeout", "3000"),
+            ("upperElectionTimeout", "5000"),
+            ("requestTimeout", "00:01:00"),
             (Startup.PersistentConfigurationPath, Path.Combine(configRoot, "node3")));
 
         // two nodes in frozen state
@@ -556,8 +589,8 @@ public sealed class RaftHttpClusterTests : RaftTest
         // wait for new election
         do
         {
-            leader2 = await GetLocalClusterView(host2).WaitForLeaderAsync(DefaultTimeout, TestToken);
-            leader3 = await GetLocalClusterView(host3).WaitForLeaderAsync(DefaultTimeout, TestToken);
+            leader2 = await GetLocalClusterView(host2).WaitForLeaderAsync(TimeSpan.FromSeconds(15), TestToken);
+            leader3 = await GetLocalClusterView(host3).WaitForLeaderAsync(TimeSpan.FromSeconds(15), TestToken);
         }
         while (UriEndPoint.Comparer.Equals(oldLeader, leader2.EndPoint) || EndPointFormatter.Equals(oldLeader, leader3.EndPoint));
 

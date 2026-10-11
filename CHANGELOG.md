@@ -3,6 +3,7 @@ Release Notes
 
 # Unreleased
 ## DotNext
+* Fixed copied `ReferenceCounted<T>.Scope` values to share one acquisition and release it at most once, preventing premature resource disposal
 * Fixed `SkipNulls` and `Flatten` enumerators to throw `InvalidOperationException` when `Current` is read before a successful `MoveNext`, after enumeration ends, or after reset or disposal
 
 # 10-06-2026

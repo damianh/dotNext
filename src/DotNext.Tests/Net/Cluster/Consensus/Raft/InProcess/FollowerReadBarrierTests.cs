@@ -26,7 +26,7 @@ public sealed class FollowerReadBarrierTests : RaftTest
         var minority = new HashSet<ClusterMemberId> { oldLeader.Id, follower.Id };
         MessageAction ToMajority(PendingMessage message)
             => minority.Contains(message.TargetId) ? MessageAction.Drop : MessageAction.Deliver;
-        await cluster.ElectAsync(newLeader, filter: ToMajority);
+        await cluster.ElectAsync(newLeader, filter: ToMajority, electionDelay: TimeSpan.FromMilliseconds(101));
         Equal(2L, newLeader.Term);
         var newerWrite = await ReplicateAsync(cluster, newLeader, ToMajority);
         True(newerWrite > olderWrite);

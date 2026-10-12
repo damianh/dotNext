@@ -20,7 +20,6 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>metaprogramming;codegen</PackageTags>
     <PackageIcon>logo.png</PackageIcon>
-    <PackageReleaseNotes>https://github.com/dotnet/dotNext/blob/master/CHANGELOG.md</PackageReleaseNotes>
     <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

@@ -21,7 +21,6 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>consensus;raft;aspnetcore;HyParView</PackageTags>
     <PackageIcon>logo.png</PackageIcon>
-    <PackageReleaseNotes>https://github.com/damianh/dotNext/blob/fork/FORK-DIVERGENCE.md</PackageReleaseNotes>
     <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

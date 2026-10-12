@@ -20,7 +20,6 @@
     <RepositoryType>git</RepositoryType>
     <PackageTags>async;lock;valuetaskcompletionsource;lease;sieve;cache</PackageTags>
     <PackageIcon>logo.png</PackageIcon>
-    <PackageReleaseNotes>https://github.com/damianh/dotNext/blob/fork/FORK-DIVERGENCE.md</PackageReleaseNotes>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>

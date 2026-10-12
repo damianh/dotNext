@@ -24,7 +24,6 @@
 	<GenerateDocumentationFile>true</GenerateDocumentationFile>
 	<Description>Provides various extensions of .NET Base Class Library</Description>
     <PackageIcon>logo.png</PackageIcon>
-  <PackageReleaseNotes>https://github.com/damianh/dotNext/blob/fork/FORK-DIVERGENCE.md</PackageReleaseNotes>
   <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
   

@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-05T09:42:00.000+02:00",
+  "title": "Design System: dotNext Raft Explainers",
+  "extensions": {
+    "colorMeta": {
+      "signal-blue": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "#1748d1",
+        "tonalRamp": ["#071443", "#0b236d", "#0e3297", "#1240bd", "#1748d1", "#5376dd", "#9aadeb", "#e7ebfa"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "#f4f3ef",
+        "tonalRamp": ["#24231f", "#46453f", "#696862", "#8d8b85", "#b1afa9", "#d2d1cc", "#e8e7e2", "#f4f3ef"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#111111",
+        "tonalRamp": ["#111111", "#292929", "#424242", "#5c5c5c", "#787878", "#989898", "#c2c2c2", "#eeeeee"]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "Danger",
+        "canonical": "#a52a2a",
+        "tonalRamp": ["#351010", "#571717", "#792020", "#a52a2a", "#c65a5a", "#dc8e8e", "#edc2c2", "#faeeee"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Specimen Display",
+        "purpose": "Poster-scale questions and variable role weight."
+      },
+      "label": {
+        "displayName": "Protocol Label",
+        "purpose": "Terms, roles, axes, sequence, and provenance."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "axis-reveal",
+        "value": "600ms cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "Changes node weight and width when the protocol reveals roles."
+      },
+      {
+        "name": "state-change",
+        "value": "180ms ease-out",
+        "purpose": "Selection and control color changes."
+      }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "680px" },
+      { "name": "single-column", "value": "900px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Commits a prediction and starts the real experiment.",
+      "html": "<button class=\"ds-primary\">TEST MY PREDICTION <span>→</span></button>",
+      "css": ".ds-primary{align-items:center;background:var(--signal,#1748d1);border:0;border-radius:0;color:#fff;display:flex;font:400 .75rem ui-monospace,monospace;justify-content:space-between;min-height:5.5rem;padding:0 1.5rem;text-transform:uppercase;width:100%;transition:background 180ms ease-out}.ds-primary:hover{background:#0e339d}.ds-primary:focus-visible{outline:3px solid #1748d1;outline-offset:3px}"
+    },
+    {
+      "name": "Secondary Action",
+      "kind": "button",
+      "description": "Resets a completed experiment without competing with the primary action.",
+      "html": "<button class=\"ds-secondary\">TRY ANOTHER PREDICTION <span>↺</span></button>",
+      "css": ".ds-secondary{align-items:center;background:#f4f3ef;border:1px solid #111;border-radius:0;color:#111;display:flex;font:400 .75rem ui-monospace,monospace;justify-content:space-between;min-height:5.5rem;padding:0 1.5rem;text-transform:uppercase;width:100%}.ds-secondary:hover{background:#fff}.ds-secondary:focus-visible{outline:3px solid #1748d1;outline-offset:-4px}"
+    },
+    {
+      "name": "Node Specimen",
+      "kind": "custom",
+      "refersTo": "specimen-selected",
+      "description": "An equal peer cell that gains visual weight only after selection or protocol authority.",
+      "html": "<div class=\"ds-node\"><span>NODE / ADA</span><b>A</b><strong>Ada</strong><small>TERM —</small></div>",
+      "css": ".ds-node{border:1px solid #b9b8b3;display:grid;font:400 .65rem ui-monospace,monospace;min-height:22rem;padding:1.25rem;text-transform:uppercase}.ds-node b{align-self:center;font:330 10rem/1 Arial,sans-serif;justify-self:center}.ds-node strong{border-top:1px solid #111;font:520 1.15rem/1.5 Arial,sans-serif;padding-top:.65rem;text-transform:none}"
+    },
+    {
+      "name": "Trace Row",
+      "kind": "custom",
+      "description": "One ordered protocol message with route and operation.",
+      "html": "<div class=\"ds-trace\"><span>01</span><strong>Ada → Grace</strong><code>PreVote</code></div>",
+      "css": ".ds-trace{align-items:center;border:1px solid #d8d7d2;display:grid;font:400 .75rem ui-monospace,monospace;gap:1.5rem;grid-template-columns:2rem 1fr 1fr;min-height:4.25rem;padding:.75rem 1rem}.ds-trace span{color:#898985}.ds-trace code{color:#0e339d;justify-self:end}"
+    },
+    {
+      "name": "Ruled Navigation",
+      "kind": "nav",
+      "description": "Cell-based navigation with one blue active state.",
+      "html": "<nav class=\"ds-nav\"><a class=\"active\">LEARN</a><a>EXPLORE</a><a>ABOUT</a></nav>",
+      "css": ".ds-nav{border:1px solid #111;display:flex;font:400 .65rem ui-monospace,monospace}.ds-nav a{border-right:1px solid #b9b8b3;padding:1.5rem;position:relative}.ds-nav .active{color:#1748d1}.ds-nav .active:after{background:#1748d1;bottom:0;content:'';height:3px;left:0;position:absolute;right:0}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Protocol Specimen",
+    "overview": "The explainers borrow the rigor of an interactive variable-type specimen: paper, black ink, one signal blue, hairline rules, and dramatic shifts in typographic weight. Protocol state is the specimen. A role change should alter the visual weight of a node as clearly as an axis change alters a glyph.",
+    "keyCharacteristics": [
+      "Paper-white fields with black one-pixel rules.",
+      "Signal blue reserved for active choices, confirmed state, focus, and causality.",
+      "Large variable display type paired with compact data labels.",
+      "Square, ruled controls with no ornamental containers.",
+      "Text equivalents for every color or motion change."
+    ],
+    "rules": [
+      {
+        "name": "The Signal Means State Rule",
+        "body": "Blue is never decoration; it marks an action, selection, focus, protocol outcome, or causal direction.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Has Weight Rule",
+        "body": "Use weight and width changes for protocol authority; do not substitute badges, glows, or decorative icons.",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do ask for a prediction before revealing state.",
+      "Do connect every blue mark to a semantic state or action.",
+      "Do keep peer nodes equal until the protocol produces a distinction.",
+      "Do expose causal events as ordered text."
+    ],
+    "donts": [
+      "Don't wrap lessons in generic rounded cards.",
+      "Don't use neon, gradients, glows, or code-themed decoration.",
+      "Don't use color or motion as the only state signal.",
+      "Don't turn compact data labels into the primary reading voice."
+    ]
+  }
+}

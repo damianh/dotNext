@@ -284,9 +284,11 @@ The Raft stack is published to nuget.org under the `DamianH.` prefix: `DamianH.D
 `DamianH.DotNext.Threading`, `DamianH.DotNext.Unsafe`, `DamianH.DotNext.Net.Cluster` and
 `DamianH.DotNext.AspNetCore.Cluster`. Only the package IDs differ: assembly names, namespaces and the strong-name key
 are the same as upstream, so these packages can't be used together with upstream `DotNext.*` packages. Pushing a tag
-`v<semver>` (for example `v6.9.0-fork.1`) runs [publish-nuget.yml](.github/workflows/publish-nuget.yml), which packs
+`vMAJOR.MINOR.PATCH` with an optional SemVer prerelease (for example `v6.9.0-fork.1`) runs
+[publish-nuget.yml](.github/workflows/publish-nuget.yml), which packs
 the six projects with that version and pushes them using the `NUGET_ORG_API_KEY` secret. Tag only commits on `fork`
-that passed CI.
+that passed CI. Numeric version components and numeric prerelease identifiers must not have leading zeroes.
+Build metadata (`+build.1`) is not supported because NuGet drops it from package filenames and package identity.
 
 ## Upstream sync log
 

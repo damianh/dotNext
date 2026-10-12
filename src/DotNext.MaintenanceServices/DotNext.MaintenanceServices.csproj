@@ -23,7 +23,6 @@
 	<GenerateDocumentationFile>true</GenerateDocumentationFile>
 	<Description>Provides API to manage applications and microservices in containers</Description>
     <PackageIcon>logo.png</PackageIcon>
-  <PackageReleaseNotes>https://github.com/dotnet/dotNext/blob/master/CHANGELOG.md</PackageReleaseNotes>
   <IncludeSourceRevisionInInformationalVersion>true</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

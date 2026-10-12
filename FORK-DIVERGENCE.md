@@ -280,9 +280,9 @@ failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL
 (majority-decided elections), #148 (atomic WAL page creation).
 
 ## Packaging
-The Raft stack is published to nuget.org under the `DamianH.` prefix: `DamianH.DotNext`, `DamianH.DotNext.IO`,
+The Raft stack is configured for publication to nuget.org under the `DamianH.` prefix: `DamianH.DotNext`, `DamianH.DotNext.IO`,
 `DamianH.DotNext.Threading`, `DamianH.DotNext.Unsafe`, `DamianH.DotNext.Net.Cluster` and
-`DamianH.DotNext.AspNetCore.Cluster`. Only the package IDs differ: assembly names, namespaces and the strong-name key
+`DamianH.DotNext.AspNetCore.Cluster`. Package IDs and package metadata differ; assembly names, namespaces and the strong-name key
 are the same as upstream, so these packages can't be used together with upstream `DotNext.*` packages. Pushing a tag
 `vMAJOR.MINOR.PATCH` with an optional SemVer prerelease (for example `v6.9.0-fork.1`) runs
 [publish-nuget.yml](.github/workflows/publish-nuget.yml), which packs

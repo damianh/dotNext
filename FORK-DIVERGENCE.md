@@ -279,6 +279,15 @@ configuration barriers), #59 (leader lease timing), #66 (read barrier spin after
 failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL cleanup barrier fairness), #146
 (majority-decided elections), #148 (atomic WAL page creation).
 
+## Packaging
+The Raft stack is published to nuget.org under the `DamianH.` prefix: `DamianH.DotNext`, `DamianH.DotNext.IO`,
+`DamianH.DotNext.Threading`, `DamianH.DotNext.Unsafe`, `DamianH.DotNext.Net.Cluster` and
+`DamianH.DotNext.AspNetCore.Cluster`. Only the package IDs differ: assembly names, namespaces and the strong-name key
+are the same as upstream, so these packages can't be used together with upstream `DotNext.*` packages. Pushing a tag
+`v<semver>` (for example `v6.9.0-fork.1`) runs [publish-nuget.yml](.github/workflows/publish-nuget.yml), which packs
+the six projects with that version and pushes them using the `NUGET_ORG_API_KEY` secret. Tag only commits on `fork`
+that passed CI.
+
 ## Upstream sync log
 
 ### 6.8.1 → 6.9.0 (upstream `f3d1be1b5`, 41 commits)

@@ -1,0 +1,85 @@
+name: Publish NuGet packages
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  DOTNET_NOLOGO: 'true'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Pack and push DamianH.* packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Determine version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not v<semver>"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          projects=(
+            src/DotNext/DotNext.csproj
+            src/DotNext.IO/DotNext.IO.csproj
+            src/DotNext.Threading/DotNext.Threading.csproj
+            src/DotNext.Unsafe/DotNext.Unsafe.csproj
+            src/cluster/DotNext.Net.Cluster/DotNext.Net.Cluster.csproj
+            src/cluster/DotNext.AspNetCore.Cluster/DotNext.AspNetCore.Cluster.csproj
+          )
+          for project in "${projects[@]}"; do
+            dotnet pack "$project" --configuration Release --output artifacts -p:Version="$VERSION"
+          done
+          count=$(find artifacts -name "DamianH.*.$VERSION.nupkg" | wc -l)
+          if [ "$count" -ne "${#projects[@]}" ]; then
+            echo "::error::Expected ${#projects[@]} packages, found $count"
+            ls -l artifacts
+            exit 1
+          fi
+
+      - name: Upload packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nuget-packages
+          path: artifacts/*.nupkg
+
+      - name: Push to nuget.org
+        env:
+          NUGET_ORG_API_KEY: ${{ secrets.NUGET_ORG_API_KEY }}
+        run: >-
+          dotnet nuget push "artifacts/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key "$NUGET_ORG_API_KEY"
+          --skip-duplicate

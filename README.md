@@ -8,7 +8,9 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dotnet/dotNext)
 
 > This is a fork of [dotnet/dotNext](https://github.com/dotnet/dotNext). See [FORK-DIVERGENCE.md](FORK-DIVERGENCE.md) for behaviour that differs from upstream and the upstream sync log, and [RAFT-REVIEW.md](RAFT-REVIEW.md) for the Raft review.
-> The fork contains only the libraries that the Raft stack needs. `DotNext.Metaprogramming` and `DotNext.MaintenanceServices` were removed; use the upstream packages if you need them.
+> The fork retains the libraries needed by the Raft stack, but not `DotNext.Metaprogramming` or `DotNext.MaintenanceServices`.
+> If you need either, use the upstream `DotNext` package family instead of this fork's `DamianH.*` packages.
+> Do not mix the two package families: they share assembly identities. See [Packaging](FORK-DIVERGENCE.md#packaging).
 
 .NEXT (dotNext) is a set of powerful libraries designed for high-performance scenarios when your application expects near zero memory allocation and high flexibility. It is aimed to high-load microservices, database engines, actors, and various types of distributed applications. The feature list includes a rich set of efficient tools with low overhead:
 * [Buffer manipulations](https://dotnet.github.io/dotNext/features/io/buffers.html)

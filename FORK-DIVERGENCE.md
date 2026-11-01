@@ -279,6 +279,13 @@ configuration barriers), #59 (leader lease timing), #66 (read barrier spin after
 failure attribution), #126 (WAL lock fairness for compatible waiters), #128 (WAL cleanup barrier fairness), #146
 (majority-decided elections), #148 (atomic WAL page creation).
 
+## Removed projects
+The fork keeps only the projects needed by the Raft stack. These upstream projects were removed along with their tests and
+benchmarks: `DotNext.Metaprogramming`, `DotNext.MaintenanceServices`, and the `CommandLineAMI`, `HyParViewPeer` and
+`RandomAccessCacheBenchmark` examples. HyParView and the other non-Raft features of `DotNext.Net.Cluster` and
+`DotNext.AspNetCore.Cluster` are still included. When an upstream sync modifies a removed project, keep it deleted: resolve
+modify/delete conflicts with `git rm`.
+
 ## Packaging
 The Raft stack is configured for publication to nuget.org under the `DamianH.` prefix: `DamianH.DotNext`, `DamianH.DotNext.IO`,
 `DamianH.DotNext.Threading`, `DamianH.DotNext.Unsafe`, `DamianH.DotNext.Net.Cluster` and

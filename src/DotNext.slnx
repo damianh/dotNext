@@ -8,10 +8,7 @@
     <Project Path="cluster/DotNext.Net.Cluster/DotNext.Net.Cluster.csproj"/>
   </Folder>
   <Folder Name="/Examples/">
-    <Project Path="examples/CommandLineAMI/CommandLineAMI.csproj"/>
-    <Project Path="examples/HyParViewPeer/HyParViewPeer.csproj"/>
     <Project Path="examples/RaftNode/RaftNode.csproj"/>
-    <Project Path="examples/RandomAccessCacheBenchmark/RandomAccessCacheBenchmark.csproj"/>
   </Folder>
   <Folder Name="/Misc/">
     <Project Path="DotNext.Aot.Tests/DotNext.Aot.Tests.csproj"/>
@@ -30,8 +27,6 @@
     <File Path="../global.json" />
   </Folder>
   <Project Path="DotNext.IO/DotNext.IO.csproj"/>
-  <Project Path="DotNext.MaintenanceServices/DotNext.MaintenanceServices.csproj"/>
-  <Project Path="DotNext.Metaprogramming/DotNext.Metaprogramming.csproj"/>
   <Project Path="DotNext.Threading/DotNext.Threading.csproj"/>
   <Project Path="DotNext.Unsafe/DotNext.Unsafe.csproj"/>
   <Project Path="DotNext/DotNext.csproj"/>

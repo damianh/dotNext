@@ -17,6 +17,12 @@ public readonly struct GCLatencyModeScope : IDisposable
     /// <param name="mode">GC latency mode.</param>
     public GCLatencyModeScope(GCLatencyMode mode)
     {
+        if (OperatingSystem.IsBrowser())
+        {
+            currentMode = null;
+            return;
+        }
+
         currentMode = GCSettings.LatencyMode;
         GCSettings.LatencyMode = mode;
     }

@@ -1,0 +1,610 @@
+﻿@page "/"
+@implements IDisposable
+
+<PageTitle>Leader election | dotNext Raft</PageTitle>
+
+<!--
+DESIGN CONTRACT: PROTOCOL CONTROL MAP / RAFTSCOPE HYBRID
+THESIS: Leader election is understood by operating the timeline, not by seeing a finished diagram.
+OWN-WORLD: A dark network control map, timer arcs, directional RPC routes, and a compact instrument rail.
+STORY: Read the configured timeouts, commit a prediction, then play the real captured election one message at a time.
+FIRST VIEWPORT: The live three-station map dominates; prediction and the persistent event inspector share the right rail.
+FORM: RaftScope-inspired event playback with logic-analyzer discipline, readable route geometry, native controls, and truthful derived state.
+-->
+<section class="protocol-shell" aria-labelledby="chapter-title">
+    <div class="network-map" aria-label="Raft cluster control map">
+        <div class="network-header">
+            <span>Cluster control map</span>
+            <span>@MapStatus</span>
+        </div>
+
+        <svg class="route-map" viewBox="0 0 1000 620" aria-hidden="true">
+            <defs>
+                <marker id="route-arrow" viewBox="0 0 10 10" refX="8" refY="5"
+                        markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" />
+                </marker>
+            </defs>
+            <g class="map-grid">
+                @for (var x = 80; x < 1000; x += 80)
+                {
+                    <path d="M @x 0 V 620" />
+                }
+                @for (var y = 60; y < 620; y += 60)
+                {
+                    <path d="M 0 @y H 1000" />
+                }
+            </g>
+            <g class="route-lattice">
+                <path d="@RoutePath("Ada", "Grace")" />
+                <path d="@RoutePath("Grace", "Linus")" />
+                <path d="@RoutePath("Linus", "Ada")" />
+            </g>
+            @if (CurrentEvent is not null)
+            {
+                <g class="active-route" @key="CurrentEvent.Sequence">
+                    <path d="@CurrentRoutePath" marker-end="url(#route-arrow)" />
+                    <circle class="message-token" r="10">
+                        <animateMotion dur="850ms" repeatCount="1" path="@CurrentRoutePath" />
+                    </circle>
+                    <circle class="message-token-static" r="10" cx="@RouteMidpoint.X" cy="@RouteMidpoint.Y" />
+                </g>
+            }
+        </svg>
+
+        <div class="route-caption" aria-hidden="true">
+            @if (CurrentEvent is null)
+            {
+                <span>Bidirectional RPC lattice / awaiting election</span>
+            }
+            else
+            {
+                <strong>@CurrentEvent.Message</strong>
+                <span>@CurrentEvent.Source → @CurrentEvent.Target</span>
+            }
+        </div>
+
+        <fieldset class="node-lineup" disabled="@(running || result is not null)">
+            <legend class="visually-hidden">Which node becomes leader?</legend>
+            @foreach (var name in NodeNames)
+            {
+                <label class="node-specimen node-@name.ToLowerInvariant() @NodeClass(name)">
+                    <input type="radio"
+                           name="prediction"
+                           value="@name"
+                           checked="@(prediction == name)"
+                           @onchange="() => prediction = name" />
+                    <span class="timer-ring timer-@name.ToLowerInvariant()" aria-hidden="true">
+                        <span></span>
+                    </span>
+                    <span class="node-meta">
+                        <span>station / @name.ToLowerInvariant()</span>
+                        <span>@PlaybackNodeRole(name)</span>
+                    </span>
+                    <span class="node-glyph" aria-hidden="true">@name[0]</span>
+                    <span class="node-name">@name</span>
+                    <span class="node-axis">
+                        <span>term @PlaybackNodeTerm(name)</span>
+                        <span class="axis-line"><i></i></span>
+                        <strong>@TimerLabel(name)</strong>
+                    </span>
+                </label>
+            }
+        </fieldset>
+
+        <div class="map-legend">
+            <span><i class="legend-timer"></i> Election timeout</span>
+            <span><i class="legend-route"></i> Peer route</span>
+            <span><i class="legend-token"></i> Current RPC</span>
+        </div>
+    </div>
+
+    <aside class="control-rail" aria-label="Election lesson controls and event inspector">
+        <div class="chapter-intro">
+            <div class="chapter-index">
+                <span>Chapter 1 of 25</span>
+                <span>Election / fundamentals</span>
+            </div>
+            <h1 id="chapter-title">Who becomes<br />leader?</h1>
+            <p>
+                Ada's election timer expires first. Before the messages move, commit to what
+                you think the cluster will do.
+            </p>
+        </div>
+
+        <section class="experiment" aria-labelledby="prediction-title">
+            <div class="experiment-heading">
+                <div>
+                    <h2 id="prediction-title">Make your prediction</h2>
+                    <p>Choose one answer. The implementation stays hidden until you commit.</p>
+                </div>
+            </div>
+
+            <dl class="cluster-facts">
+                <div>
+                    <dt>Nodes</dt>
+                    <dd>3</dd>
+                </div>
+                <div>
+                    <dt>Initial term</dt>
+                    <dd>0</dd>
+                </div>
+                <div>
+                    <dt>Network</dt>
+                    <dd>Healthy</dd>
+                </div>
+                <div>
+                    <dt>Quorum</dt>
+                    <dd>2 / 3</dd>
+                </div>
+            </dl>
+
+            <div class="prediction-bar">
+                <label class="uncertain-choice">
+                    <input type="radio"
+                           name="prediction"
+                           value="@UncertainPrediction"
+                           checked="@(prediction == UncertainPrediction)"
+                           disabled="@(running || result is not null)"
+                           @onchange="() => prediction = UncertainPrediction" />
+                    <span>I cannot know from this information</span>
+                </label>
+
+                @if (result is null)
+                {
+                    <button class="primary-action"
+                            @onclick="RunElectionAsync"
+                            disabled="@(running || prediction is null)">
+                        <span>@(running ? "Running real Raft" : "Test my prediction")</span>
+                        <span aria-hidden="true">→</span>
+                    </button>
+                }
+                else
+                {
+                    <button class="secondary-action" @onclick="Reset">
+                        <span>Try another prediction</span>
+                        <span aria-hidden="true">↺</span>
+                    </button>
+                }
+            </div>
+
+            @if (running)
+            {
+                <div class="running-state" role="status">
+                    <span></span>
+                    <p>Election in progress. Pre-votes, votes, and heartbeats are moving through the simulated network.</p>
+                </div>
+            }
+            else if (error is not null)
+            {
+                <div class="error-state" role="alert">
+                    <strong>The election could not finish.</strong>
+                    <span>@error</span>
+                    <button @onclick="Reset">Reset the experiment</button>
+                </div>
+            }
+        </section>
+
+        @if (result is not null)
+        {
+            <section class="event-inspector" aria-labelledby="inspector-title">
+                <div class="inspector-heading">
+                    <div>
+                        <span>Event inspector</span>
+                        <h2 id="inspector-title">@CurrentEventLabel</h2>
+                    </div>
+                    <strong>@PlaybackPosition</strong>
+                </div>
+
+                <div class="playback-controls" aria-label="Event playback controls">
+                    <button @onclick="PreviousEvent" disabled="@(currentEventIndex <= 0)" aria-label="Previous event">←</button>
+                    <button class="play-toggle" @onclick="TogglePlayback" disabled="@RevealComplete"
+                            aria-label="@(playing ? "Pause event playback" : "Play event playback")">
+                        @(playing ? "Pause" : "Play")
+                    </button>
+                    <button @onclick="NextEvent" disabled="@RevealComplete" aria-label="Next event">→</button>
+                </div>
+
+                <label class="scrubber">
+                    <span>Event position</span>
+                    <input type="range"
+                           min="1"
+                           max="@result.Events.Count"
+                           value="@(currentEventIndex + 1)"
+                           @oninput="ScrubToEvent"
+                           aria-valuetext="@PlaybackPosition" />
+                </label>
+
+                <dl class="event-readout">
+                    <div>
+                        <dt>Route</dt>
+                        <dd>@CurrentRouteLabel</dd>
+                    </div>
+                    <div>
+                        <dt>Message</dt>
+                        <dd>@(CurrentEvent?.Message ?? "Awaiting event")</dd>
+                    </div>
+                    <div>
+                        <dt>Kind</dt>
+                        <dd>@CurrentMessageKind</dd>
+                    </div>
+                    <div>
+                        <dt>Cluster</dt>
+                        <dd>@CurrentClusterState</dd>
+                    </div>
+                </dl>
+
+                <p class="playback-status" role="status" aria-live="polite">
+                    @PlaybackAnnouncement
+                </p>
+            </section>
+
+            @if (RevealComplete)
+            {
+                <div class="verdict" aria-live="polite">
+                    <div class="verdict-mark">@(PredictionWasCorrect ? "✓" : "×")</div>
+                    <div>
+                        <p class="verdict-label">@(PredictionWasCorrect ? "Prediction confirmed" : "Prediction challenged")</p>
+                        <h2>@result.Leader becomes leader.</h2>
+                        <p>
+                            You chose <strong>@PredictionLabel</strong>. Ada's timer fired first,
+                            then a majority granted the votes needed for term 1.
+                        </p>
+                    </div>
+                </div>
+            }
+        }
+    </aside>
+</section>
+
+<section class="trace" aria-labelledby="trace-title">
+    <div class="trace-heading">
+        <div>
+            <h2 id="trace-title">The wire, in order</h2>
+            <p>Every row below is emitted by the in-browser transport around the real state machine.</p>
+        </div>
+        <span>@TraceStatus</span>
+    </div>
+
+    @if (result is null)
+    {
+        <div class="trace-empty" aria-hidden="true">
+            @for (var index = 1; index <= 4; index++)
+            {
+                <div>
+                    <span>@index.ToString("00")</span>
+                    <i></i>
+                    <i></i>
+                    <i></i>
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+        <ol class="event-list">
+            @foreach (var item in VisibleEvents)
+            {
+                <li class="@(item.Sequence == CurrentEvent?.Sequence ? "current" : null)"
+                    aria-current="@(item.Sequence == CurrentEvent?.Sequence ? "step" : null)">
+                    <span class="sequence">@item.Sequence.ToString("00")</span>
+                    <span class="route">
+                        <strong>@item.Source</strong>
+                        <span aria-hidden="true">→</span>
+                        <strong>@item.Target</strong>
+                    </span>
+                    <code>@item.Message</code>
+                </li>
+            }
+        </ol>
+    }
+</section>
+
+<details class="implementation-note">
+    <summary>
+        <span>Open the dotNext implementation note</span>
+        <span aria-hidden="true">+</span>
+    </summary>
+    <div>
+        <p>
+            This page runs three real <code>RaftCluster&lt;TMember&gt;</code> instances in WebAssembly.
+            The simulated transport implements <code>IRaftClusterMember</code> using only public API;
+            it does not approximate the election algorithm.
+        </p>
+        <dl>
+            <div>
+                <dt>Election start</dt>
+                <dd><code>StartFollowing()</code></dd>
+            </div>
+            <div>
+                <dt>Vote RPC</dt>
+                <dd><code>VoteAsync(...)</code></dd>
+            </div>
+            <div>
+                <dt>Replication</dt>
+                <dd><code>AppendEntriesAsync(...)</code></dd>
+            </div>
+        </dl>
+    </div>
+</details>
+
+@code {
+    private const string UncertainPrediction = "unknown";
+    private static readonly string[] NodeNames = ["Ada", "Grace", "Linus"];
+    private static readonly Dictionary<string, (double X, double Y)> NodeCoordinates = new()
+    {
+        ["Ada"] = (220D, 250D),
+        ["Grace"] = (730D, 170D),
+        ["Linus"] = (650D, 470D),
+    };
+
+    private ElectionResult? result;
+    private string? prediction;
+    private bool running;
+    private bool playing;
+    private string? error;
+    private int currentEventIndex = -1;
+    private CancellationTokenSource? playbackCancellation;
+    private Task? playbackTask;
+
+    private RaftEvent? CurrentEvent => result is not null
+        && currentEventIndex >= 0
+        && currentEventIndex < result.Events.Count
+            ? result.Events[currentEventIndex]
+            : null;
+
+    private IEnumerable<RaftEvent> VisibleEvents => result?.Events.Take(currentEventIndex + 1)
+        ?? Enumerable.Empty<RaftEvent>();
+
+    private bool RevealComplete => result is not null
+        && currentEventIndex >= result.Events.Count - 1;
+
+    private bool PredictionWasCorrect => result is not null && prediction == result.Leader;
+
+    private string PredictionLabel => prediction == UncertainPrediction
+        ? "not enough information"
+        : prediction ?? "no answer";
+
+    private string MapStatus => running
+        ? "capturing real election"
+        : result is null
+            ? "term 0 / timers armed"
+            : $"{PlaybackPosition} / {CurrentClusterState}";
+
+    private string PlaybackPosition => result is null
+        ? "0 / 0"
+        : $"{currentEventIndex + 1} / {result.Events.Count}";
+
+    private string CurrentEventLabel => CurrentEvent is null
+        ? "Awaiting signal"
+        : $"Event {CurrentEvent.Sequence:00}";
+
+    private string CurrentRouteLabel => CurrentEvent is null
+        ? "No route selected"
+        : $"{CurrentEvent.Source} → {CurrentEvent.Target}";
+
+    private string CurrentMessageKind => CurrentEvent is null
+        ? "None"
+        : IsResponse(CurrentEvent.Message) ? "RPC response" : "RPC request";
+
+    private string CurrentClusterState => result is null
+        ? "Timers armed"
+        : RevealComplete
+            ? $"{result.Leader} leads term {result.Nodes.Max(static node => node.Term)}"
+            : VisibleEvents.Any(item =>
+                item.Source == result.Leader && item.Message is "Heartbeat" or "AppendEntries")
+                ? $"{result.Leader} established leadership"
+            : VisibleEvents.Any(static item => item.Message == "RequestVote")
+                ? "Election in term 1"
+                : "Pre-vote in term 0";
+
+    private string PlaybackAnnouncement => CurrentEvent is null
+        ? "No event selected."
+        : $"Event {CurrentEvent.Sequence} of {result!.Events.Count}. {CurrentEvent.Message} from {CurrentEvent.Source} to {CurrentEvent.Target}.";
+
+    private string TraceStatus => result is null
+        ? "Awaiting experiment"
+        : $"{currentEventIndex + 1} of {result.Events.Count} messages revealed";
+
+    private string CurrentRoutePath => CurrentEvent is null
+        ? string.Empty
+        : RoutePath(CurrentEvent.Source, CurrentEvent.Target);
+
+    private (double X, double Y) RouteMidpoint
+    {
+        get
+        {
+            if (CurrentEvent is null)
+                return (0D, 0D);
+
+            var source = NodeCoordinates[CurrentEvent.Source];
+            var target = NodeCoordinates[CurrentEvent.Target];
+            return ((source.X + target.X) / 2D, (source.Y + target.Y) / 2D);
+        }
+    }
+
+    private static bool IsResponse(string message)
+        => message.Contains("Granted", StringComparison.Ordinal)
+            || message.Contains("Rejected", StringComparison.Ordinal)
+            || message.Contains("Accepted", StringComparison.Ordinal);
+
+    private static string TimerLabel(string name) => name switch
+    {
+        "Ada" => "1.5 s",
+        "Grace" => "30 s",
+        _ => "60 s",
+    };
+
+    private static string RoutePath(string sourceName, string targetName)
+    {
+        var source = NodeCoordinates[sourceName];
+        var target = NodeCoordinates[targetName];
+        if (sourceName == targetName)
+            return $"M {source.X} {source.Y} C {source.X - 72D} {source.Y - 92D}, {source.X + 72D} {source.Y - 92D}, {target.X} {target.Y}";
+
+        return $"M {source.X} {source.Y} L {target.X} {target.Y}";
+    }
+
+    private int PlaybackNodeTerm(string name)
+    {
+        if (result is null || CurrentEvent is null)
+            return 0;
+
+        if (RevealComplete)
+            return (int)result.Nodes.First(node => node.Name == name).Term;
+
+        return VisibleEvents.Any(static item =>
+            item.Message == "RequestVote" || item.Message is "Heartbeat" or "AppendEntries") ? 1 : 0;
+    }
+
+    private string PlaybackNodeRole(string name)
+    {
+        if (result is null || CurrentEvent is null)
+            return "follower";
+
+        if (RevealComplete)
+            return result.Nodes.First(node => node.Name == name).Role.ToLowerInvariant();
+
+        if (VisibleEvents.Any(item =>
+            item.Source == result.Leader && item.Message is "Heartbeat" or "AppendEntries"))
+        {
+            return name == result.Leader ? "leader" : "follower";
+        }
+
+        if (name == "Ada" && VisibleEvents.Any(static item => item.Message == "RequestVote"))
+            return "candidate";
+
+        if (name == "Ada" && VisibleEvents.Any(static item => item.Message == "PreVote"))
+            return "pre-candidate";
+
+        return "follower";
+    }
+
+    private string NodeClass(string name)
+    {
+        List<string> classes = [PlaybackNodeRole(name)];
+
+        if (prediction == name)
+            classes.Add("selected");
+
+        if (CurrentEvent is not null && (CurrentEvent.Source == name || CurrentEvent.Target == name))
+            classes.Add(CurrentEvent.Source == name ? "route-source" : "route-target");
+
+        return string.Join(' ', classes);
+    }
+
+    private async Task RunElectionAsync()
+    {
+        StopPlayback();
+        running = true;
+        error = null;
+        currentEventIndex = -1;
+
+        try
+        {
+            result = await ElectionDemo.RunAsync();
+            currentEventIndex = result.Events.Count > 0 ? 0 : -1;
+        }
+        catch (Exception exception)
+        {
+            error = exception.Message;
+        }
+        finally
+        {
+            running = false;
+        }
+
+        if (result is not null && result.Events.Count > 1)
+            StartPlayback();
+    }
+
+    private void TogglePlayback()
+    {
+        if (playing)
+            StopPlayback();
+        else
+            StartPlayback();
+    }
+
+    private void StartPlayback()
+    {
+        if (result is null || RevealComplete || playing)
+            return;
+
+        playbackCancellation = new();
+        playing = true;
+        playbackTask = AdvancePlaybackAsync(playbackCancellation.Token);
+    }
+
+    private async Task AdvancePlaybackAsync(CancellationToken token)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1_150));
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                await InvokeAsync(() =>
+                {
+                    if (result is null || currentEventIndex >= result.Events.Count - 1)
+                    {
+                        StopPlayback();
+                        return;
+                    }
+
+                    currentEventIndex++;
+
+                    if (RevealComplete)
+                        StopPlayback();
+
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void PreviousEvent()
+    {
+        StopPlayback();
+        currentEventIndex = Math.Max(0, currentEventIndex - 1);
+    }
+
+    private void NextEvent()
+    {
+        StopPlayback();
+        if (result is not null)
+            currentEventIndex = Math.Min(result.Events.Count - 1, currentEventIndex + 1);
+    }
+
+    private void ScrubToEvent(ChangeEventArgs args)
+    {
+        StopPlayback();
+        if (result is not null
+            && int.TryParse(args.Value?.ToString(), out var position))
+        {
+            currentEventIndex = Math.Clamp(position - 1, 0, result.Events.Count - 1);
+        }
+    }
+
+    private void StopPlayback()
+    {
+        playing = false;
+        playbackCancellation?.Cancel();
+        playbackCancellation?.Dispose();
+        playbackCancellation = null;
+        playbackTask = null;
+    }
+
+    private void Reset()
+    {
+        StopPlayback();
+        result = null;
+        prediction = null;
+        error = null;
+        currentEventIndex = -1;
+    }
+
+    public void Dispose() => StopPlayback();
+}
